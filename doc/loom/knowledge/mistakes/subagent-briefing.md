@@ -263,3 +263,23 @@ Also worth keeping: the defect the review ranked worst existed BECAUSE its test 
 it — the quit-guard test only ever pressed genuine non-quit keys as the second key. A brief that
 adds a guard should require the test to be shown failing against the old behaviour, which is the
 only thing that proves it reaches the path. See [[tests-that-cannot-fail]].
+
+## Orchestrator Wrote Briefs and Fixture Edits Itself Outside a Stage
+
+**What happened:** asked to hand three web-dashboard changes to sonnet subagents, the main agent (opus) spent its own turns on a shared fixture edit (three attempts, two reverted), a follow-up source read, and two long briefs before spawning. The operator stopped it: that work could have been done by a sonnet subagent.
+
+**Why:** the Rule 7 small-change test was applied per edit rather than to the whole preparation phase, and brief-writing was treated as orchestrator-only work.
+
+**Prevention:** once exploration returns, hand the exploration reports plus the settled decisions to ONE sonnet subagent that writes the briefs and does foundation edits (shared fixtures, schema keys), or fold the foundation edit into one worker's territory with the other told to wait on it. The main agent keeps decisions and verification only.
+
+**Fix:** the operator redirected the work; the workers were spawned with the briefs already written.
+
+## A Failed Commit Left Files Staged for a Concurrent Session to Sweep Up
+
+**What happened:** the main agent ran git add on its plan-summary files, and the pre-commit hook refused the commit because another session had staged its quota work in the same index. The main agent's files stayed staged. While the main agent retried with a pathspec commit, the other session committed the whole index, so commit 299c1de1 (fix(quota): ...) also carried the twelve plan-summary files, and the retry failed with cannot lock ref HEAD.
+
+**Why:** a failed commit does not unstage anything, and the git index is shared by every session working in the checkout.
+
+**Prevention:** when other sessions may be committing in the same checkout, never git add before committing; commit with an explicit pathspec (git commit -m ... -- <paths>), which builds the commit from those paths alone. If a commit fails after staging, run git restore --staged <own paths> before anything else.
+
+**Fix:** reported to the operator before rewriting the unpushed commit.

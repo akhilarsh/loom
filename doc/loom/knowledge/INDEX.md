@@ -31,7 +31,7 @@
 | [context-retrieval](architecture/context-retrieval.md) | Retrieval: graphs, lanes, gating, tiered packs | 366 |
 | [context-retrieval-corpus](architecture/context-retrieval-corpus.md) | Stopwording, rescue floor, BM25 index, indexed prose | 177 |
 | [context-retrieval-state](architecture/context-retrieval-state.md) | Base/overlay graph layers, delivery records | 192 |
-| [contract-phase](architecture/contract-phase.md) | Contract session, freeze, handover | 140 |
+| [contract-phase](architecture/contract-phase.md) | Contract session, freeze, handover | 144 |
 | [core-abstractions](architecture/core-abstractions.md) | ExecutionGraph, Stage, Session, data flow | 136 |
 | [directory-structure](architecture/directory-structure.md) | loom/src module tree, state layout, root assets | 49 |
 | [execution-containment](architecture/execution-containment.md) | Sandboxed command containment and its limits | 343 |
@@ -43,7 +43,7 @@
 | [orchestrator-loop](architecture/orchestrator-loop.md) | Tick order, Monitor, heartbeat liveness | 56 |
 | [owned-waits](architecture/owned-waits.md) | Worker-set waits: lease/engine, exit codes | 47 |
 | [plan-lifecycle-and-fields](architecture/plan-lifecycle-and-fields.md) | Plan fields v1/v2, verify checks, lints | 216 |
-| [quota-poller](architecture/quota-poller.md) | Usage-quota polling, caching, rendering | 29 |
+| [quota-poller](architecture/quota-poller.md) | Usage-quota polling, caching, rendering | 31 |
 | [remote-control](architecture/remote-control.md) | Capability detection, preflight, naming | 82 |
 | [security-and-isolation](architecture/security-and-isolation.md) | 4-layer worktree defense, security model | 193 |
 | [signal-generation](architecture/signal-generation.md) | Signal assembly: cache, append helpers, prefixes | 202 |
@@ -54,7 +54,7 @@
 | [test-runner-adapters](architecture/test-runner-adapters.md) | 23 adapters, profiles, quoting, detect | 49 |
 | [token-accounting-and-receipts](architecture/token-accounting-and-receipts.md) | Usage ledger, --compare, criterion cache | 260 |
 | [verification-v2-gates](architecture/verification-v2-gates.md) | v2 completion gates, order, owners | 124 |
-| [web-dashboard](architecture/web-dashboard.md) | loom status --web: server, SPA, streaming | 81 |
+| [web-dashboard](architecture/web-dashboard.md) | loom status --web: server, SPA, streaming | 87 |
 | [web-terminal](architecture/web-terminal.md) | loom status --web --terminals: browser terminal | 173 |
 
 ### entry-points
@@ -125,7 +125,7 @@
 | [phantom-merges](mistakes/phantom-merges.md) | Merge machinery lessons: merged=true without verifying | 171 |
 | [pinned-literals-ledgers-and-wiring](mistakes/pinned-literals-ledgers-and-wiring.md) | Ledger exact-match trap and wiring-check pinning | 303 |
 | [pre-commit-hardening](mistakes/pre-commit-hardening.md) | Partial-staging guard decisions and edge cases | 53 |
-| [refactor-stragglers](mistakes/refactor-stragglers.md) | What a large rename leaves behind | 126 |
+| [refactor-stragglers](mistakes/refactor-stragglers.md) | What a large rename leaves behind | 136 |
 | [sandbox-and-settings](mistakes/sandbox-and-settings.md) | Sandbox path rules, permission sync, merge traps | 293 |
 | [sandbox-protected-hooks-dir](mistakes/sandbox-protected-hooks-dir.md) | A directory named hooks/ is sandbox write-protected. | 37 |
 | [sandbox-state-channels](mistakes/sandbox-state-channels.md) | Sandboxed callers vs .loom/work state | 288 |
@@ -138,7 +138,7 @@
 | [spurious-waiting-for-input](mistakes/spurious-waiting-for-input.md) | Stages flipped to waiting-for-input | 35 |
 | [status-broadcast-hardening](mistakes/status-broadcast-hardening.md) | Frame-overflow eviction, read-timeout desync in status | 74 |
 | [store-without-consumer](mistakes/store-without-consumer.md) | A store written but never read | 94 |
-| [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, file ownership | 265 |
+| [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, file ownership | 285 |
 | [subagent-liveness-and-watch](mistakes/subagent-liveness-and-watch.md) | Subagent alive/done/dead detection; watch traps | 321 |
 | [subagent-orchestration](mistakes/subagent-orchestration.md) | Delegation model, defect reports, gotchas | 110 |
 | [test-concurrency-and-fixtures](mistakes/test-concurrency-and-fixtures.md) | Racy tests: fds, ETXTBSY, serial env, stdin hangs | 208 |

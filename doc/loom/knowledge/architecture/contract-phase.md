@@ -132,9 +132,13 @@ Contract phase = `StageStatus::Executing` + `SessionType::Contract` on a `StageT
 stage (`render/attention_model.rs::is_contract_phase`). Static/compact: a magenta `contracts` tag
 right after `[model]` (`render/graph.rs::stage_tags`), added to the legend while such a stage
 exists. Live TUI: the activity cell reads `writing contract tests`, or once stale, `contract
-writer idle <duration>` (`ui/tui/ledger/rows.rs`). Web dashboard: `web/src/api/schema.ts` accepts
-`session_type: "contract"` (before this it did not, and every frame carrying a contract-writer
-stage was rejected — see mistakes/web-dashboard-server.md); the stage node shows a violet
-`contracts` tag and a dashed outline (`data-phase="contract"`, `graph.css`), the stage-strip label
-reads `... · contract phase`, and the stage dialog's session-type row reads `contract writer`
-(`web/src/lib/format.ts::isContractPhase`/`sessionTypeLabel`).
+writer idle <duration>` (`ui/tui/ledger/rows.rs`). Web dashboard (`web/src/lib/format.ts::isContractPhase`):
+the graph node takes the contract tone in place of its status tone
+(`graph/stage-node.tsx`, `toneClass("contract")`), so its rail, breathing glow, wash and hover
+shadow turn purple and return to the executing tone when the implementer session takes over. The
+node carries no `contracts` tag: node tags name stage types, and a contract-writing stage is a
+standard stage. The state key adds a non-interactive `writing contracts` chip while such a stage
+exists (`graph/state-key.tsx`), the legend lists `writing contract tests` under activity, the
+stage-strip label reads `... · contract phase`, and the stage dialog's session-type row reads
+`contract writer` (`sessionTypeLabel`). `web/src/api/schema.ts` must accept
+`session_type: "contract"` (see mistakes/web-dashboard-server.md).

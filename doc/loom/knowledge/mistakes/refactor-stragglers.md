@@ -124,3 +124,13 @@ before the parent's import can go.
 
 **Fix:** `dispute_kinds_tests.rs` gained its own `use crate::fs::work_dir::WorkDir;`
 (`daemon/server/dispute_kinds_tests.rs:11`), independent of whatever `dispute_kinds.rs` imports.
+
+## A Scripted Rewrite Dropped a File's Test Module
+
+**What happened:** a subagent rewrote `loom/src/context/untrusted.rs` with a Python script to factor a shared helper; the script truncated the file and dropped its existing `#[cfg(test)] mod tests`. The subagent noticed and restored the tests from `git show HEAD`.
+
+**Why:** a whole-file scripted rewrite replaced content by position, and nothing checked what followed the edited region.
+
+**Prevention:** prefer the Edit tool for source changes; after any scripted edit, compare the file's `#[test]` count and tail against `git show HEAD:<path>` before moving on.
+
+**Fix:** tests restored in the same change; the count went from 2 at HEAD to 5 (three new).
