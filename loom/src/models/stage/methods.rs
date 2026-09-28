@@ -25,6 +25,7 @@ impl Stage {
     pub fn from_definition(definition: &StageDefinition, plan: &PlanIdentity<'_>) -> Self {
         let mut stage = Self::new(definition.name.clone(), definition.description.clone());
         stage.id = definition.id.clone();
+        stage.summary = definition.summary.clone();
         stage.status = if definition.dependencies.is_empty() {
             StageStatus::Queued
         } else {
@@ -552,6 +553,7 @@ mod tests {
             id: "policy-stage".to_string(),
             name: "Policy Stage".to_string(),
             description: Some("full conversion".to_string()),
+            summary: Some("converts every policy field".to_string()),
             dependencies: vec!["bootstrap".to_string()],
             parallel_group: Some("policy".to_string()),
             acceptance: vec![AcceptanceCriterion::Simple("cargo test".to_string())],
@@ -619,6 +621,7 @@ mod tests {
         assert_eq!(stage.id, definition.id);
         assert_eq!(stage.name, definition.name);
         assert_eq!(stage.description, definition.description);
+        assert_eq!(stage.summary, definition.summary);
         assert_eq!(stage.status, StageStatus::WaitingForDeps);
         assert_eq!(stage.dependencies, definition.dependencies);
         assert_eq!(stage.parallel_group, definition.parallel_group);

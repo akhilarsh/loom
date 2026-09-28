@@ -29,6 +29,7 @@ pub(crate) fn make_stage(id: &str, name: &str) -> StageDefinition {
     StageDefinition {
         id: id.to_string(),
         name: name.to_string(),
+        summary: Some(format!("Delivers {name}")),
         working_dir: ".".to_string(),
         ..Default::default()
     }

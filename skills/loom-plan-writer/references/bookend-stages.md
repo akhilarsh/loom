@@ -2,6 +2,8 @@
 
 Read when: writing the knowledge-bootstrap, integration-verify or knowledge-distill stage and the short forms in `SKILL.md` Section 3 leave a question open.
 
+Every bookend carries a `summary:` written for the operator watching the dashboard, never agent instructions. Examples: knowledge-bootstrap `summary: "Maps the codebase into the knowledge base so later stages start informed."`; integration-verify `summary: "Confirms every feature is wired into the running program and the full suite passes."`; knowledge-distill `summary: "Records what this plan learned in the knowledge base and updates the user docs."`
+
 ## knowledge-bootstrap (first)
 
 Captures codebase understanding before implementation. `stage_type: knowledge`, defaults to opus at medium effort (`SKILL.md` Section 4) — may write `doc/loom/knowledge/**`. It should: run `loom knowledge sync` to rebuild the derived retrieval artifacts and perform any one-time flat-to-hierarchical upgrade; the knowledge directory scaffold and source graph are created automatically at `loom init` and at run startup, so this stage exists to write CONTENT, never to create the directory or seed it from static analysis; then spawn parallel `Explore` subagents for entry-points, patterns, conventions, each returning `loom knowledge update <file> "..."` commands (tier routing below). Review existing `mistakes.md` before completing. **Use `loom knowledge` CLI, never Write/Edit on knowledge files.** Its acceptance is `loom knowledge check --strict --baseline doc/loom/knowledge/check-baseline.txt`: it fails only on structural issues the committed baseline does not record (a missing baseline file counts as empty), so it goes red when the stage breaks the tree and cannot pass while doing nothing about a regression.

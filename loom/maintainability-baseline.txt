@@ -20,8 +20,8 @@ file src/fs/work_dir.rs 433
 file src/fs/work_dir/tests.rs 873
 file src/git/worktree/base.rs 469
 file src/git/worktree/settings.rs 462
-file src/models/stage/methods.rs 674
-file src/models/stage/types.rs 1012
+file src/models/stage/methods.rs 677
+file src/models/stage/types.rs 1015
 file src/orchestrator/core/merge_handler.rs 1303
 file src/orchestrator/core/recovery.rs 1464
 file src/orchestrator/core/stage_executor.rs 597
@@ -36,7 +36,7 @@ file src/orchestrator/terminal/native/window_ops.rs 575
 file src/plan/amendment.rs 1031
 file src/plan/parser/extraction.rs 410
 file src/plan/schema/tests/validation_tests.rs 826
-file src/plan/schema/types.rs 413
+file src/plan/schema/types.rs 416
 file src/plan/schema/validation.rs 1222
 file src/plan/tests/amendment.rs 605
 file src/remote_control.rs 598
@@ -122,8 +122,8 @@ function src/git/worktree/operations.rs create_worktree 115
 function src/git/worktree/settings.rs create_worktree_settings 115
 function src/git/worktree/tests_settings_env.rs test_worktree_gitignore_actually_hides_loom_runtime_paths 57
 function src/handoff/generator/formatter.rs format_handoff_markdown 112
-function src/models/stage/defaults.rs default 75
-function src/models/stage/methods.rs from_definition_copies_all_runtime_policy_fields 116
+function src/models/stage/defaults.rs default 76
+function src/models/stage/methods.rs from_definition_copies_all_runtime_policy_fields 118
 function src/models/stage/transitions.rs can_transition_to 74
 function src/models/stage/transitions.rs valid_transitions 58
 function src/orchestrator/auto_merge.rs attempt_auto_merge 63

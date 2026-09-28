@@ -207,6 +207,9 @@ pub struct StageDefinition {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Human-facing summary shown by the dashboard; `description` stays the agent brief.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     #[serde(default)]
     pub dependencies: Vec<String>,
     #[serde(default)]

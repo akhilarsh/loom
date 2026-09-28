@@ -142,6 +142,7 @@ fn build_full_stage_definition() -> StageDefinition {
         id: "round-trip".to_string(),
         name: "Round Trip Stage".to_string(),
         description: Some("exercises every field".to_string()),
+        summary: Some("round-trips every stage field".to_string()),
         dependencies: vec!["dep-a".to_string(), "dep-b".to_string()],
         parallel_group: Some("group-1".to_string()),
         acceptance: sample_acceptance_criteria(),
@@ -230,6 +231,7 @@ fn test_extract_stage_definition_round_trip_identity_and_dependencies() {
     assert_eq!(round_tripped.id, def.id);
     assert_eq!(round_tripped.name, def.name);
     assert_eq!(round_tripped.description, def.description);
+    assert_eq!(round_tripped.summary, def.summary);
     assert_eq!(round_tripped.dependencies, def.dependencies);
     assert_eq!(round_tripped.parallel_group, def.parallel_group);
     assert_eq!(round_tripped.acceptance, def.acceptance);

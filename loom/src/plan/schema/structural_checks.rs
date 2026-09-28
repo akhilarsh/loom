@@ -50,6 +50,24 @@ pub(super) fn check_missing_brief_paths(
     warnings
 }
 
+/// Warn once per stage without a `summary` (absent or blank).
+///
+/// The dashboard shows `summary` in place of the agent-facing `description`;
+/// without it a stage is listed by name only. Applies to every stage type.
+pub(super) fn check_missing_summaries(stages: &[StageDefinition]) -> Vec<String> {
+    stages
+        .iter()
+        .filter(|stage| stage.summary.as_deref().is_none_or(|s| s.trim().is_empty()))
+        .map(|stage| {
+            format!(
+                "Stage '{}': no summary; the dashboard shows only the stage name. \
+                 Add summary: with 1-3 sentences saying what the stage delivers.",
+                stage.id
+            )
+        })
+        .collect()
+}
+
 /// Extract `doc/plans/briefs/...` path-like tokens from free-form text.
 ///
 /// A plain substring/token scan, not a markdown-link parser: split on
@@ -135,6 +153,7 @@ pub(super) fn check_overlapping_files_without_dependency(
 pub(super) fn check_file_ownership(stages: &[StageDefinition]) -> Vec<String> {
     let mut warnings = check_overlapping_files_without_dependency(stages);
     warnings.extend(worker_table::check_worker_table_ownership(stages));
+    warnings.extend(check_missing_summaries(stages));
     warnings
 }
 
@@ -301,5 +320,26 @@ mod tests {
             Some("doc/plans/briefs/nonexistent.md"),
         )];
         assert!(check_missing_brief_paths(&stages, None).is_empty());
+    }
+
+    #[test]
+    fn missing_and_blank_summaries_each_warn() {
+        let mut absent = crate::plan::schema::tests::make_stage("a", "A");
+        absent.summary = None;
+        let mut blank = crate::plan::schema::tests::make_stage("b", "B");
+        blank.summary = Some("  \n ".to_string());
+
+        let warnings = check_missing_summaries(&[absent, blank]);
+
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].starts_with("Stage 'a': no summary;"));
+        assert!(warnings[1].starts_with("Stage 'b': no summary;"));
+    }
+
+    #[test]
+    fn present_summary_is_silent() {
+        let mut s = crate::plan::schema::tests::make_stage("a", "A");
+        s.summary = Some("Ships the thing.".to_string());
+        assert!(check_missing_summaries(&[s]).is_empty());
     }
 }

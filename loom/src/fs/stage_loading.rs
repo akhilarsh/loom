@@ -48,6 +48,7 @@ fn definition_from_stage(stage: &Stage) -> StageDefinition {
         id: stage.id.clone(),
         name: stage.name.clone(),
         description: stage.description.clone(),
+        summary: stage.summary.clone(),
         dependencies: stage.dependencies.clone(),
         parallel_group: stage.parallel_group.clone(),
         acceptance: stage.acceptance.clone(),

@@ -11,6 +11,7 @@ impl Default for Stage {
             id: String::new(),
             name: String::new(),
             description: None,
+            summary: None,
             status: StageStatus::WaitingForDeps,
             dependencies: Vec::new(),
             parallel_group: None,

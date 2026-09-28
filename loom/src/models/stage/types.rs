@@ -503,6 +503,9 @@ pub struct Stage {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    /// Human-facing summary of what the stage delivers, shown by the dashboard.
+    #[serde(default)]
+    pub summary: Option<String>,
     pub status: StageStatus,
     pub dependencies: Vec<String>,
     pub parallel_group: Option<String>,
