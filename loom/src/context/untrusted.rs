@@ -43,6 +43,45 @@ pub(crate) const MAX_INLINE_CHARS: usize = 200;
 /// (MODIFIER LETTER GRAVE ACCENT) reads as one without being one.
 pub(crate) const BACKTICK_SUBSTITUTE: char = 'ˋ';
 
+/// The per-character rule shared by [`inline_safe`] and [`multiline_safe`]:
+/// a backtick becomes [`BACKTICK_SUBSTITUTE`], and every control, whitespace or
+/// Unicode Cf format character becomes a space. Everything else is kept.
+fn neutralize(ch: char) -> char {
+    match ch {
+        '`' => BACKTICK_SUBSTITUTE,
+        // `is_whitespace` covers U+2028/U+2029 as well as the ASCII set, so
+        // no line-shaped character survives; `is_control` catches the rest,
+        // including the ESC that would start an ANSI sequence.
+        _ if ch.is_control() || ch.is_whitespace() => ' ',
+        // Unicode category Cf (format characters) is neither control nor
+        // whitespace, so it survives the two checks above untouched — and
+        // it includes the bidi override/embedding controls (U+202A..U+202E,
+        // U+2066..U+2069), zero-width and word-joining marks
+        // (U+200B..U+200F, U+2060..U+2064), the Arabic letter mark
+        // (U+061C), soft hyphen (U+00AD), and the byte-order mark
+        // (U+FEFF). A value carrying e.g. U+202E (RIGHT-TO-LEFT OVERRIDE)
+        // visually reverses everything rendered after it, so what a
+        // reviewer reads on an agent-facing surface would not match what
+        // was actually written. No crate dependency is added for this —
+        // the ranges below are the specific code points this codebase's
+        // untrusted sources are known to carry unvalidated.
+        _ if matches!(
+            ch,
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
+        ) =>
+        {
+            ' '
+        }
+        _ => ch,
+    }
+}
+
 /// Flatten a value that is rendered as part of a surface's own structure.
 ///
 /// Ids, pointers and query text carry arbitrary bytes: `fs::knowledge::chunker`
@@ -62,44 +101,41 @@ pub(crate) const BACKTICK_SUBSTITUTE: char = 'ˋ';
 /// with none of those is returned unchanged — the common case must not pay for
 /// the hostile one.
 pub(crate) fn inline_safe(value: &str) -> String {
-    let flattened: String = value
-        .chars()
-        .map(|ch| match ch {
-            '`' => BACKTICK_SUBSTITUTE,
-            // `is_whitespace` covers U+2028/U+2029 as well as the ASCII set, so
-            // no line-shaped character survives; `is_control` catches the rest,
-            // including the ESC that would start an ANSI sequence.
-            _ if ch.is_control() || ch.is_whitespace() => ' ',
-            // Unicode category Cf (format characters) is neither control nor
-            // whitespace, so it survives the two checks above untouched — and
-            // it includes the bidi override/embedding controls (U+202A..U+202E,
-            // U+2066..U+2069), zero-width and word-joining marks
-            // (U+200B..U+200F, U+2060..U+2064), the Arabic letter mark
-            // (U+061C), soft hyphen (U+00AD), and the byte-order mark
-            // (U+FEFF). A value carrying e.g. U+202E (RIGHT-TO-LEFT OVERRIDE)
-            // visually reverses everything rendered after it, so what a
-            // reviewer reads on an agent-facing surface would not match what
-            // was actually written. No crate dependency is added for this —
-            // the ranges below are the specific code points this codebase's
-            // untrusted sources are known to carry unvalidated.
-            _ if matches!(
-                ch,
-                '\u{00AD}'
-                    | '\u{061C}'
-                    | '\u{200B}'..='\u{200F}'
-                    | '\u{202A}'..='\u{202E}'
-                    | '\u{2060}'..='\u{2064}'
-                    | '\u{2066}'..='\u{2069}'
-                    | '\u{FEFF}'
-            ) =>
-            {
-                ' '
-            }
-            _ => ch,
-        })
-        .collect();
+    let flattened: String = value.chars().map(neutralize).collect();
     let collapsed = flattened.split_whitespace().collect::<Vec<_>>().join(" ");
     crate::utils::truncate_for_display(&collapsed, MAX_INLINE_CHARS)
+}
+
+/// Longest multi-line value [`multiline_safe`] renders before eliding the rest.
+pub(crate) const MAX_MULTILINE_CHARS: usize = 16_000;
+
+/// Neutralize an untrusted value that is displayed as a block of text.
+///
+/// Applies the [`inline_safe`] character rules but keeps line structure:
+/// `\r\n` and lone `\r` become `\n`, `\n` survives, a tab becomes a space,
+/// trailing whitespace is trimmed per line, and the result is cut to
+/// [`MAX_MULTILINE_CHARS`] characters with a trailing `…` when the cap bites.
+pub(crate) fn multiline_safe(value: &str) -> String {
+    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+    let cleaned: String = normalized
+        .chars()
+        .map(|ch| if ch == '\n' { ch } else { neutralize(ch) })
+        .collect();
+    let joined = cleaned
+        .split('\n')
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Runs of blank lines would let a newline flood spend the whole budget on
+    // whitespace: keep at most one blank line between paragraphs.
+    let mut joined = joined;
+    while joined.contains("\n\n\n") {
+        joined = joined.replace("\n\n\n", "\n\n");
+    }
+    match joined.char_indices().nth(MAX_MULTILINE_CHARS) {
+        Some((cut, _)) => format!("{}…", &joined[..cut]),
+        None => joined,
+    }
 }
 
 #[cfg(test)]
@@ -126,5 +162,35 @@ mod tests {
         let flattened = inline_safe(hostile);
         assert!(!flattened.contains('\u{202E}'));
         assert_eq!(flattened, "safe-id desnever ylevitceffe");
+    }
+
+    #[test]
+    fn multiline_keeps_newlines_and_passes_ordinary_text_unchanged() {
+        let value = "first line\nsecond line\n\nfourth";
+        assert_eq!(multiline_safe(value), value);
+        assert_eq!(multiline_safe("a  \r\nb\rc\t"), "a\nb\nc");
+    }
+
+    #[test]
+    fn multiline_neutralizes_escape_and_bidi_controls() {
+        let out = multiline_safe("ok\u{1b}[31m\nx\u{202E}y`z");
+        assert!(!out.contains('\u{1b}'));
+        assert!(!out.contains('\u{202E}'));
+        assert!(!out.contains('`'));
+        assert!(out.contains('\n'));
+    }
+
+    #[test]
+    fn multiline_collapses_blank_line_runs_to_one_blank_line() {
+        assert_eq!(multiline_safe("a\n\n\n\n\nb\n \n\t\n\nc"), "a\n\nb\n\nc");
+        let flood = format!("a{}b", "\n".repeat(MAX_MULTILINE_CHARS * 2));
+        assert_eq!(multiline_safe(&flood), "a\n\nb");
+    }
+
+    #[test]
+    fn multiline_cap_bites_with_ellipsis() {
+        let out = multiline_safe(&"é".repeat(MAX_MULTILINE_CHARS + 10));
+        assert_eq!(out.chars().count(), MAX_MULTILINE_CHARS + 1);
+        assert!(out.ends_with('…'));
     }
 }

@@ -19,10 +19,15 @@ function terminalStage(overrides: Partial<StageSummary> = {}): StageSummary {
   return { ...source, session_alive: true, session_backend: "tmux", ...overrides };
 }
 
-function snapshotFor(stage: StageSummary, terminals = true): Snapshot {
+function snapshotFor(
+  stage: StageSummary,
+  terminals = true,
+  attention?: Snapshot["attention"],
+): Snapshot {
   return {
     ...structuredClone(fixture),
     terminals,
+    ...(attention ? { attention } : {}),
     status: {
       ...fixture.status,
       stages: [stage, ...fixture.status.stages.filter((candidate) => candidate.id !== "client")],
@@ -34,9 +39,14 @@ function pendingFactory(): EmulatorFactory {
   return () => new Promise(() => {});
 }
 
-function renderModal(stage: StageSummary, path: string, terminals = true) {
+function renderModal(
+  stage: StageSummary,
+  path: string,
+  terminals = true,
+  attention?: Snapshot["attention"],
+) {
   const store = createStore();
-  applySnapshot(store, snapshotFor(stage, terminals));
+  applySnapshot(store, snapshotFor(stage, terminals, attention));
   const router = createMemoryRouter(
     [{ path: "/", element: <StageModal terminalFactory={pendingFactory()} /> }],
     { initialEntries: [path] },
@@ -129,5 +139,49 @@ describe("stage modal", () => {
     );
     expect(screen.getByTitle(nextAction)).toBeTruthy();
     expect(screen.getByText(nextAction)).toBeTruthy();
+  });
+
+  it("shows the summary and never the agent-facing description", () => {
+    const description = "Agent-facing brief. ".repeat(20).trim();
+    const stage = terminalStage({ summary: "Adds the X.", description });
+    renderModal(stage, `/?stage=${stage.id}`);
+
+    expect(screen.getByText("Adds the X.")).toBeTruthy();
+    expect(screen.queryByText(description)).toBeNull();
+    cleanup();
+
+    renderModal({ ...stage, summary: null }, `/?stage=${stage.id}`);
+    expect(screen.queryByText("Adds the X.")).toBeNull();
+    expect(screen.queryByText(description)).toBeNull();
+  });
+
+  it("keeps only the counts in the hazard header and the reason in the review notes", () => {
+    const reason = "acceptance criterion 3 disputed twice; ".repeat(12).trim();
+    const stage = terminalStage({
+      status: "needs-adjudication",
+      review_reason: reason.slice(0, 200),
+      review_notes: reason,
+    });
+    const entry: Snapshot["attention"][number] = {
+      id: stage.id,
+      name: stage.name,
+      label: "NEEDS ADJUDICATION",
+      hint: "loom stage adjudicate client",
+      failure_type: null,
+      failure_label: null,
+      evidence: [],
+      review_reason: reason.slice(0, 200),
+      cleanup_warning: null,
+      has_human_review_choices: false,
+      dispute_count: 2,
+      judge_heartbeat_secs: null,
+    };
+    renderModal(stage, `/?stage=${stage.id}`, true, [entry]);
+
+    const counts = screen.getByText("2 disputed");
+    expect(counts.className).not.toContain("truncate");
+    expect(counts.textContent).not.toContain("acceptance criterion");
+    expect(screen.getByText(reason)).toBeTruthy();
+    expect(screen.getAllByText(reason)).toHaveLength(1);
   });
 });

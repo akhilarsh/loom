@@ -6,9 +6,9 @@ import { Link, useSearchParams } from "react-router";
 
 import type { StageSummary } from "@/api/schema";
 import { HazardHeader } from "@/aurora-ui/feedback/HazardPanel";
-import { AttentionBody, attentionDetail, attentionHazard } from "@/components/attention-panel";
+import { AttentionBody, attentionCounts, attentionHazard } from "@/components/attention-panel";
 import { CopyCommand } from "@/components/copy-command";
-import { StageDescription } from "@/components/stage-detail";
+import { StageSummaryText } from "@/components/stage-detail";
 import { StateLine, ThreadRows } from "@/components/stage-heading";
 import { stageHref } from "@/components/stage-href";
 import { StageSectionGrid } from "@/components/stage-sections";
@@ -184,7 +184,7 @@ function Body({
   const level = ordered.find((entry) => entry.stage.id === stage.id)?.level ?? null;
   const tone = stateMeta(stage.status).tone;
 
-  const detail = attention && attentionDetail(attention);
+  const counts = attention && attentionCounts(attention);
   return (
     <>
       {attention && (
@@ -192,13 +192,7 @@ function Body({
           tone={attentionHazard(attention)}
           title={attention.label}
           className="pr-12 sm:pr-12"
-          action={
-            detail && (
-              <span className="max-w-xs truncate text-xs text-muted-foreground" title={detail}>
-                {detail}
-              </span>
-            )
-          }
+          action={counts && <span className="text-xs text-muted-foreground">{counts}</span>}
         />
       )}
       <DialogHeader className={cn("stage-modal-head gap-2 p-5 pr-12", toneClass(tone))}>
@@ -215,7 +209,7 @@ function Body({
             onOpen={() => onTerminal(stage.id)}
           />
         </div>
-        <StageDescription description={stage.description} />
+        <StageSummaryText summary={stage.summary} />
         <DialogDescription asChild>
           <StateLine stage={stage} className="text-foreground" />
         </DialogDescription>

@@ -99,13 +99,6 @@
   .stage-node[data-live] .stage-card {
     animation: node-breathe 3.2s ease-in-out infinite;
   }
-  /* A stage writing its contract tests keeps the executing rail and breathe,
-   * but wears a dashed ring in the contract tone so the phase reads before
-   * the header tag does. `outline` so the card's fixed size never shifts. */
-  .stage-node[data-phase="contract"] .stage-card {
-    outline: 1.5px dashed color-mix(in oklch, var(--tone-contract) 60%, transparent);
-    outline-offset: -1.5px;
-  }
   .stage-node[data-emphasis="traced"] .stage-card,
   .stage-node:hover .stage-card {
     box-shadow:
@@ -128,8 +121,7 @@
     color: var(--muted-foreground);
   }
   .stage-tag.tone-warning,
-  .stage-tag.tone-blocked,
-  .stage-tag.tone-contract {
+  .stage-tag.tone-blocked {
     color: var(--tone);
   }
   .stage-open {

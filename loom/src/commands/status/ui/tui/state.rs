@@ -264,6 +264,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             description: None,
+            summary: None,
             status,
             stage_type: Default::default(),
             dependencies: deps.iter().map(|dep| (*dep).to_string()).collect(),
@@ -279,6 +280,7 @@ mod tests {
             staleness_secs: None,
             context_ceiling_tokens: None,
             review_reason: None,
+            review_notes: None,
             merged: false,
             merge_assumed: false,
             cleanup_warning: None,
@@ -352,7 +354,6 @@ mod tests {
 
         state.scroll_to_end();
         assert_eq!(state.scroll_y, 10);
-
         state.scroll_to_start();
         assert_eq!(state.scroll_y, 0);
     }

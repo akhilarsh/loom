@@ -21,6 +21,12 @@ const ACTIVITY: { word: string; tone: Tone; meaning: string }[] = [
   { word: "stale", tone: "warning", meaning: "no heartbeat for 5 min" },
   { word: "orphaned", tone: "blocked", meaning: "executing with no session record" },
   { word: "crashed", tone: "blocked", meaning: "the session process died" },
+  {
+    word: "writing contract tests",
+    tone: "contract",
+    meaning:
+      "a contract writer is writing the stage's failing contract tests before implementation starts; the card glows purple until it hands over",
+  },
 ];
 
 /// Where `legend.rs` draws its "needs you" rule: after the seventh state.

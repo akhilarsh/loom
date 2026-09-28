@@ -1,10 +1,12 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 
 import fixtureJson from "@/api/fixtures/snapshot.json";
 import { snapshotSchema, type StageSummary } from "@/api/schema";
 import { StageSectionGrid, stageSections } from "@/components/stage-sections";
 import { TooltipProvider } from "@/components/ui/tooltip";
+
+afterEach(cleanup);
 
 const fixture = snapshotSchema.parse(fixtureJson);
 
@@ -107,5 +109,49 @@ describe("stage failure details", () => {
     renderSections(fixtureStage({ status: "blocked", retry_count: 1, failure_info: failure }));
 
     expect(screen.getByText("failure · test")).toBeTruthy();
+  });
+});
+
+describe("review notes panel", () => {
+  const notes = Array.from({ length: 12 }, (_, i) => `criterion ${i} was disputed`).join("\n");
+
+  it("shows the complete multi-line notes in a full-width panel", () => {
+    expect(notes.length).toBeGreaterThan(300);
+    renderSections(fixtureStage({ review_notes: notes }));
+
+    const box = screen.getByLabelText("review notes text");
+    expect(box.textContent).toBe(notes);
+    expect(box.className).toContain("whitespace-pre-wrap");
+    expect(box.getAttribute("tabindex")).toBe("0");
+    const wrapper = box.closest("section")?.parentElement;
+    expect(wrapper?.className).toContain("md:col-span-2");
+    expect(wrapper?.className).not.toContain("xl:col-span-3");
+  });
+
+  it("spans every column on the wide page", () => {
+    render(
+      <TooltipProvider>
+        <StageSectionGrid stage={fixtureStage({ review_notes: notes })} level={null} wide />
+      </TooltipProvider>,
+    );
+
+    const wrapper = screen.getByLabelText("review notes text").closest("section")?.parentElement;
+    expect(wrapper?.className).toContain("xl:col-span-3");
+  });
+
+  it("renders no panel when there are no notes", () => {
+    renderSections(fixtureStage({ review_notes: null }));
+
+    expect(screen.queryByText("review notes")).toBeNull();
+  });
+
+  it("no longer lists a review reason row", () => {
+    const stage = fixtureStage({ review_reason: "needs a look", review_notes: notes });
+    renderSections(stage);
+
+    expect(screen.queryByText("review reason")).toBeNull();
+    expect(stageSections(stage, null).flatMap((s) => s.rows.map((r) => r.label))).not.toContain(
+      "review reason",
+    );
   });
 });

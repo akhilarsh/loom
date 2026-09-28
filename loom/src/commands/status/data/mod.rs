@@ -89,6 +89,10 @@ pub struct StageSummary {
     /// detail card below its heading. `None` when the plan stage has none.
     #[serde(default)]
     pub description: Option<String>,
+    /// Plan-authored one-to-three sentence summary for humans, shown by the
+    /// web dashboard instead of `description`. `None` when the plan has none.
+    #[serde(default)]
+    pub summary: Option<String>,
     pub status: StageStatus,
     /// Type of stage (standard, knowledge, integration-verify)
     #[serde(default)]
@@ -118,6 +122,10 @@ pub struct StageSummary {
     pub context_ceiling_tokens: Option<u32>,
     /// Reason the stage was flagged for human review
     pub review_reason: Option<String>,
+    /// Complete multi-line review reason for the web dashboard; `review_reason`
+    /// is the flattened, bounded line the terminal renderers print.
+    #[serde(default)]
+    pub review_notes: Option<String>,
     /// Whether stage changes have been merged to the merge point
     pub merged: bool,
     /// `merged` was asserted by `--assume-merged`, not set by a merge loom performed.

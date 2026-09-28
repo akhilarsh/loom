@@ -1,12 +1,12 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { StageDescription } from "@/components/stage-detail";
+import { StageSummaryText } from "@/components/stage-detail";
 
-describe("StageDescription", () => {
-  it("shows the plan-authored description, preserving line breaks", () => {
+describe("StageSummaryText", () => {
+  it("shows the plan-authored summary, preserving line breaks", () => {
     const { container } = render(
-      <StageDescription description={"Wires the button.\nHandles the click."} />,
+      <StageSummaryText summary={"Wires the button.\nHandles the click."} />,
     );
 
     const paragraph = container.querySelector("p");
@@ -14,8 +14,16 @@ describe("StageDescription", () => {
     expect(paragraph?.className).toContain("whitespace-pre-line");
   });
 
-  it("renders no block when the stage has no description", () => {
-    const { container } = render(<StageDescription description={null} />);
+  it("makes the scrollable summary a focusable labelled region", () => {
+    const { container } = render(<StageSummaryText summary="Wires the button." />);
+
+    const region = container.querySelector('[role="region"]');
+    expect(region?.getAttribute("aria-label")).toBe("stage summary");
+    expect(region?.getAttribute("tabindex")).toBe("0");
+  });
+
+  it("renders no block when the stage has no summary", () => {
+    const { container } = render(<StageSummaryText summary={null} />);
 
     expect(container.innerHTML).toBe("");
   });

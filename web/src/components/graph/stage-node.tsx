@@ -64,13 +64,12 @@ export function StageNode({ data }: NodeProps<StageNodeType>) {
 
   return (
     <div
-      className={cn("stage-node", toneClass(tone))}
+      className={cn("stage-node", toneClass(contractPhase ? "contract" : tone))}
       style={style}
       data-emphasis={emphasis}
       data-live={stage.status === "executing" || undefined}
       data-attention={ATTENTION.has(stage.status) || undefined}
       data-hazard={hazardTone(stage.status) ?? undefined}
-      data-phase={contractPhase ? "contract" : undefined}
     >
       <Handle
         type="target"
@@ -83,9 +82,6 @@ export function StageNode({ data }: NodeProps<StageNodeType>) {
           <StateBadge status={stage.status} className="text-xs" />
           {TYPE_TAG[stage.stage_type] && (
             <span className="stage-tag">{TYPE_TAG[stage.stage_type]}</span>
-          )}
-          {contractPhase && (
-            <span className={cn("stage-tag", toneClass("contract"))}>contracts</span>
           )}
           {stage.held && <span className={cn("stage-tag", toneClass("warning"))}>held</span>}
           {stage.incoherence !== null && (

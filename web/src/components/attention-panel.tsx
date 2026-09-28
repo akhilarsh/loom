@@ -105,6 +105,16 @@ export function AttentionBody({ entry }: { entry: Attention }) {
   );
 }
 
+/// The adjudication numbers alone: dispute count and judge heartbeat age.
+export function attentionCounts(entry: Attention): string | null {
+  const parts: string[] = [];
+  if (entry.dispute_count !== null) parts.push(`${entry.dispute_count} disputed`);
+  if (entry.judge_heartbeat_secs !== null) {
+    parts.push(`judge heard ${formatElapsed(entry.judge_heartbeat_secs)} ago`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
 /// `review_reason`, else the failure label, else the cleanup warning — the
 /// TUI's `attention_detail`, with the adjudication numbers appended.
 export function attentionDetail(entry: Attention): string | null {
@@ -112,10 +122,8 @@ export function attentionDetail(entry: Attention): string | null {
   if (entry.review_reason) parts.push(entry.review_reason);
   else if (entry.failure_type) parts.push(entry.failure_label ?? failureLabel(entry.failure_type));
   else if (entry.cleanup_warning) parts.push(entry.cleanup_warning);
-  if (entry.dispute_count !== null) parts.push(`${entry.dispute_count} disputed`);
-  if (entry.judge_heartbeat_secs !== null) {
-    parts.push(`judge heard ${formatElapsed(entry.judge_heartbeat_secs)} ago`);
-  }
+  const counts = attentionCounts(entry);
+  if (counts !== null) parts.push(counts);
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 

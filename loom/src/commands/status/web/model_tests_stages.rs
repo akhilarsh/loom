@@ -11,6 +11,7 @@ macro_rules! stage {
             id: $id.to_owned(),
             name: $name.to_owned(),
             description: None,
+            summary: None,
             status: $status,
             stage_type: $stage_type,
             dependencies: $dependencies
@@ -29,6 +30,7 @@ macro_rules! stage {
             staleness_secs: $staleness_secs,
             context_ceiling_tokens: $context_ceiling_tokens,
             review_reason: $review_reason.map(str::to_owned),
+            review_notes: $review_reason.map(str::to_owned),
             merged: $merged,
             merge_assumed: false,
             cleanup_warning: $cleanup_warning.map(str::to_owned),

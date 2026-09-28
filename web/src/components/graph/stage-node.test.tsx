@@ -37,21 +37,21 @@ function renderNode(stage: StageSummary) {
 afterEach(cleanup);
 
 describe("StageNode contract phase", () => {
-  it("tags a contract-writer stage and marks its card with the contract phase", () => {
-    const { container, getByText } = renderNode(
+  it("glows in the contract tone with no tag while a contract writer runs", () => {
+    const { container, queryByText } = renderNode(
       stage({ status: "executing", session_type: "contract" }),
     );
 
-    expect(getByText("contracts")).toBeTruthy();
-    expect(container.querySelector('.stage-node[data-phase="contract"]')).toBeTruthy();
+    const node = container.querySelector(".stage-node");
+    expect(node?.classList.contains("tone-contract")).toBe(true);
+    expect(queryByText("contracts")).toBeNull();
   });
 
-  it("shows neither the tag nor the phase marker for a plain executing stage", () => {
-    const { container, queryByText } = renderNode(
-      stage({ status: "executing", session_type: "stage" }),
-    );
+  it("keeps the executing tone for a plain executing stage", () => {
+    const { container } = renderNode(stage({ status: "executing", session_type: "stage" }));
 
-    expect(queryByText("contracts")).toBeNull();
-    expect(container.querySelector(".stage-node")?.getAttribute("data-phase")).toBeNull();
+    const node = container.querySelector(".stage-node");
+    expect(node?.classList.contains("tone-executing")).toBe(true);
+    expect(node?.classList.contains("tone-contract")).toBe(false);
   });
 });

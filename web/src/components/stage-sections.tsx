@@ -58,7 +58,6 @@ const HINT = {
   baseMergedFrom:
     "The dependencies merged together to build that base, when there was more than one.",
   cleanup: "The worktree or branch could not be removed after the merge and is still on disk.",
-  reviewReason: "Why the stage asked a person for a decision.",
   incoherence:
     "Why an executing stage does not describe a working agent, for example because its session is an adjudication session.",
   held: "Held by you: the daemon leaves the stage alone until you release it.",
@@ -223,7 +222,6 @@ function mergeRows(stage: StageSummary) {
 
 function noteRows(stage: StageSummary) {
   return present([
-    row("review reason", HINT.reviewReason, stage.review_reason),
     row("incoherence", HINT.incoherence, stage.incoherence, true),
     row("held", HINT.held, stage.held ? "yes" : null, true),
   ]);
@@ -258,6 +256,11 @@ export function StageSectionGrid({
 
   return (
     <div className={cn("grid gap-4 md:grid-cols-2", wide && "xl:grid-cols-3")}>
+      {stage.review_notes !== null && (
+        <div className={cn("md:col-span-2", wide && "xl:col-span-3")}>
+          <ReviewNotes notes={stage.review_notes} />
+        </div>
+      )}
       {stageSections(stage, level).map((section) => (
         <Section key={section.title} {...section} />
       ))}
@@ -267,6 +270,24 @@ export function StageSectionGrid({
         </div>
       )}
     </div>
+  );
+}
+
+/// The complete review reason, full width. Untrusted text: a text node only.
+/// The scroll box takes focus so a keyboard can scroll it.
+function ReviewNotes({ notes }: { notes: string }) {
+  return (
+    <section className="flex flex-col gap-2.5 rounded-lg border border-hairline bg-card p-4">
+      <h2 className="eyebrow">review notes</h2>
+      <div
+        tabIndex={0}
+        role="region"
+        aria-label="review notes text"
+        className="max-h-64 overflow-y-auto text-sm break-words whitespace-pre-wrap"
+      >
+        {notes}
+      </div>
+    </section>
   );
 }
 

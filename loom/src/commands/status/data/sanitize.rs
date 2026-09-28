@@ -17,7 +17,7 @@
 //! the ledger TUI, the static renderer and the wire in one place.
 
 use super::StageSummary;
-use crate::context::untrusted::inline_safe;
+use crate::context::untrusted::{inline_safe, multiline_safe};
 
 /// Longest evidence list a status payload carries for one stage.
 ///
@@ -50,6 +50,8 @@ pub(super) fn sanitize_stage_summary(summary: &mut StageSummary) {
     summary.last_tool.iter_mut().for_each(flatten);
     summary.last_activity.iter_mut().for_each(flatten);
     summary.review_reason.iter_mut().for_each(flatten);
+    flatten_multiline(&mut summary.summary);
+    flatten_multiline(&mut summary.review_notes);
     summary.cleanup_warning.iter_mut().for_each(flatten);
     summary.incoherence.iter_mut().for_each(flatten);
     if let Some(blocker) = summary.completion_blocker.as_mut() {
@@ -65,6 +67,15 @@ pub(super) fn sanitize_stage_summary(summary: &mut StageSummary) {
 
 fn flatten(value: &mut String) {
     *value = inline_safe(value);
+}
+
+/// Neutralize a value the dashboard renders as a block, keeping its lines.
+/// A value that is blank afterwards becomes `None` so the web never gets `""`.
+fn flatten_multiline(value: &mut Option<String>) {
+    *value = value
+        .as_deref()
+        .map(multiline_safe)
+        .filter(|text| !text.trim().is_empty());
 }
 
 /// Bound an evidence list to [`MAX_EVIDENCE_LINES`], saying so when it bites.
@@ -108,6 +119,7 @@ mod tests {
             id: "stage-1".to_string(),
             name: "Stage One".to_string(),
             description: None,
+            summary: None,
             status: StageStatus::Executing,
             stage_type: StageType::Standard,
             dependencies: vec![],
@@ -123,6 +135,7 @@ mod tests {
             staleness_secs: None,
             context_ceiling_tokens: None,
             review_reason: None,
+            review_notes: None,
             merged: false,
             merge_assumed: false,
             cleanup_warning: None,
@@ -149,6 +162,18 @@ mod tests {
             detected_at: Utc::now(),
             evidence,
         }
+    }
+
+    #[test]
+    fn blank_summary_and_review_notes_become_none() {
+        let mut stage = summary();
+        stage.summary = Some("  \n ".to_string());
+        stage.review_notes = Some("  \n ".to_string());
+
+        sanitize_stage_summary(&mut stage);
+
+        assert_eq!(stage.summary, None);
+        assert_eq!(stage.review_notes, None);
     }
 
     #[test]
@@ -187,6 +212,23 @@ mod tests {
 
         let evidence = &stage.failure_info.unwrap().evidence;
         assert_eq!(evidence, &["build failed dessap stset lla"]);
+    }
+
+    #[test]
+    fn review_notes_keep_their_lines_while_review_reason_stays_bounded() {
+        let mut stage = summary();
+        let reason = format!("first line\nsecond line\n{}", "x".repeat(300));
+        stage.review_reason = Some(reason.clone());
+        stage.review_notes = Some(reason.clone());
+        stage.summary = Some("Builds the\nthing".to_string());
+
+        sanitize_stage_summary(&mut stage);
+
+        assert_eq!(stage.review_notes.as_deref(), Some(reason.as_str()));
+        assert_eq!(stage.summary.as_deref(), Some("Builds the\nthing"));
+        let flat = stage.review_reason.unwrap();
+        assert!(!flat.contains('\n'));
+        assert_eq!(flat.chars().count(), MAX_INLINE_CHARS);
     }
 
     #[test]
