@@ -233,7 +233,14 @@ fn run_lock_is_exclusive_until_dropped() {
     let error = acquire_run_lock(temp.path()).unwrap_err().to_string();
     assert!(error.contains("already running"), "{error}");
     drop(first);
-    acquire_run_lock(temp.path()).unwrap();
+    // flock belongs to the open file description: a child another test thread
+    // forks while `first` is open keeps a duplicate until its exec closes it,
+    // so the release is observed after that window, not at drop.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while let Err(error) = acquire_run_lock(temp.path()) {
+        assert!(std::time::Instant::now() < deadline, "{error}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]
