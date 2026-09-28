@@ -1,0 +1,167 @@
+use super::*;
+use crate::quota::claude::RateLimited;
+use crate::quota::model::{QuotaWindow, WindowKind};
+use std::cell::Cell;
+use tempfile::tempdir;
+
+fn quota(observed_at: i64) -> ProviderQuota {
+    ProviderQuota {
+        observed_at,
+        windows: vec![QuotaWindow {
+            kind: WindowKind::FiveHour,
+            used_percent: 10.0,
+            resets_at: Some(9_000),
+        }],
+        plan: None,
+        error: None,
+    }
+}
+
+fn limited(state: AccountState, times: u32) -> AccountState {
+    (0..times).fold(state, |s, _| apply_rate_limited(s, None, 1_000))
+}
+
+#[test]
+fn success_resets_streak_and_error() {
+    let state = limited(AccountState::default(), 2);
+    let state = apply_success(state, quota(1_000), 1_000);
+    assert_eq!(state.consecutive_rate_limits, 0);
+    assert_eq!(state.last_error, None);
+    assert_eq!(state.interval_secs, POLL_INTERVAL.as_secs());
+    assert_eq!(state.next_poll_at, 1_000 + POLL_INTERVAL.as_secs() as i64);
+    assert_eq!(display_error(&state), None);
+}
+
+#[test]
+fn rate_limit_is_shown_only_on_the_third_consecutive_429() {
+    let state = apply_success(AccountState::default(), quota(1_000), 1_000);
+    assert_eq!(display_error(&limited(state.clone(), 1)), None);
+    assert_eq!(display_error(&limited(state.clone(), 2)), None);
+    let third = limited(state, 3);
+    assert_eq!(display_error(&third), Some("rate limited".to_string()));
+    assert!(third.quota.is_some());
+    assert_eq!(
+        display_error(&apply_success(third, quota(2_000), 2_000)),
+        None
+    );
+}
+
+#[test]
+fn a_non_429_error_shows_immediately_and_resets_the_streak() {
+    let state = limited(AccountState::default(), 2);
+    let state = apply_error(state, "boom", 1_000);
+    assert_eq!(state.consecutive_rate_limits, 0);
+    assert_eq!(display_error(&state), Some("boom".to_string()));
+    assert_eq!(state.interval_secs, 600);
+}
+
+#[test]
+fn rate_limit_backoff_honours_retry_after_with_a_300s_floor() {
+    let long = apply_rate_limited(AccountState::default(), Some(600), 1_000);
+    assert_eq!(long.next_poll_at, 1_600);
+    let short = apply_rate_limited(AccountState::default(), Some(30), 1_000);
+    assert_eq!(short.next_poll_at, 1_300);
+}
+
+#[test]
+fn token_key_is_16_hex_chars_and_differs_per_token() {
+    let key = token_key("secret-token");
+    assert_eq!(key.len(), 16);
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(!key.contains("secret"));
+    assert_ne!(key, token_key("other-token"));
+}
+
+#[test]
+fn a_second_daemon_within_the_interval_adopts_the_first_result() {
+    let dir = tempdir().unwrap();
+    let calls = Cell::new(0);
+    let fetch = || {
+        calls.set(calls.get() + 1);
+        Ok(quota(1_000))
+    };
+    let first = poll_shared(dir.path(), "aa", 1_000, fetch).unwrap();
+    let second = poll_shared(dir.path(), "aa", 1_010, || {
+        calls.set(calls.get() + 1);
+        Ok(quota(1_010))
+    })
+    .unwrap();
+    assert_eq!(calls.get(), 1);
+    assert_eq!(second.quota, first.quota);
+}
+
+#[test]
+fn different_accounts_each_fetch() {
+    let dir = tempdir().unwrap();
+    let calls = Cell::new(0);
+    for key in ["aa", "bb"] {
+        poll_shared(dir.path(), key, 1_000, || {
+            calls.set(calls.get() + 1);
+            Ok(quota(1_000))
+        })
+        .unwrap();
+    }
+    assert_eq!(calls.get(), 2);
+}
+
+#[test]
+fn fetches_again_once_next_poll_at_has_passed() {
+    let dir = tempdir().unwrap();
+    let calls = Cell::new(0);
+    for now in [1_000, 1_000 + POLL_INTERVAL.as_secs() as i64] {
+        poll_shared(dir.path(), "aa", now, || {
+            calls.set(calls.get() + 1);
+            Ok(quota(now))
+        })
+        .unwrap();
+    }
+    assert_eq!(calls.get(), 2);
+}
+
+#[test]
+fn a_429_from_the_fetch_is_counted_and_keeps_the_last_reading() {
+    let dir = tempdir().unwrap();
+    poll_shared(dir.path(), "aa", 1_000, || Ok(quota(1_000))).unwrap();
+    let state = poll_shared(dir.path(), "aa", 5_000, || {
+        Err(RateLimited {
+            retry_after_secs: None,
+        }
+        .into())
+    })
+    .unwrap();
+    assert_eq!(state.consecutive_rate_limits, 1);
+    assert_eq!(state.quota.unwrap().observed_at, 1_000);
+    assert_eq!(state.next_poll_at, 5_300);
+}
+
+#[test]
+fn a_corrupt_state_file_is_treated_as_default_and_overwritten() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("claude-aa.json"), "{not json").unwrap();
+    let state = poll_shared(dir.path(), "aa", 1_000, || Ok(quota(1_000))).unwrap();
+    assert_eq!(state.quota.unwrap().observed_at, 1_000);
+    let body = std::fs::read_to_string(dir.path().join("claude-aa.json")).unwrap();
+    assert!(serde_json::from_str::<AccountState>(&body).is_ok());
+}
+
+#[test]
+fn stale_files_of_other_keys_are_pruned_but_own_files_stay() {
+    let dir = tempdir().unwrap();
+    let old = dir.path().join("claude-bb.json");
+    std::fs::write(&old, "{}").unwrap();
+    let day_and_more = SystemTime::now() - Duration::from_secs(25 * 60 * 60);
+    File::options()
+        .write(true)
+        .open(&old)
+        .unwrap()
+        .set_modified(day_and_more)
+        .unwrap();
+    let fresh = dir.path().join("claude-cc.json");
+    std::fs::write(&fresh, "{}").unwrap();
+
+    poll_shared(dir.path(), "aa", 1_000, || Ok(quota(1_000))).unwrap();
+
+    assert!(!old.exists());
+    assert!(fresh.exists());
+    assert!(dir.path().join("claude-aa.json").exists());
+}

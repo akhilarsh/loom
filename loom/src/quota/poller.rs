@@ -4,11 +4,20 @@
 //! `POLL_INTERVAL` and backs off (doubling, capped at `MAX_BACKOFF`) on
 //! consecutive failures, resetting to `POLL_INTERVAL` on success. A 429
 //! from Claude uses the server's own `Retry-After` instead of the doubling
-//! backoff. Nothing here is persisted across a daemon restart.
+//! backoff. Codex scheduling is not persisted across a daemon restart.
+//!
+//! Claude is polled once per account across every daemon on the machine (see
+//! `quota::shared`): the daemon holding the account lock past `next_poll_at`
+//! fetches, the others adopt its result into their project cache and wake on
+//! the account's schedule. A 429 is shown as `rate limited` only after
+//! `RATE_LIMIT_CONFIRMATIONS` in a row; until then the last good reading stays
+//! in the cache with no error.
 
-use super::claude::{self, RateLimited};
+use super::claude;
 use super::codex;
 use super::credentials;
+use super::model::ProviderQuota;
+use super::shared::{self, AccountState};
 use super::{cache, history};
 use crate::codex::find_codex_path;
 use std::path::{Path, PathBuf};
@@ -17,7 +26,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const POLL_INTERVAL: Duration = Duration::from_secs(180);
+pub(super) const POLL_INTERVAL: Duration = Duration::from_secs(180);
 const MAX_BACKOFF: Duration = Duration::from_secs(900);
 const RATE_LIMIT_MIN_BACKOFF: Duration = Duration::from_secs(300);
 const CODEX_DEADLINE: Duration = Duration::from_secs(15);
@@ -81,7 +90,7 @@ fn epoch_now() -> i64 {
 /// The next poll interval given the current one and whether this poll
 /// failed: unchanged on success (resets to `POLL_INTERVAL`), doubled and
 /// capped at `MAX_BACKOFF` on failure.
-fn next_interval(current: Duration, failed: bool) -> Duration {
+pub(super) fn next_interval(current: Duration, failed: bool) -> Duration {
     if !failed {
         return POLL_INTERVAL;
     }
@@ -90,7 +99,7 @@ fn next_interval(current: Duration, failed: bool) -> Duration {
 
 /// The backoff to apply after a 429: the server's own `Retry-After` when it
 /// gave one, floored at [`RATE_LIMIT_MIN_BACKOFF`] either way.
-fn rate_limit_backoff(retry_after_secs: Option<u64>) -> Duration {
+pub(super) fn rate_limit_backoff(retry_after_secs: Option<u64>) -> Duration {
     retry_after_secs
         .map(Duration::from_secs)
         .unwrap_or(RATE_LIMIT_MIN_BACKOFF)
@@ -139,36 +148,79 @@ fn poll_claude(work_root: &Path, state: &mut ProviderState) {
         }
     };
 
-    match claude::fetch(&client, &token, epoch_now()) {
-        Ok(quota) => finish_poll("claude", work_root, state, quota),
+    let now = epoch_now();
+    let dir = shared::shared_dir(&home);
+    let key = shared::token_key(&token);
+    match shared::poll_shared(&dir, &key, now, || {
+        claude::fetch(&client, &token, epoch_now())
+    }) {
+        Ok(account) => project_account(work_root, state, &account, now),
         Err(e) => {
-            if let Some(rate_limited) = e.downcast_ref::<RateLimited>() {
-                let backoff = rate_limit_backoff(rate_limited.retry_after_secs);
-                let _ = cache::record_failure(work_root, "claude", "rate limited");
-                record_error("claude", state, "rate limited".to_string(), backoff);
-            } else {
-                let message = e.to_string();
-                let _ = cache::record_failure(work_root, "claude", &message);
-                record_error(
-                    "claude",
-                    state,
-                    message,
-                    next_interval(state.interval, true),
-                );
+            let message = e.to_string();
+            let _ = cache::record_failure(work_root, "claude", &message);
+            record_error(
+                "claude",
+                state,
+                message,
+                next_interval(state.interval, true),
+            );
+        }
+    }
+}
+
+/// Write the account's shared reading into this project's cache and align the
+/// local schedule with the account's `next_poll_at`. History gets a row only
+/// for a reading newer than the project cache held (the history store also
+/// drops a repeated `observed_at`, so a re-adopted reading never duplicates).
+fn project_account(work_root: &Path, state: &mut ProviderState, account: &AccountState, now: i64) {
+    let error = shared::display_error(account);
+    let mut written = true;
+    match &account.quota {
+        Some(quota) => written = project_quota(work_root, quota, error.clone()),
+        None => {
+            if let Some(message) = &error {
+                let _ = cache::record_failure(work_root, "claude", message);
             }
         }
     }
+
+    match error {
+        _ if !written => record_error(
+            "claude",
+            state,
+            "failed to write quota cache".to_string(),
+            next_interval(state.interval, true),
+        ),
+        Some(message) => record_error("claude", state, message, POLL_INTERVAL),
+        None => record_success("claude", state),
+    }
+    state.interval = Duration::from_secs(account.interval_secs);
+    let wait = u64::try_from(account.next_poll_at.saturating_sub(now)).unwrap_or(0);
+    state.next_due = Instant::now() + Duration::from_secs(wait);
+}
+
+/// Returns whether the provider cache write succeeded.
+fn project_quota(work_root: &Path, quota: &ProviderQuota, error: Option<String>) -> bool {
+    let previous = cache::read_provider(work_root, "claude").map(|q| q.observed_at);
+    let projected = ProviderQuota {
+        error,
+        ..quota.clone()
+    };
+    if cache::write_provider(work_root, "claude", &projected).is_err() {
+        return false;
+    }
+    if previous.is_none_or(|observed_at| quota.observed_at > observed_at) {
+        if let Err(e) = history::record_successful_observation(work_root, "claude", quota) {
+            eprintln!("quota: claude: {e}");
+        }
+    }
+    true
 }
 
 /// Cache a successful poll and reset the provider's backoff, or - on a cache
 /// write failure - treat it as a poll failure so a bad disk state still
 /// backs off rather than spinning at `POLL_INTERVAL`.
-fn finish_poll(
-    provider: &str,
-    work_root: &Path,
-    state: &mut ProviderState,
-    quota: crate::quota::model::ProviderQuota,
-) {
+fn finish_poll(provider: &str, work_root: &Path, state: &mut ProviderState, quota: ProviderQuota) {
     if cache::write_provider(work_root, provider, &quota).is_ok() {
         if let Err(error) = history::record_successful_observation(work_root, provider, &quota) {
             eprintln!("quota: {provider}: {error}");

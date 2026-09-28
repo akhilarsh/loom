@@ -79,3 +79,44 @@ fn finish_poll_does_not_append_history_when_the_snapshot_write_fails() {
         crate::quota::HistorySourceState::Missing
     );
 }
+
+fn account_after(limits: u32) -> AccountState {
+    let state = shared::apply_success(AccountState::default(), successful_quota(1_000), 1_000);
+    (0..limits).fold(state, |s, _| shared::apply_rate_limited(s, None, 2_000))
+}
+
+#[test]
+fn an_unconfirmed_429_keeps_the_last_reading_without_an_error() {
+    let dir = tempdir().unwrap();
+    let mut state = ProviderState::new();
+    project_account(dir.path(), &mut state, &account_after(0), 1_000);
+    project_account(dir.path(), &mut state, &account_after(1), 2_000);
+
+    let cached = cache::read_provider(dir.path(), "claude").unwrap();
+    assert_eq!(cached.error, None);
+    assert_eq!(cached.windows, successful_quota(1_000).windows);
+    assert_eq!(cached.observed_at, 1_000);
+}
+
+#[test]
+fn the_third_consecutive_429_writes_rate_limited_and_keeps_the_windows() {
+    let dir = tempdir().unwrap();
+    let mut state = ProviderState::new();
+    project_account(dir.path(), &mut state, &account_after(0), 1_000);
+    project_account(dir.path(), &mut state, &account_after(3), 2_000);
+
+    let cached = cache::read_provider(dir.path(), "claude").unwrap();
+    assert_eq!(cached.error.as_deref(), Some("rate limited"));
+    assert_eq!(cached.windows.len(), 1);
+}
+
+#[test]
+fn projection_schedules_the_next_poll_from_the_account_state() {
+    let dir = tempdir().unwrap();
+    let mut state = ProviderState::new();
+    let before = Instant::now();
+    project_account(dir.path(), &mut state, &account_after(1), 2_000);
+
+    assert_eq!(state.interval, RATE_LIMIT_MIN_BACKOFF);
+    assert!(state.next_due >= before + RATE_LIMIT_MIN_BACKOFF);
+}

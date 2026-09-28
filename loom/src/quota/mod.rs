@@ -12,6 +12,7 @@ pub mod credentials;
 mod history;
 pub mod model;
 pub mod poller;
+mod shared;
 
 pub use history::{
     read_history, HistoryContinuity, HistorySourceState, QuotaHistoryDiagnostics,
