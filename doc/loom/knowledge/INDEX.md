@@ -12,7 +12,7 @@
 | [entry-points.md](entry-points.md) | Key files agents should read first | 245 |
 | [patterns.md](patterns.md) | Architectural patterns discovered in the codebase | 186 |
 | [conventions.md](conventions.md) | Coding conventions discovered in the codebase | 243 |
-| [mistakes.md](mistakes.md) | Mistakes made and lessons learned - what to avoid | 246 |
+| [mistakes.md](mistakes.md) | Mistakes made and lessons learned - what to avoid | 253 |
 | [stack.md](stack.md) | Dependencies, frameworks, and tooling used in the project | 119 |
 | [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 250 |
 
