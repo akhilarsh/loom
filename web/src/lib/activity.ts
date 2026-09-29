@@ -4,7 +4,11 @@ import type { ActivityEntry } from "@/state/atoms";
 
 export const MAX_ACTIVITY_ENTRIES = 20;
 
-function transitionMessage(id: string, status: StageStatus): string | null {
+function transitionMessage(
+  id: string,
+  status: StageStatus,
+  previous: StageStatus | undefined,
+): string | null {
   switch (status) {
     case "executing":
       return `${id} started`;
@@ -13,9 +17,15 @@ function transitionMessage(id: string, status: StageStatus): string | null {
     case "blocked":
       return `${id} blocked`;
     case "queued":
-      return `${id} ready`;
+      // An Accept or NeedsMoreEvidence verdict requeues the stage for a fresh
+      // session; a bare "ready" would read as an unexplained restart.
+      return previous === "needs-adjudication" ? `${id} verdict applied, requeued` : `${id} ready`;
     case "needs-handoff":
       return `${id} needs handoff`;
+    case "needs-adjudication":
+      return `${id} entered adjudication`;
+    case "needs-human-review":
+      return `${id} needs human review`;
     default:
       return null;
   }
@@ -55,10 +65,11 @@ export function appendTransitions(
   // orderStages already dedupes by id (keeping the first), which is why the
   // dedupe set that used to live here was removed.
   for (const { stage } of orderStages(next.status.stages)) {
-    if (previousStatuses.get(stage.id) === stage.status) {
+    const previousStatus = previousStatuses.get(stage.id);
+    if (previousStatus === stage.status) {
       continue;
     }
-    const message = transitionMessage(stage.id, stage.status);
+    const message = transitionMessage(stage.id, stage.status, previousStatus);
     if (message) {
       entries.push({ at: now, stageId: stage.id, status: stage.status, message });
     }

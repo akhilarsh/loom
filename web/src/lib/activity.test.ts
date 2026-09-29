@@ -39,6 +39,35 @@ describe("activity transitions", () => {
     });
   });
 
+  it("logs an adjudication cycle distinctly from a plain requeue", () => {
+    const executing = snapshotWithStatus("executing");
+    const adjudicating = snapshotWithStatus("needs-adjudication");
+    const queued = snapshotWithStatus("queued");
+    const entered = appendTransitions([], executing, adjudicating, 100);
+    const requeued = appendTransitions(entered, adjudicating, queued, 200);
+    const restarted = appendTransitions(requeued, queued, executing, 300);
+
+    expect(restarted.map((entry) => entry.message)).toEqual([
+      "changing entered adjudication",
+      "changing verdict applied, requeued",
+      "changing started",
+    ]);
+  });
+
+  it("logs a rejected verdict's move to human review", () => {
+    const adjudicating = snapshotWithStatus("needs-adjudication");
+    const review = snapshotWithStatus("needs-human-review");
+
+    expect(appendTransitions([], adjudicating, review, 100)).toEqual([
+      {
+        at: 100,
+        stageId: "changing",
+        status: "needs-human-review",
+        message: "changing needs human review",
+      },
+    ]);
+  });
+
   it("does not append entries for unchanged statuses", () => {
     const log = appendTransitions([], null, fixture, 100);
 
