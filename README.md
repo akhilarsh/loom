@@ -6,10 +6,13 @@
 </p>
 
 <p align="center">
-  <strong>You write the plan. Loom runs it, verifies it, and keeps what it learned.</strong>
+  <strong>Agentic engineering for the rest of us.</strong><br>
+  You design the system. Loom builds it, checks every piece, and learns from its mistakes.
 </p>
 
-Loom turns a written plan into finished, verified, merged code. It runs Claude Code sessions in parallel across isolated git worktrees, checks their work itself, and hands what they learned to the next session. You watch from a terminal dashboard or a browser, and step in only when a stage asks for you.
+Loop engineering is sold as the whole of software development: state a high-level goal, and an agent loops until finished software comes out. It does get there, by brute force, paying in tokens for every wrong turn and rediscovering what an engineer on the team already knew.
+
+Loom is for engineers who would rather spend their own judgment than someone else's compute. You discuss, theorise, test, explore, and plan the system, and put your experience into that plan. Loom implements it with Claude Code (and optionally Codex) sessions running in parallel across isolated git worktrees. It checks every stage's work itself, then checks all of it together in a final integration-verify stage. Along the way it records its own mistakes and distils them into a knowledge base the next plan starts from. You can watch from a terminal dashboard or a browser, steer any session, or take the keyboard at any time.
 
 <p align="center">
   <img src="doc/images/loom-webui.gif" alt="A loom run in the web dashboard: the plan as a dependency graph, a stage's detail dialog, its live terminal with control taken over, the ledger, the settings, and a stage completing and freeing the stages that depend on it" width="880">
@@ -21,10 +24,10 @@ Loom turns a written plan into finished, verified, merged code. It runs Claude C
 
 ## Why Loom
 
-- **Your expertise where it counts, tokens everywhere else** — you put your judgment into the plan. Loom executes it unattended and comes back to you only when a stage needs a person. ([Human Expertise Where It Matters](#human-expertise-where-it-matters))
+- **Your expertise where it counts, tokens everywhere else** — you do the thinking and put it into the plan. Loom executes it unattended and comes back to you only when a stage needs a person; you can monitor, steer, or take over whenever you like. ([Human Expertise Where It Matters](#human-expertise-where-it-matters))
 - **It learns your project** — every session records what it got wrong and what it decided. Each plan ends by distilling that into a knowledge base in your repo, so every plan starts from what the earlier ones learned. ([It Learns From Every Plan](#it-learns-from-every-plan))
 - **Parallel by default** — stages form a dependency graph, everything independent runs at once in its own git worktree, and each stage merges back as it finishes. ([Parallel execution and progressive merge](#parallel-execution-and-progressive-merge))
-- **Done means verified** — loom runs the acceptance criteria itself and inspects the tree for stubs, unwired code, and code nothing calls. The agent's own account of its work does not count. ([Verification Model](#verification-model))
+- **Done means verified** — loom runs each stage's acceptance criteria itself and inspects the tree for stubs, unwired code, and code nothing calls. The agent's own account of its work does not count. Once every stage has merged, an `integration-verify` stage reviews and tests the combined work as one system. ([Verification Model](#verification-model))
 - **Rules enforced by hooks** — commit discipline, worktree boundaries, and subagent limits fire from shell hooks, so they hold whatever the model intends. ([Deterministic guardrails](#deterministic-guardrails))
 - **Contained by default** — sessions run in a filesystem and network sandbox and cannot write loom's own state, hooks, or config. ([Sandbox Configuration](#sandbox-configuration))
 - **Expensive models only where judgment is needed** — the orchestrator plans and verifies; implementation goes to the cheapest subagent that can do the piece, Claude or Codex. ([Model Allocation](#model-allocation))
@@ -81,13 +84,15 @@ Next: the two ideas loom is built on, [human expertise where it matters](#human-
 
 ## Human Expertise Where It Matters
 
-The usual way to get autonomous agents to finish real work is to let them loop: try, fail, read the error, try again, until the checks pass. It works, and it is paid for in tokens. A frontier lab can afford that. Most organisations cannot, and much of what those tokens buy is the rediscovery of something a person on the team already knew.
+Loop engineering presents itself as the end of the story: give an agent a high-level goal, let it try, fail, read the error, and try again until the checks pass, and finished software comes out. It does produce software, at a high price and with little elegance. Every wrong turn is paid for in tokens, and much of what those tokens buy is the rediscovery of something an engineer on the team already knew. A frontier lab can afford that. Most organisations cannot.
 
-Loom trades tokens for human expertise at the points where expertise is worth the most:
+Human engineers have a lot to offer: experience, judgment, and a working theory of the system that no loop recovers cheaply. Loom puts that first and spends tokens on the rest:
 
-- **Up front, in the plan.** You decide what gets built, how it splits into stages, and what proves each stage is done. `loom plan verify` and `loom pressure` find the weak spots before anything is spent on execution. This is where an hour of your time saves the most tokens.
+- **Up front, in the plan.** You discuss the design, form theories and test them, explore the code, and decide what gets built, how it splits into stages, and what proves each stage is done. `loom plan verify` and `loom pressure` find the weak spots before anything is spent on execution. This is where an hour of your time saves the most tokens.
 - **During the run, only when needed.** A stage that needs a person says so: `WaitingForInput` when an agent asks a question, `NeedsHumanReview` when it is escalated, a criteria dispute when an agent believes a check is wrong. Everything else runs unattended.
 - **Whenever you choose to look.** The terminal dashboard (`loom status --live`) and the web dashboard (`loom status --web`) show every stage, what it is doing, which models it is running, and how much context it has used. You can open any session, from tmux with `loom attach` or from a terminal in the browser, and watch it or take the keyboard and steer it.
+
+What you hand over comes back checked. Loom verifies every stage's work before it merges, then the plan's `integration-verify` stage reviews and tests everything together, so stages that each pass on their own still have to work as one system.
 
 Steering is also teaching. Agents record a human correction as a memory entry before they do anything else, so what you tell one session is distilled into the knowledge base and reaches every later one.
 
@@ -116,7 +121,8 @@ flowchart LR
     B --> C[Stages run in parallel worktrees]
     C --> D[Loom verifies]
     D --> E[Merge]
-    E --> F[Distill knowledge]
+    E --> I[Integration verify]
+    I --> F[Distill knowledge]
     F -. read first by the next plan .-> A
 ```
 
@@ -127,7 +133,8 @@ A plan is a markdown file holding a list of stages, each with its dependencies a
 3. **Work.** The session's main agent decomposes the stage, delegates implementation to cheaper subagents, and records what it learns with `loom memory`.
 4. **Verify.** `loom stage complete` runs the stage's acceptance criteria and the goal-backward checks. A failure leaves the stage `Executing`, and the agent has to fix the work and try again.
 5. **Merge.** A verified stage merges back to the target branch, which frees the stages that depend on it. A real conflict gets a dedicated resolution session.
-6. **Distill.** The plan's final `knowledge-distill` stage curates every stage's memory into `doc/loom/knowledge/`, which the next plan's sessions read first.
+6. **Integrate.** Once the implementation stages have merged, an `integration-verify` stage reviews the combined work and runs the full suite against it.
+7. **Distill.** The plan's final `knowledge-distill` stage curates every stage's memory into `doc/loom/knowledge/`, which the next plan's sessions read first.
 
 You follow along with `loom status --live` or `loom status --web`, and step in only when a stage asks for a person: recover, verify, merge, or retry stages as needed with the [stage commands](#stage-commands).
 
