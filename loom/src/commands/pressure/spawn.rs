@@ -1,14 +1,12 @@
-//! Argv construction and codex background lifecycle for the pressure
-//! pipeline. The foreground Claude driver itself lives in
+//! Argv construction, the background codex spawn and exit handling for the
+//! pressure pipeline. Waiting on codex, with in-family model fallback, lives
+//! in `super::fallback`. The foreground Claude driver itself lives in
 //! `crate::claude::session`, shared with `loom knowledge bootstrap`.
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::thread;
-use std::time::Duration;
 
 use crate::claude::{classify_exit, ClaudeOutcome, ExitAction};
 
@@ -98,7 +96,8 @@ pub(super) fn run_claude_foreground(
 
 /// Spawn `codex exec` in the background with its (noisy) output captured to
 /// `log_path`, so it runs concurrently with the foreground Claude session
-/// without flooding the terminal.
+/// without flooding the terminal. Each call re-creates `log_path`, so a
+/// fallback attempt's log never mixes with the one before it.
 pub(super) fn spawn_codex_background(
     codex_path: &Path,
     repo_root: &Path,
@@ -119,29 +118,6 @@ pub(super) fn spawn_codex_background(
     cmd.stdout(Stdio::from(log));
     cmd.stderr(Stdio::from(log_err));
     cmd.spawn().context("failed to spawn codex")
-}
-
-/// Wait for the background Codex child, showing a small spinner while it is
-/// still running after the foreground Claude session has ended.
-pub(super) fn wait_codex(mut child: Child, log_path: &Path) -> Result<ExitStatus> {
-    const FRAMES: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
-    let mut i = 0usize;
-    loop {
-        if let Some(status) = child.try_wait().context("failed to poll codex")? {
-            // Clear the spinner line.
-            print!("\r\x1b[K");
-            let _ = std::io::stdout().flush();
-            return Ok(status);
-        }
-        print!(
-            "\r{} waiting for codex review… (output → {})",
-            FRAMES[i % FRAMES.len()],
-            log_path.display()
-        );
-        let _ = std::io::stdout().flush();
-        i += 1;
-        thread::sleep(Duration::from_millis(200));
-    }
 }
 
 /// React to a finished child. Returns `true` when the pipeline should stop.

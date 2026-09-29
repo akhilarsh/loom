@@ -13,11 +13,81 @@ pub const CODEX_IMPLEMENTER_MODEL_LUNA: &str = "gpt-6-luna";
 pub const CODEX_IMPLEMENTER_EFFORT: &str = "xhigh";
 
 /// Codex models `loom pressure` accepts. Kept in step with the forwarding
-/// hooks' allowlist (loom-hooks/codex-forward.sh).
-pub const CODEX_MODELS: &[&str] = &["gpt-6-astra", "gpt-6-sol", "gpt-5.6-terra", "gpt-6-luna"];
+/// hooks' allowlists in `loom-hooks/codex-forward.sh`,
+/// `codex-forward-guard.sh` and `codex-forward-result.sh`. Ids follow
+/// `gpt-<version>-<family>`, and `loom pressure` falls back within a family
+/// when the account cannot use the requested model (see
+/// [`codex_model_candidates`]); tiers never mix.
+pub const CODEX_MODELS: &[&str] = &[
+    "gpt-6-astra",
+    "gpt-6.1-sol",
+    "gpt-6-sol",
+    "gpt-5.6-terra",
+    "gpt-6-luna",
+];
 
 /// Codex model the pressure run defaults to.
-pub const DEFAULT_PRESSURE_CODEX_MODEL: &str = "gpt-6-sol";
+pub const DEFAULT_PRESSURE_CODEX_MODEL: &str = "gpt-6.1-sol";
+
+/// The models `loom pressure` tries, in order, for a requested codex model:
+/// the requested one first, then the rest of its family from
+/// [`CODEX_MODELS`] — newer versions ascending (nearest newer first), then
+/// older versions descending (nearest older first). A newly announced model
+/// is often not yet enabled for every account, so its siblings stand in for
+/// it. An id outside [`CODEX_MODELS`] gets no fallbacks.
+pub fn codex_model_candidates(requested: &str) -> Vec<&str> {
+    let Some((version, family)) = parse_codex_model(requested) else {
+        return vec![requested];
+    };
+    if !CODEX_MODELS.contains(&requested) {
+        return vec![requested];
+    }
+    let (mut newer, mut older): (Vec<_>, Vec<_>) = family_members(family)
+        .into_iter()
+        .filter(|(member, _)| compare_versions(member, &version).is_ne())
+        .partition(|(member, _)| compare_versions(member, &version).is_gt());
+    newer.sort_by(|a, b| compare_versions(&a.0, &b.0));
+    older.sort_by(|a, b| compare_versions(&b.0, &a.0));
+    std::iter::once(requested)
+        .chain(newer.into_iter().chain(older).map(|(_, id)| id))
+        .collect()
+}
+
+/// Every [`CODEX_MODELS`] entry of `family`, paired with its parsed version,
+/// so [`codex_model_candidates`] can order siblings without reparsing.
+fn family_members(family: &str) -> Vec<(Vec<u32>, &'static str)> {
+    CODEX_MODELS
+        .iter()
+        .filter_map(|&id| parse_codex_model(id).map(|(version, fam)| (version, fam, id)))
+        .filter(|(_, fam, _)| *fam == family)
+        .map(|(version, _, id)| (version, id))
+        .collect()
+}
+
+/// Split `gpt-<version>-<family>` into its dotted numeric version segments
+/// and its family. `None` for an id outside that shape, which then never
+/// gains fallbacks.
+fn parse_codex_model(id: &str) -> Option<(Vec<u32>, &str)> {
+    let (version, family) = id.strip_prefix("gpt-")?.split_once('-')?;
+    if family.is_empty() {
+        return None;
+    }
+    let segments = version
+        .split('.')
+        .map(|segment| segment.parse().ok())
+        .collect::<Option<Vec<u32>>>()?;
+    Some((segments, family))
+}
+
+/// Compare dotted versions segment-wise, a missing segment counting as 0, so
+/// `6 < 6.1`, `5.6 < 6` and `6 == 6.0` — the order the fallback chain needs.
+fn compare_versions(a: &[u32], b: &[u32]) -> std::cmp::Ordering {
+    let segment = |v: &[u32], i: usize| v.get(i).copied().unwrap_or(0);
+    (0..a.len().max(b.len()))
+        .map(|i| segment(a, i).cmp(&segment(b, i)))
+        .find(|order| order.is_ne())
+        .unwrap_or(std::cmp::Ordering::Equal)
+}
 
 /// Reasoning efforts the Codex CLI accepts, cheapest first. `loom pressure`
 /// validates `--codex-effort` and `pressure.codex_effort` against this list
@@ -240,64 +310,5 @@ pub fn codex_lane_available() -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_config_lacks_exclusion_and_ensure_creates_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        assert!(!codex_config_excludes_slash_tmp(&path));
-        assert!(ensure_codex_config_excludes_slash_tmp(&path).unwrap());
-        assert!(codex_config_excludes_slash_tmp(&path));
-        // Idempotent: a second ensure changes nothing.
-        assert!(!ensure_codex_config_excludes_slash_tmp(&path).unwrap());
-    }
-
-    #[test]
-    fn ensure_preserves_comments_and_unrelated_keys() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            "# user comment\nmodel = \"gpt-6-sol\"\n\n[mcp_servers.vnkt]\nurl = \"https://vnkt.org/mcp\"\n",
-        )
-        .unwrap();
-        assert!(ensure_codex_config_excludes_slash_tmp(&path).unwrap());
-        let written = std::fs::read_to_string(&path).unwrap();
-        assert!(written.contains("# user comment"));
-        assert!(written.contains("model = \"gpt-6-sol\""));
-        assert!(written.contains("[mcp_servers.vnkt]"));
-        assert!(codex_config_excludes_slash_tmp(&path));
-    }
-
-    #[test]
-    fn explicit_false_is_detected_and_flipped() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            "[sandbox_workspace_write]\nnetwork_access = true\nexclude_slash_tmp = false\n",
-        )
-        .unwrap();
-        assert!(!codex_config_excludes_slash_tmp(&path));
-        assert!(ensure_codex_config_excludes_slash_tmp(&path).unwrap());
-        let written = std::fs::read_to_string(&path).unwrap();
-        assert!(written.contains("network_access = true"));
-        assert!(codex_config_excludes_slash_tmp(&path));
-    }
-
-    #[test]
-    fn unparseable_config_is_never_rewritten() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "not [ valid toml").unwrap();
-        let err = ensure_codex_config_excludes_slash_tmp(&path).unwrap_err();
-        assert!(err.to_string().contains("unparseable"));
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "not [ valid toml",
-            "a file loom cannot parse must be left untouched"
-        );
-    }
-}
+#[path = "codex_tests.rs"]
+mod tests;

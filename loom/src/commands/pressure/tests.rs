@@ -160,7 +160,7 @@ fn test_render_dry_run_shows_real_argv() {
     assert!(out.contains("--append-system-prompt"));
     assert!(out.contains("/pressure doc/plans/PLAN-foo.md"));
     assert!(out.contains(
-        "codex exec --sandbox workspace-write -m gpt-6-sol -c model_reasoning_effort=xhigh \
+        "codex exec --sandbox workspace-write -m gpt-6.1-sol -c model_reasoning_effort=xhigh \
          -C /repo $pressure doc/plans/PLAN-foo.md"
     ));
     assert!(out.contains("/address doc/plans/PLAN-foo.md"));
@@ -170,9 +170,10 @@ fn test_render_dry_run_shows_real_argv() {
     assert!(out.contains("[parallel]"));
     assert!(out.contains("loom-pressure-codex-1.log"));
     assert!(out.contains(".loom/work/pressure/claude-1.done"));
-    // The resolved model+effort selection is surfaced in the header.
+    // The resolved model+effort selection is surfaced in the header, with the
+    // codex model's in-family fallback chain.
     assert!(out.contains(
-        "Models:                  claude=opus/xhigh  codex=gpt-6-sol/xhigh  address=opus/high"
+        "Models:                  claude=opus/xhigh  codex=gpt-6.1-sol (fallback: gpt-6-sol)/xhigh  address=opus/high"
     ));
 }
 
@@ -233,6 +234,99 @@ fn test_claude_args_shape() {
     let joined = args.join(" ");
     assert!(joined.contains("--append-system-prompt"));
     assert!(joined.contains("/repo/.loom/work/pressure/claude-1.done"));
+}
+
+/// Fake codex for the runner tests: accepts only `gpt-9-good`, fails
+/// `gpt-9-broken` with an unrelated error, and reports every other `-m`
+/// model as not supported, the way the ChatGPT-account API does.
+const FAKE_CODEX: &str = r#"for arg in "$@"; do
+  [ "$prev" = "-m" ] && model="$arg"
+  prev="$arg"
+done
+case "$model" in
+  gpt-9-good) exit 0 ;;
+  gpt-9-broken) echo "stream error talking to $model"; exit 3 ;;
+  gpt-9-quoted) echo "the '$model' model is not supported (quoted output)"; exit 1 ;;
+esac
+echo "ERROR: The '$model' model is not supported when using Codex with a ChatGPT account."
+exit 1
+"#;
+
+/// Run the codex runner over `candidates` against [`FAKE_CODEX`]. codex's
+/// first argument is `exec`, so `/bin/sh` reads the script from a file named
+/// `exec` in the repo dir (its cwd): nothing freshly written is exec'd, which
+/// sidesteps ETXTBSY, and every attempt exits at once, so no process outlives
+/// the test.
+fn run_fake_codex(candidates: &[&str]) -> fallback::CodexOutcome {
+    let repo = TempDir::new().unwrap();
+    fs::write(repo.path().join("exec"), FAKE_CODEX).unwrap();
+    let log = repo.path().join("codex.log");
+    let run = spawn_codex_with_fallback(
+        Path::new("/bin/sh"),
+        repo.path(),
+        "$pressure doc/plans/PLAN-foo.md",
+        &log,
+        candidates.iter().map(|model| model.to_string()).collect(),
+        "xhigh",
+    )
+    .unwrap();
+    wait_codex(run, &log).unwrap()
+}
+
+#[test]
+fn test_codex_fallback_moves_on_when_the_model_is_unsupported() {
+    let outcome = run_fake_codex(&["gpt-9-gone", "gpt-9-good"]);
+    assert!(outcome.status.success());
+    assert_eq!(outcome.model_used, "gpt-9-good");
+    assert_eq!(outcome.tried, ["gpt-9-gone", "gpt-9-good"]);
+    assert!(!outcome.exhausted);
+    assert_eq!(outcome.notes.len(), 1);
+    // The note carries the failed attempt's error: its log was re-created.
+    assert!(outcome.notes[0].starts_with(
+        "codex model gpt-9-gone is unavailable to this account — fell back to gpt-9-good\n"
+    ));
+    assert!(outcome.notes[0].contains("The 'gpt-9-gone' model is not supported"));
+}
+
+#[test]
+fn test_codex_fallback_exhausted_keeps_the_last_failure() {
+    let outcome = run_fake_codex(&["gpt-9-gone", "gpt-9-also-gone"]);
+    assert_eq!(outcome.status.code(), Some(1));
+    assert_eq!(outcome.model_used, "gpt-9-also-gone");
+    assert_eq!(outcome.tried, ["gpt-9-gone", "gpt-9-also-gone"]);
+    assert!(outcome.exhausted);
+    assert_eq!(outcome.notes.len(), 1);
+}
+
+#[test]
+fn test_codex_fallback_walks_three_candidates() {
+    let outcome = run_fake_codex(&["gpt-9-gone", "gpt-9-also-gone", "gpt-9-good"]);
+    assert!(outcome.status.success());
+    assert_eq!(outcome.model_used, "gpt-9-good");
+    assert_eq!(
+        outcome.tried,
+        ["gpt-9-gone", "gpt-9-also-gone", "gpt-9-good"]
+    );
+    assert!(!outcome.exhausted);
+    assert_eq!(outcome.notes.len(), 2);
+}
+
+#[test]
+fn test_codex_fallback_ignores_unprefixed_unavailable_text() {
+    let outcome = run_fake_codex(&["gpt-9-quoted", "gpt-9-good"]);
+    assert_eq!(outcome.status.code(), Some(1));
+    assert_eq!(outcome.tried, ["gpt-9-quoted"]);
+    assert!(!outcome.exhausted);
+    assert!(outcome.notes.is_empty());
+}
+
+#[test]
+fn test_codex_fallback_ignores_unrelated_failures() {
+    let outcome = run_fake_codex(&["gpt-9-broken", "gpt-9-good"]);
+    assert_eq!(outcome.status.code(), Some(3));
+    assert_eq!(outcome.tried, ["gpt-9-broken"]);
+    assert!(!outcome.exhausted);
+    assert!(outcome.notes.is_empty());
 }
 
 #[test]

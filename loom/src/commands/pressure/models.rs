@@ -95,7 +95,7 @@ mod tests {
             PressureModels::resolve(flags(), &PressureConfig::default(), &UserConfig::default());
         assert_eq!(models.claude, "opus");
         assert_eq!(models.claude_effort, "xhigh");
-        assert_eq!(models.codex, "gpt-6-sol");
+        assert_eq!(models.codex, "gpt-6.1-sol");
         assert_eq!(models.codex_effort, "xhigh");
         assert_eq!(models.address, "opus");
         assert_eq!(models.address_effort, "high");
@@ -186,7 +186,7 @@ mod tests {
         assert_eq!(models.address_effort, "low");
         // ...while every model slot is untouched, still on the built-in.
         assert_eq!(models.claude, "opus");
-        assert_eq!(models.codex, "gpt-6-sol");
+        assert_eq!(models.codex, "gpt-6.1-sol");
         assert_eq!(models.address, "opus");
     }
 }

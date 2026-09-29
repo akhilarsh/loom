@@ -37,17 +37,19 @@ use crate::codex::find_codex_path;
 use crate::fs::work_dir::{read_pressure_config, PressureConfig};
 use crate::user_config::UserConfig;
 
+mod fallback;
 mod models;
 mod paths;
 mod spawn;
 
+use fallback::{codex_model_label, spawn_codex_with_fallback, wait_codex};
 use models::PressureModels;
 use paths::{
     claude_marker_path, codex_log_path, codex_report_path, resolve_plan_path, resolve_repo_root,
 };
 use spawn::{
     claude_args, claude_should_stop, codex_args, run_claude_foreground, should_stop,
-    spawn_codex_background, wait_codex, AGENT_TEAMS_ENV,
+    AGENT_TEAMS_ENV,
 };
 
 /// One step in the pressure pipeline.
@@ -111,7 +113,7 @@ fn render_dry_run(
         marker.display(),
         models.claude,
         models.claude_effort,
-        models.codex,
+        codex_model_label(&models.codex),
         models.codex_effort,
         models.address,
         models.address_effort
@@ -190,7 +192,7 @@ fn print_run_header(rounds: u32, invocation: &str, models: &PressureModels) {
         "→".cyan().bold(),
         models.claude,
         models.claude_effort,
-        models.codex,
+        codex_model_label(&models.codex),
         models.codex_effort,
         models.address,
         models.address_effort
@@ -200,16 +202,22 @@ fn print_run_header(rounds: u32, invocation: &str, models: &PressureModels) {
 /// Run the concurrent Claude/Codex pressure-test step: Codex reviews the plan
 /// independently in the background (quiet, captured to a log) while Claude
 /// pressure-tests in the foreground (interactive).
+/// Codex falls back within its model family when the account cannot use the
+/// requested model; the fallbacks taken are printed once Claude has exited.
 /// Returns whether the pipeline should stop. Split out of [`execute`]'s
 /// `Step::Pressure` arm purely to keep that function under the
 /// maintainability line limit.
 fn run_pressure_step(ctx: &StepContext, claude: &str, codex: &str) -> Result<bool> {
-    let codex_child = spawn_codex_background(
+    let candidates = crate::codex::codex_model_candidates(&ctx.models.codex)
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let codex_run = spawn_codex_with_fallback(
         ctx.codex_path,
         ctx.repo_root,
         codex,
         ctx.codex_log,
-        &ctx.models.codex,
+        candidates,
         &ctx.models.codex_effort,
     )?;
     println!(
@@ -226,24 +234,33 @@ fn run_pressure_step(ctx: &StepContext, claude: &str, codex: &str) -> Result<boo
         &ctx.models.claude_effort,
     )?;
     let claude_stop = claude_should_stop(claude_outcome);
-    let codex_status = wait_codex(codex_child, ctx.codex_log)?;
-    let codex_stop = should_stop("codex", codex_status, Some(ctx.codex_log));
-    if codex_status.success() {
-        if ctx.report.is_file() {
-            println!(
-                "{} codex review written → {}",
-                "✓".green().bold(),
-                ctx.report.display()
-            );
-        } else {
-            println!(
-                "{} codex exited cleanly but wrote no review at {} — /address will run without it",
-                "!".yellow().bold(),
-                ctx.report.display()
-            );
-        }
+    let outcome = wait_codex(codex_run, ctx.codex_log)?;
+    outcome.print_fallbacks();
+    let codex_stop = should_stop("codex", outcome.status, Some(ctx.codex_log));
+    if outcome.status.success() {
+        report_codex_review(ctx.report, &outcome.model_used);
     }
     Ok(claude_stop || codex_stop)
+}
+
+/// After a clean codex exit, say whether `model` left its review at `report`
+/// — naming the model, since a fallback may have run a different one than
+/// the header shows. Split out of [`run_pressure_step`] purely to keep that
+/// function under the maintainability line limit.
+fn report_codex_review(report: &Path, model: &str) {
+    if report.is_file() {
+        println!(
+            "{} codex review ({model}) written → {}",
+            "✓".green().bold(),
+            report.display()
+        );
+    } else {
+        println!(
+            "{} codex ({model}) exited cleanly but wrote no review at {} — /address will run without it",
+            "!".yellow().bold(),
+            report.display()
+        );
+    }
 }
 
 /// Print the run header and execute every step of the pipeline in order,

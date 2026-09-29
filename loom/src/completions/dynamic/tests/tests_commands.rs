@@ -206,6 +206,14 @@ fn test_complete_codex_model_names_prefix() {
     assert!(results.contains(&"gpt-6-sol".to_string()));
     assert!(results.contains(&"gpt-6-luna".to_string()));
     assert!(!results.contains(&"gpt-5.6-terra".to_string()));
+    assert!(!results.contains(&"gpt-6.1-sol".to_string()));
+}
+
+#[test]
+fn test_complete_codex_model_names_minor_version_prefix() {
+    let results = complete_codex_model_names("gpt-6").unwrap();
+    assert!(results.contains(&"gpt-6.1-sol".to_string()));
+    assert!(results.contains(&"gpt-6-sol".to_string()));
 }
 
 #[test]
