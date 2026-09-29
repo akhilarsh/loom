@@ -24,7 +24,7 @@
 | --- | --- | --- |
 | [adjudication-lifecycle](architecture/adjudication-lifecycle.md) | Dispute to verdict, per-kind rulings | 111 |
 | [codex-concurrency](architecture/codex-concurrency.md) | Codex fan-out limits, what is measured, what degrades | 128 |
-| [codex-plugin](architecture/codex-plugin.md) | Codex plugin install, identity, and forwarding | 361 |
+| [codex-plugin](architecture/codex-plugin.md) | Codex plugin install, identity, and forwarding | 362 |
 | [completion-recovery](architecture/completion-recovery.md) | Completion HMAC, exit_reason, handoff folds | 34 |
 | [config-value-types](architecture/config-value-types.md) | ConfigValue typed read-path | 85 |
 | [context-ceiling](architecture/context-ceiling.md) | Resident-token ceiling: tiers and thresholds | 111 |
@@ -92,7 +92,7 @@
 | [dispute-and-adjudication](conventions/dispute-and-adjudication.md) | Dispute file authority, adjudicator scope, budgets | 118 |
 | [git-and-build-workflow](conventions/git-and-build-workflow.md) | Git/worktree ops, cargo, maintainability ledger | 206 |
 | [guidance-channels-and-plugin-scope](conventions/guidance-channels-and-plugin-scope.md) | Guidance channels, verification, plugin scope | 121 |
-| [model-and-effort-config](conventions/model-and-effort-config.md) | [pressure]/[models], precedence, value types | 69 |
+| [model-and-effort-config](conventions/model-and-effort-config.md) | [pressure]/[models], precedence, value types | 103 |
 | [plan-yaml-and-hooks](conventions/plan-yaml-and-hooks.md) | Plan YAML schema, hook I/O, skill format | 168 |
 | [web-dashboard-typography](conventions/web-dashboard-typography.md) | Dashboard type conventions and CSS gotchas | 30 |
 

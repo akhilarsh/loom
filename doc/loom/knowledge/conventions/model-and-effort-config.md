@@ -20,8 +20,8 @@ a project config.
 ## `[pressure]` Keys and Defaults
 
 `pressure.claude_model` opus, `pressure.claude_effort` xhigh, `pressure.codex_model`
-gpt-6-sol, `pressure.codex_effort` xhigh, `pressure.address_model` opus,
-`pressure.address_effort` high.
+gpt-6.1-sol (in-family fallback to gpt-6-sol, see Codex Model Fallback below),
+`pressure.codex_effort` xhigh, `pressure.address_model` opus, `pressure.address_effort` high.
 
 ## `[models]` Keys and Defaults
 
@@ -67,3 +67,37 @@ This file's `[pressure]`/`[models]` keys are string-valued (model names, effort 
 resolved through the precedence chain above. The registry's typed read path — `ConfigValue`,
 `ValueKind`, per-surface threading through CLI/TUI/web/TS/React — is a cross-cutting seam documented
 separately: see [Typed Config Values](../architecture/config-value-types.md).
+
+## Codex Model Fallback
+
+`loom pressure` retries an unavailable codex model within its family. `codex_model_candidates`
+(`codex.rs`) parses each `CODEX_MODELS` id as `gpt-<version>-<family>`, compares versions
+segment-wise (missing segment = 0, so 6 < 6.1), and orders the chain: the requested id, then
+same-family newer versions ascending, then same-family older versions descending.
+`gpt-6.1-sol` → `[gpt-6.1-sol, gpt-6-sol]`; astra, terra and luna have one member each. Tiers
+(astra / sol / terra / luna) are never swapped.
+
+A run counts as unavailable only on a non-zero exit whose log has one codex error line (it
+starts with `ERROR`) naming the model id and, case-insensitively, `model is not supported`,
+`model not found`, `model_not_found` or `does not exist` (`unavailable_line` in
+`commands/pressure/fallback.rs`). The `ERROR` prefix is required because the log also carries
+codex's tool output and prose: a review that prints plan text or `fallback.rs` itself quotes
+these phrases next to model ids, and an unrelated failure would otherwise rerun the whole review
+on the next model. The 404 form arrives as
+`ERROR: unexpected status 404 Not Found: Model not found <id>`. Codex also prints a
+non-fatal `Model metadata for <id> not found` warning; it matches none of those phrases and never
+triggers a retry. The first attempt spawns on the caller's thread, so a spawn failure errors
+before Claude starts; the runner thread then retries silently while the Claude TUI owns the
+terminal, carrying each failed attempt's matched error line into a note because every attempt
+recreates the log. `run_pressure_step` prints the notes after Claude ends and names the model
+that wrote the review. When the family is exhausted it prints the models tried, and the last
+status flows into `should_stop`, which prints the codex log tail.
+
+Scope: `loom pressure` only. The forwarder lane (`codex-forward.sh`) validates ids against its
+own allowlists and never falls back. There is no pre-flight catalog check: the codex model
+catalog (`/model`, `models_cache.json`) is stale in both directions, listing models that fail
+and omitting models that work, so only a real run answers the question. Unavailability is not
+cached between runs, since rollout reaches accounts over time.
+
+Codex "Ultrafast" (for example GPT-6.1 Sol Ultrafast) is a speed mode for the same model, like
+Claude Code `/fast`; it is not a model id and never belongs in `CODEX_MODELS`.

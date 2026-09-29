@@ -240,8 +240,9 @@ Three moving parts:
    (`sandbox/settings.rs:580,587`) — see the scope section below.
 
 Do NOT confuse the two implementer-lane tiers — `gpt-5.6-terra` and `gpt-6-luna` (both
-`codex.rs`) — with `gpt-6-sol` (`commands/pressure/mod.rs:245`, the `loom pressure` review
-driver). Three models, three purposes; a grep for `gpt-5` returns all three.
+`codex.rs`) — with the `loom pressure` review model: `gpt-6.1-sol` by default
+(`DEFAULT_PRESSURE_CODEX_MODEL` in `codex.rs`), falling back to `gpt-6-sol` when the account
+lacks it. The forwarder lane never falls back. `CODEX_MODELS` in `codex.rs` lists every id.
 
 ## Install scope: user or project, not local
 

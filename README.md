@@ -444,13 +444,15 @@ When `loom run` stops — every stage settled, or interrupted by `loom stop` —
 
 `loom pressure` hardens a plan before you run it by combining two external agents over `--rounds` rounds (default 2). Each round runs both pressure-tests in parallel: Claude `/pressure` edits the plan in place in the foreground (you watch it live), while Codex `$pressure` writes an independent review next to it (`codex-<plan>.md`) in the background (its output is captured to a temp log to keep the terminal clean). Once both finish, Claude `/address` folds the review back in. Claude stays interactive and auto-closes when done; Codex runs from the repo root. Requires both the `claude` and `codex` CLIs on PATH. `--dry-run` prints the exact commands without spawning anything.
 
-Each of the three steps spawns with an independently selectable model and reasoning effort: `--claude-model`/`--claude-effort` for `/pressure` (model accepts `haiku`, `sonnet`, `opus`, or `fable`; effort accepts `low`, `medium`, `high`, `xhigh`, or `max`), `--address-model`/`--address-effort` for `/address` (same value sets), and `--codex-model`/`--codex-effort` for `$pressure` (model accepts `gpt-6-astra`, `gpt-6-sol`, `gpt-5.6-terra`, or `gpt-6-luna`; effort accepts `low`, `medium`, `high`, or `xhigh` — no `max`, that value is Claude-only). Absent a flag, each key falls back independently: the project config's `.loom/work/config.toml` `[pressure]` section first (if it sets that key), then `~/.loom/config.toml` (`loom config -k pressure.claude_model <value>`), then its built-in default. `[pressure]` resolves per key, so a project section that sets only `claude_model` still lets `codex_effort` fall through to your user config.
+Each of the three steps spawns with an independently selectable model and reasoning effort: `--claude-model`/`--claude-effort` for `/pressure` (model accepts `haiku`, `sonnet`, `opus`, or `fable`; effort accepts `low`, `medium`, `high`, `xhigh`, or `max`), `--address-model`/`--address-effort` for `/address` (same value sets), and `--codex-model`/`--codex-effort` for `$pressure` (model accepts `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-5.6-terra`, or `gpt-6-luna`; effort accepts `low`, `medium`, `high`, or `xhigh` — no `max`, that value is Claude-only). Absent a flag, each key falls back independently: the project config's `.loom/work/config.toml` `[pressure]` section first (if it sets that key), then `~/.loom/config.toml` (`loom config -k pressure.claude_model <value>`), then its built-in default. `[pressure]` resolves per key, so a project section that sets only `claude_model` still lets `codex_effort` fall through to your user config.
+
+When the codex model is unavailable to the account (codex rejects it as not supported or not found), `loom pressure` retries with the same family's nearest newer version first and then the nearest older one, never another tier; the default `gpt-6.1-sol` falls back to `gpt-6-sol`. The fallback notice prints after the Claude session ends. When every model in the family is unavailable the run fails and shows the codex error.
 
 | Key                       | Default       |
 | ------------------------- | ------------- |
 | `pressure.claude_model`   | `opus`        |
 | `pressure.claude_effort`  | `xhigh`       |
-| `pressure.codex_model`    | `gpt-6-sol` |
+| `pressure.codex_model`    | `gpt-6.1-sol` |
 | `pressure.codex_effort`   | `xhigh`       |
 | `pressure.address_model`  | `opus`        |
 | `pressure.address_effort` | `high`        |
@@ -594,26 +596,26 @@ There are three ways to change a setting:
 
 The keys, with their built-in defaults:
 
-| Key                                | Default       | Values                                                        | Project tier  |
-| ---------------------------------- | ------------- | ------------------------------------------------------------- | ------------- |
-| `update.check`                     | `true`        | `true`, `false`                                               | no            |
-| `update.check_interval_hours`      | `24`          | integer                                                       | no            |
-| `terminal.backend`                 | `native`      | `native`, `tmux`                                              | whole section |
-| `context.ceiling_tokens`           | `800000`      | integer                                                       | whole section |
-| `pressure.claude_model`            | `opus`        | `haiku`, `sonnet`, `opus`, `fable`                            | per key       |
-| `pressure.claude_effort`           | `xhigh`       | `low`, `medium`, `high`, `xhigh`, `max`                       | per key       |
-| `pressure.codex_model`             | `gpt-6-sol` | `gpt-6-astra`, `gpt-6-sol`, `gpt-5.6-terra`, `gpt-6-luna` | per key       |
-| `pressure.codex_effort`            | `xhigh`       | `low`, `medium`, `high`, `xhigh`                              | per key       |
-| `pressure.address_model`           | `opus`        | `haiku`, `sonnet`, `opus`, `fable`                            | per key       |
-| `pressure.address_effort`          | `high`        | `low`, `medium`, `high`, `xhigh`, `max`                       | per key       |
-| `models.standard_model`            | `opus`        | `haiku`, `sonnet`, `opus`, `fable`                            | per key       |
-| `models.standard_effort`           | `high`        | `low`, `medium`, `high`, `xhigh`, `max`                       | per key       |
-| `models.knowledge_model`           | `opus`        | `haiku`, `sonnet`, `opus`, `fable`                            | per key       |
-| `models.knowledge_effort`          | `medium`      | `low`, `medium`, `high`, `xhigh`, `max`                       | per key       |
-| `models.knowledge_distill_model`   | `sonnet`      | `haiku`, `sonnet`, `opus`, `fable`                            | per key       |
-| `models.knowledge_distill_effort`  | `high`        | `low`, `medium`, `high`, `xhigh`, `max`                       | per key       |
-| `models.integration_verify_model`  | `opus`        | `haiku`, `sonnet`, `opus`, `fable`                            | per key       |
-| `models.integration_verify_effort` | `xhigh`       | `low`, `medium`, `high`, `xhigh`, `max`                       | per key       |
+| Key                                | Default       | Values                                                                   | Project tier  |
+| ---------------------------------- | ------------- | ------------------------------------------------------------------------ | ------------- |
+| `update.check`                     | `true`        | `true`, `false`                                                          | no            |
+| `update.check_interval_hours`      | `24`          | integer                                                                  | no            |
+| `terminal.backend`                 | `native`      | `native`, `tmux`                                                         | whole section |
+| `context.ceiling_tokens`           | `800000`      | integer                                                                  | whole section |
+| `pressure.claude_model`            | `opus`        | `haiku`, `sonnet`, `opus`, `fable`                                       | per key       |
+| `pressure.claude_effort`           | `xhigh`       | `low`, `medium`, `high`, `xhigh`, `max`                                  | per key       |
+| `pressure.codex_model`             | `gpt-6.1-sol` | `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-5.6-terra`, `gpt-6-luna` | per key       |
+| `pressure.codex_effort`            | `xhigh`       | `low`, `medium`, `high`, `xhigh`                                         | per key       |
+| `pressure.address_model`           | `opus`        | `haiku`, `sonnet`, `opus`, `fable`                                       | per key       |
+| `pressure.address_effort`          | `high`        | `low`, `medium`, `high`, `xhigh`, `max`                                  | per key       |
+| `models.standard_model`            | `opus`        | `haiku`, `sonnet`, `opus`, `fable`                                       | per key       |
+| `models.standard_effort`           | `high`        | `low`, `medium`, `high`, `xhigh`, `max`                                  | per key       |
+| `models.knowledge_model`           | `opus`        | `haiku`, `sonnet`, `opus`, `fable`                                       | per key       |
+| `models.knowledge_effort`          | `medium`      | `low`, `medium`, `high`, `xhigh`, `max`                                  | per key       |
+| `models.knowledge_distill_model`   | `sonnet`      | `haiku`, `sonnet`, `opus`, `fable`                                       | per key       |
+| `models.knowledge_distill_effort`  | `high`        | `low`, `medium`, `high`, `xhigh`, `max`                                  | per key       |
+| `models.integration_verify_model`  | `opus`        | `haiku`, `sonnet`, `opus`, `fable`                                       | per key       |
+| `models.integration_verify_effort` | `xhigh`       | `low`, `medium`, `high`, `xhigh`, `max`                                  | per key       |
 
 "Whole section" means a project `[terminal]` or `[context]` section replaces the user tier's section outright, so a key it omits takes the built-in. "Per key" means a project `[pressure]` or `[models]` section overrides only the keys it names and the rest fall through to the user file. The `pressure.*` keys are explained under [Primary Commands](#primary-commands), the `models.*` keys under [Model Allocation](#model-allocation).
 
