@@ -14,8 +14,10 @@ whenever the bind is remote or `--terminals` is set; `TerminalLane::from_token`
 carry no port scope and loom deliberately runs several dashboards at once
 (`listener::bind_first_available_port(host, start)`); one fixed name would let opening a
 second instance's tokenized URL silently steal the first instance's cookie. In remote mode
-this same token also backs the dashboard-wide cookie (`auth::Auth`, `ServeOptions` requires
-`dashboard_token`/`terminal_token` to agree when both are set).
+this same token also backs the cookie that gates `POST /api/config` (`auth::Auth`,
+`ServeOptions` requires `dashboard_token`/`terminal_token` to agree when both are set);
+viewing routes never ask for it. A remote bind mints and prints the token even without
+`--terminals`, since remote settings writes need it.
 
 Bootstrap: `GET`/`HEAD /?token=<presented>` (`bootstrap.rs::bootstrap_terminal_token`,
 :55-82) — right token sets the cookie via a 302 redirect to `/` with `Set-Cookie:
@@ -24,7 +26,7 @@ loom_dashboard_<port>=<token>; Path=/; HttpOnly; SameSite=Strict`
 `token` query param falls through to the ordinary page. In remote mode this route also
 checks `Origin` (optional but, if present, must match the connection's own address) ahead of
 the token exchange. The printed startup line (loopback, terminals enabled) is
-`http://127.0.0.1:<port>/?token=<token>  (terminals enabled; Ctrl-C to stop)` (`mod.rs:176-179`).
+`http://127.0.0.1:<port>/?token=<token>  (terminals enabled; Ctrl-C to stop)` (`mod.rs:178-183`).
 
 ## Admission order (`terminal/upgrade.rs::admit`, :85-134)
 

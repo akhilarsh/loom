@@ -54,8 +54,8 @@
 | [test-runner-adapters](architecture/test-runner-adapters.md) | 23 adapters, profiles, quoting, detect | 49 |
 | [token-accounting-and-receipts](architecture/token-accounting-and-receipts.md) | Usage ledger, --compare, criterion cache | 260 |
 | [verification-v2-gates](architecture/verification-v2-gates.md) | v2 completion gates, order, owners | 124 |
-| [web-dashboard](architecture/web-dashboard.md) | loom status --web: server, SPA, streaming | 87 |
-| [web-terminal](architecture/web-terminal.md) | loom status --web --terminals: browser terminal | 173 |
+| [web-dashboard](architecture/web-dashboard.md) | loom status --web: server, SPA, streaming | 95 |
+| [web-terminal](architecture/web-terminal.md) | loom status --web --terminals: browser terminal | 175 |
 
 ### entry-points
 
