@@ -1,11 +1,13 @@
 import { cn } from "cn";
 import { useAtomValue } from "jotai/react";
+import type { CSSProperties } from "react";
 
 import type { Snapshot, StageStatus } from "@/api/schema";
 import { useNow } from "@/components/hooks/use-now";
 import { StageStrip } from "@/components/stage-strip";
-import { StateGlyph, toneClass } from "@/components/state-badge";
-import { daemonLine, progressPercent, summaryCounts } from "@/lib/format";
+import { toneClass } from "@/components/state-badge";
+import { daemonLine, progressPercent, stateMeta, summaryCounts, type Tone } from "@/lib/format";
+import { STAGE_STATES } from "@/lib/states";
 import { connectionAtom, type ConnectionPhase } from "@/state/atoms";
 
 const CONNECTION_LINE: Record<ConnectionPhase, ReturnType<typeof daemonLine>> = {
@@ -34,7 +36,10 @@ export function DaemonLine({ snapshot }: { snapshot: Snapshot | null }) {
   const diagnostics = [connection.message, snapshot?.notice].filter(Boolean).join("\n");
   return (
     <span
-      className={cn("inline-flex items-center gap-1.5 text-xs", toneClass(line.tone))}
+      className={cn(
+        "inline-flex h-7 items-center gap-1.5 rounded-full border border-hairline bg-card/60 px-2.5 text-xs font-medium",
+        toneClass(line.tone),
+      )}
       title={diagnostics || undefined}
     >
       <span aria-hidden="true" className="size-2 rounded-full bg-(--tone)" />
@@ -44,80 +49,154 @@ export function DaemonLine({ snapshot }: { snapshot: Snapshot | null }) {
   );
 }
 
-/// "1 of 7 stages complete", the warp strip, and the percent.
+/// "78%" set large, "7 of 9 stages complete", and the warp strip stretched
+/// across the rest of the row.
 export function ProgressLine({ snapshot }: { snapshot: Snapshot }) {
   const { completed, total } = snapshot.status.progress;
   const percent = progressPercent(completed, total);
   return (
-    <div className="flex items-center gap-3 text-sm">
-      <span className="tabular-nums">
-        {completed} of {total} stages complete
-      </span>
-      <StageStrip />
-      <span className="text-xs tabular-nums text-muted-foreground">{percent}%</span>
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className="flex items-baseline gap-2.5">
+        <span className="font-display text-2xl leading-none font-semibold tracking-tight tabular-nums">
+          {percent}
+          <span className="text-base text-muted-foreground">%</span>
+        </span>
+        <span className="text-sm text-muted-foreground tabular-nums">
+          {completed} of {total} stages complete
+        </span>
+      </div>
+      <div className="min-w-32 max-w-xl flex-1 basis-full sm:basis-0">
+        <StageStrip className="header-strip" />
+      </div>
     </div>
   );
 }
 
-const COUNTS: { key: "executing" | "queued" | "waiting" | "done"; status: StageStatus }[] = [
-  { key: "executing", status: "executing" },
-  { key: "queued", status: "queued" },
-  { key: "waiting", status: "waiting-for-deps" },
-  { key: "done", status: "completed" },
-];
+type Cell = {
+  key: string;
+  glyph: string;
+  count: number;
+  label: string;
+  tone: Tone;
+  /// A cell whose non-zero count is a problem: the whole cell takes the tone.
+  alarm?: boolean;
+  title?: string;
+};
 
-/// "● 1 executing · ▶ 1 queued · ○ 2 waiting · 3 need attention · ✓ 1 done".
+/// The stage counts as a ruled rail: executing, queued, waiting, attention,
+/// done. Glyphs are the state glyphs used everywhere else.
 export function SummaryLine({ snapshot, attention }: { snapshot: Snapshot; attention: number }) {
   const counts = summaryCounts(snapshot.status.stages, attention);
-  const [executing, queued, waiting, done] = COUNTS;
-  const item = ({ key, status }: (typeof COUNTS)[number]) => (
-    <span key={key} className="inline-flex items-center gap-1.5 tabular-nums">
-      <StateGlyph status={status} />
-      <span>{counts[key]}</span>
-      <span className="text-muted-foreground">{key}</span>
-    </span>
-  );
+  const cell = (key: keyof typeof counts, status: StageStatus, label: string): Cell => ({
+    key,
+    glyph: STAGE_STATES[status].icon,
+    count: counts[key],
+    label,
+    tone: stateMeta(status).tone,
+  });
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-      {item(executing)}
-      <Dot />
-      {item(queued)}
-      <Dot />
-      {item(waiting)}
-      <Dot />
-      <span
-        className={cn(
-          "tabular-nums",
-          counts.attention === 0
-            ? "text-muted-foreground"
-            : cn(toneClass("blocked"), "font-medium"),
-        )}
-      >
-        {counts.attention} need attention
-      </span>
-      <Dot />
-      {item(done)}
-    </div>
+    <StatRail
+      title="stages"
+      cells={[
+        cell("executing", "executing", "executing"),
+        cell("queued", "queued", "queued"),
+        cell("waiting", "waiting-for-deps", "waiting"),
+        {
+          key: "attention",
+          glyph: "!",
+          count: counts.attention,
+          label: "attention",
+          tone: "blocked",
+          alarm: true,
+        },
+        cell("done", "completed", "done"),
+      ]}
+    />
   );
 }
 
-/// "merged 0 · unmerged 1 · conflicts 1".
+/// The merge counts as a rail beside the stage rail. The diamonds pair
+/// filled/hollow the way ● and ○ do; ⚡ is the merge-conflict state glyph.
+/// Hovering a count lists its stage ids.
 export function MergeLine({ snapshot }: { snapshot: Snapshot }) {
   const { merged, pending, conflicts } = snapshot.status.merge;
+  const cell = (key: string, glyph: string, ids: string[], tone: Tone, alarm: boolean): Cell => ({
+    key,
+    glyph,
+    count: ids.length,
+    label: key,
+    tone,
+    alarm,
+    title: ids.length > 0 ? ids.join(", ") : undefined,
+  });
   return (
-    <p className="text-xs tabular-nums text-muted-foreground">
-      merged {merged.length} · unmerged {pending.length} ·{" "}
-      <span className={cn(conflicts.length > 0 && toneClass("warning"))}>
-        conflicts {conflicts.length}
-      </span>
-    </p>
+    <StatRail
+      title="merge"
+      cells={[
+        cell("merged", "◆", merged, "merged", false),
+        cell("unmerged", "◇", pending, "warning", true),
+        cell("conflicts", "⚡", conflicts, "warning", true),
+      ]}
+    />
   );
 }
 
-function Dot() {
+function StatRail({ title, cells }: { title: string; cells: Cell[] }) {
   return (
-    <span aria-hidden="true" className="text-muted-foreground/60">
-      ·
-    </span>
+    <section aria-label={title} className="flex w-full min-w-0 flex-col gap-1 sm:w-auto">
+      <h2 className="eyebrow text-[10px]">{title}</h2>
+      {/* Phones: equal columns across the full width. From sm: each cell
+          sizes to its content. */}
+      <ol
+        className="grid grid-cols-[repeat(var(--cells),minmax(0,1fr))] rounded-lg border border-hairline bg-card/60 shadow-xs sm:inline-grid sm:grid-cols-[repeat(var(--cells),auto)]"
+        style={{ "--cells": cells.length } as CSSProperties}
+      >
+        {cells.map((cell) => (
+          <StatCell key={cell.key} cell={cell} />
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function StatCell({ cell }: { cell: Cell }) {
+  const quiet = cell.count === 0;
+  const raised = cell.alarm && !quiet;
+  return (
+    <li
+      className={cn(
+        "stat-cell flex min-w-0 flex-col items-center gap-1 px-1.5 py-1.5 sm:items-start sm:px-3.5",
+        raised && cn(toneClass(cell.tone), "stat-cell-raised"),
+      )}
+      title={cell.title}
+    >
+      <span className="flex items-baseline gap-1.5">
+        <span
+          aria-hidden="true"
+          className={cn(
+            "inline-block w-[1.1em] text-center font-mono text-sm",
+            quiet ? "text-muted-foreground/50" : toneClass(cell.tone),
+          )}
+        >
+          {cell.glyph}
+        </span>
+        <span
+          className={cn(
+            "font-display text-lg leading-none font-semibold tabular-nums",
+            quiet && "text-muted-foreground/70",
+          )}
+        >
+          {cell.count}
+        </span>
+      </span>
+      <span
+        className={cn(
+          "max-w-full truncate text-[11px] font-medium sm:text-xs",
+          raised ? "text-(--tone)" : "text-muted-foreground",
+        )}
+      >
+        {cell.label}
+      </span>
+    </li>
   );
 }

@@ -1,0 +1,117 @@
+/* Dashboard header: view switch, warp strip, stat rails and touch sizing. */
+@layer components {
+  /* Header: view switch and the warp strip. */
+  .view-switch {
+    display: inline-flex;
+    border-radius: 999px;
+    background: var(--muted);
+    padding: 2px;
+    box-shadow: inset 0 0 0 1px var(--hairline);
+  }
+  .view-tab {
+    display: inline-flex;
+    height: 24px;
+    align-items: center;
+    gap: 5px;
+    border-radius: 999px;
+    padding: 0 10px;
+    font-size: 12px;
+    color: var(--muted-foreground);
+    transition:
+      color 150ms ease,
+      background-color 150ms ease;
+  }
+  .view-tab:hover {
+    color: var(--foreground);
+  }
+  .view-tab.is-active {
+    background: var(--highlight);
+    color: var(--highlight-foreground);
+    box-shadow:
+      0 1px 2px rgb(0 0 0 / 0.08),
+      0 0 0 1px var(--hairline);
+  }
+  .stage-strip {
+    display: flex;
+    height: 8px;
+    width: 12rem;
+    max-width: 40vw;
+    gap: 2px;
+  }
+  .stage-strip li {
+    display: flex;
+    min-width: 3px;
+    flex: 1;
+  }
+  .stage-strip-seg {
+    flex: 1;
+    border-radius: 2px;
+    background: var(--tone);
+    opacity: 0.85;
+    transition:
+      transform 150ms ease,
+      opacity 150ms ease;
+  }
+  .stage-strip-seg:hover,
+  .stage-strip-seg:focus-visible {
+    transform: scaleY(1.6);
+    opacity: 1;
+    outline: none;
+  }
+  .stage-strip-seg[data-live] {
+    animation: seg-pulse 2.4s ease-in-out infinite;
+  }
+
+  /* The header's strip spans its row instead of the fixed 12rem. */
+  .stage-strip.header-strip {
+    width: 100%;
+    max-width: none;
+    height: 8px;
+    gap: 3px;
+  }
+
+  /* Header stat rails: hairline rules between cells, and a tone wash on a
+   * cell whose non-zero count needs attention. */
+  .stat-cell + .stat-cell {
+    border-left: 1px solid var(--hairline);
+  }
+  .stat-cell-raised {
+    background: color-mix(in oklch, var(--tone) 11%, transparent);
+  }
+  .stat-cell-raised:first-child {
+    border-radius: calc(var(--radius-lg) - 1px) 0 0 calc(var(--radius-lg) - 1px);
+  }
+  .stat-cell-raised:last-child {
+    border-radius: 0 calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0;
+  }
+
+  /* Touch sizing: phone widths and coarse pointers get 40px header targets
+   * and a taller warp strip; desktop keeps the compact controls. */
+  @media (max-width: 639.98px), (pointer: coarse) {
+    .header-controls button,
+    .header-controls .view-tab {
+      min-height: 40px;
+      min-width: 40px;
+      justify-content: center;
+    }
+    .stage-strip.header-strip {
+      height: 14px;
+    }
+  }
+}
+
+@keyframes seg-pulse {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-strip-seg[data-live] {
+    animation: none;
+  }
+}
