@@ -16,8 +16,9 @@
 //! `--host` widens that bind. Any bind that is not loopback - a concrete
 //! remote address, or a wildcard (`0.0.0.0`/`::`) reachable from anywhere,
 //! even when a particular client happens to arrive over loopback - runs
-//! under `access::AccessPolicy`'s remote posture instead: every route
-//! requires a cookie minted from a process token printed once at startup,
+//! under `access::AccessPolicy`'s remote posture instead: viewing stays open
+//! to anyone who can reach the listener, `/api/config` writes additionally
+//! require a cookie minted from a process token printed once at startup,
 //! `Host` and `Origin` must name the connection's own accepted socket
 //! address exactly, and HTTP carries the token and every snapshot
 //! unencrypted. See `access` for the resolved policy and `auth` for the
@@ -36,6 +37,7 @@
 //! 2. **`Origin`, strictly** - required rather than merely permitted, in
 //!    both postures. Absence is fine for a same-origin `GET`, which carries
 //!    no `Origin` at all, and is refused for a write, which always would.
+//!    A remote bind also requires the dashboard cookie on every write.
 //! 3. **A double-submit CSRF token** - minted once per server process, handed
 //!    out only in the `GET /api/config` body, required in the `X-Loom-Csrf`
 //!    header of every `POST`, and compared in constant time.
@@ -65,7 +67,7 @@
 //! other's, but cookies are not port-scoped: any other page served from the
 //! same host can still overwrite it for that shared host. That cannot forge a
 //! valid token, but it does surface as terminals returning 401 ("dashboard
-//! cookie required") until the operator re-opens the tokenized URL. A remote
+//! token required") until the operator re-opens the tokenized URL. A remote
 //! dashboard's cookie alone never grants terminal capability: that still
 //! derives only from `--terminals`.
 
@@ -203,8 +205,7 @@ fn print_startup_wildcard(local: SocketAddr, terminals: bool, token: Option<&str
     ) {
         println!("{line}");
     }
-    println!("  warning: this connection is plain HTTP; the token above grants dashboard and settings access to anyone who has it");
-    println!("  (Ctrl-C to stop)");
+    print_remote_warning(terminals);
 }
 
 fn wildcard_bootstrap_lines(
@@ -234,7 +235,13 @@ fn print_startup_concrete(local: SocketAddr, terminals: bool, token: Option<&str
     let note = if terminals { "; terminals enabled" } else { "" };
     println!("loom dashboard listening on {local} (remote access enabled{note})");
     println!("  bootstrap from another machine at: http://{local}/?token={token}");
-    println!("  warning: this connection is plain HTTP; the token above grants dashboard and settings access to anyone who has it");
+    print_remote_warning(terminals);
+}
+
+/// Viewing a remote dashboard needs no token; the token grants the writes.
+fn print_remote_warning(terminals: bool) {
+    let terminal = if terminals { " and terminal" } else { "" };
+    println!("  warning: plain HTTP; anyone who can reach this address can view the dashboard, and the token above grants settings{terminal} access to anyone who has it");
     println!("  (Ctrl-C to stop)");
 }
 

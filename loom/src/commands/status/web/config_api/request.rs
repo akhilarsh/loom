@@ -3,9 +3,11 @@
 //!
 //! The gate order is deliberate. `Host` is already behind us — `connection`
 //! applies it to every request ahead of routing — so this runs `Origin`, then
-//! the CSRF token, then the framing checks. The two access gates come first so
-//! a request that has no business writing is refused before the server reads a
-//! byte of its body.
+//! the dashboard cookie (remote posture only), then the CSRF token, then the
+//! framing checks. The access gates come first so a request that has no
+//! business writing is refused before the server reads a byte of its body.
+//! Reads stay open: a remote bind lets anyone who reaches it view the
+//! settings, and only writing asks for the cookie.
 
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
@@ -103,6 +105,15 @@ fn gate(head: &RequestHead, policy: &AccessPolicy, local: SocketAddr) -> Result<
             403,
             "Forbidden",
             error_body("origin not allowed"),
+        ));
+    }
+    if !policy.authenticated(head.cookie.as_deref()) {
+        return Err(Rejection(
+            401,
+            "Unauthorized",
+            error_body(
+                "dashboard cookie required: open the tokenized URL printed when the dashboard started",
+            ),
         ));
     }
     if !csrf::verify(head.csrf_token.as_deref()) {

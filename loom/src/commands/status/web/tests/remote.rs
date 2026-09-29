@@ -2,17 +2,21 @@
 //! listener bound to `0.0.0.0:0`, reached over `127.0.0.1`, so a wildcard bind
 //! is exercised exactly as [`AccessPolicy::resolve`] classifies it - remote,
 //! even though this particular client happens to arrive over loopback.
+//! Viewing needs no cookie there; settings writes and terminals do.
 //!
 //! Skipped, with an explicit `SKIP` line, wherever the sandbox will not let a
 //! test bind a wildcard socket at all.
 
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::thread;
 
-use super::{request, stop, workspace};
+use tungstenite::client::IntoClientRequest;
+
+use super::{assert_security_headers, request, stop, workspace};
+use crate::commands::status::web::terminal::tests_upgrade::{connect_terminal, terminal_request};
 use crate::commands::status::web::{self, config_api, ServeOptions};
 use crate::process::sandbox_probe::skip_unless;
 
@@ -108,9 +112,25 @@ fn serve_fails_closed_on_a_malformed_token() {
     );
 }
 
+/// Open the `/ws` status stream the way the dashboard's own page does: with
+/// an `Origin` naming this connection's address, and no cookie.
+fn status_stream_admits(port: u16) -> bool {
+    let url = format!("ws://127.0.0.1:{port}/ws");
+    let mut ws_request = url
+        .as_str()
+        .into_client_request()
+        .expect("build status stream request");
+    ws_request.headers_mut().insert(
+        "Origin",
+        format!("http://127.0.0.1:{port}").parse().unwrap(),
+    );
+    let stream = TcpStream::connect(("127.0.0.1", port)).expect("connect status stream");
+    tungstenite::client(ws_request, stream).is_ok()
+}
+
 #[test]
-fn unauthenticated_requests_are_refused_everywhere() {
-    if skip_without_wildcard("unauthenticated_requests_are_refused_everywhere") {
+fn viewing_needs_no_cookie() {
+    if skip_without_wildcard("viewing_needs_no_cookie") {
         return;
     }
     let (_temp, base) = workspace();
@@ -118,30 +138,23 @@ fn unauthenticated_requests_are_refused_everywhere() {
     let host = format!("Host: 127.0.0.1:{port}\r\n");
     let get = |path: &str| request(port, &format!("GET {path} HTTP/1.1\r\n{host}\r\n"));
 
-    let responses = [
+    let pages = [
         get("/"),
-        get("/assets/app.js"),
         get("/stages/anything"),
         get("/api/status"),
         get("/api/config"),
-        request(
-            port,
-            &format!("POST /api/config HTTP/1.1\r\n{host}Content-Length: 2\r\n\r\n{{}}"),
-        ),
-        request(
-            port,
-            &format!(
-                "GET /ws HTTP/1.1\r\n{host}Upgrade: websocket\r\nConnection: Upgrade\r\n\
-                 Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
-            ),
-        ),
-        get(&format!("/api/status?token={}", token())),
     ];
+    let stream_admitted = status_stream_admits(port);
     stop(running);
 
-    for response in &responses {
-        assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+    for response in &pages {
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_security_headers(response);
     }
+    assert!(
+        stream_admitted,
+        "the /ws status stream must admit a cookieless page"
+    );
 }
 
 #[test]
@@ -205,42 +218,52 @@ fn host_header_is_checked_even_with_a_valid_cookie() {
     }
 }
 
-/// A `POST /api/config` request carrying the given CSRF header value and an
-/// `Origin` header, or no `Origin` at all when `origin` is `None`.
-fn config_write_request(host: &str, cookie: &str, origin: Option<&str>, csrf: &str) -> String {
-    let payload = r#"{"scope":"project","name":"terminal.backend","value":"tmux"}"#;
-    let origin_header = origin
-        .map(|value| format!("Origin: {value}\r\n"))
-        .unwrap_or_default();
+/// A `POST /api/config` request carrying the given CSRF header value, plus a
+/// `Cookie` and an `Origin` header wherever those are `Some`.
+fn config_write_request(
+    host: &str,
+    cookie: Option<&str>,
+    origin: Option<&str>,
+    csrf: &str,
+) -> String {
+    let payload = r#"{"scope":"project","name":"context.ceiling_tokens","value":900000}"#;
+    let header = |name: &str, value: Option<&str>| {
+        value
+            .map(|value| format!("{name}: {value}\r\n"))
+            .unwrap_or_default()
+    };
     format!(
-        "POST /api/config HTTP/1.1\r\n{host}Cookie: {cookie}\r\n{origin_header}\
+        "POST /api/config HTTP/1.1\r\n{host}{}{}\
          Content-Type: application/json\r\nX-Loom-Csrf: {csrf}\r\nContent-Length: {}\r\n\r\n{payload}",
+        header("Cookie", cookie),
+        header("Origin", origin),
         payload.len()
     )
 }
 
 #[test]
-fn authenticated_reads_succeed() {
-    if skip_without_wildcard("authenticated_reads_succeed") {
+fn a_cookie_bearing_write_succeeds() {
+    if skip_without_wildcard("a_cookie_bearing_write_succeeds") {
         return;
     }
     let (_temp, base) = workspace();
     let (port, running) = start_dashboard(base, dashboard_options());
     let cookie = bootstrap_cookie(port);
     let host = format!("Host: 127.0.0.1:{port}\r\n");
+    let origin = format!("http://127.0.0.1:{port}");
 
-    let status = request(
+    let written = request(
         port,
-        &format!("GET /api/status HTTP/1.1\r\n{host}Cookie: {cookie}\r\n\r\n"),
-    );
-    let config = request(
-        port,
-        &format!("GET /api/config HTTP/1.1\r\n{host}Cookie: {cookie}\r\n\r\n"),
+        &config_write_request(
+            &host,
+            Some(&cookie),
+            Some(&origin),
+            config_api::test_token(),
+        ),
     );
     stop(running);
 
-    assert!(status.starts_with("HTTP/1.1 200"), "{status}");
-    assert!(config.starts_with("HTTP/1.1 200"), "{config}");
+    assert!(written.starts_with("HTTP/1.1 200"), "{written}");
 }
 
 #[test]
@@ -252,24 +275,28 @@ fn a_refused_write_never_touches_the_config_file() {
     let (port, running) = start_dashboard(base.clone(), dashboard_options());
     let cookie = bootstrap_cookie(port);
     let host = format!("Host: 127.0.0.1:{port}\r\n");
+    let origin = format!("http://127.0.0.1:{port}");
 
     let config_path = base.join(".loom/work/config.toml");
     let before = std::fs::read(&config_path).unwrap_or_default();
 
     let csrf = config_api::test_token();
-    let no_origin = request(port, &config_write_request(&host, &cookie, None, csrf));
+    let no_cookie = request(
+        port,
+        &config_write_request(&host, None, Some(&origin), csrf),
+    );
+    let no_origin = request(
+        port,
+        &config_write_request(&host, Some(&cookie), None, csrf),
+    );
     let bad_csrf = request(
         port,
-        &config_write_request(
-            &host,
-            &cookie,
-            Some(&format!("http://127.0.0.1:{port}")),
-            &"0".repeat(64),
-        ),
+        &config_write_request(&host, Some(&cookie), Some(&origin), &"0".repeat(64)),
     );
     let after = std::fs::read(&config_path).unwrap_or_default();
     stop(running);
 
+    assert!(no_cookie.starts_with("HTTP/1.1 401"), "{no_cookie}");
     assert!(no_origin.starts_with("HTTP/1.1 403"), "{no_origin}");
     assert!(bad_csrf.starts_with("HTTP/1.1 403"), "{bad_csrf}");
     assert_eq!(
@@ -298,6 +325,32 @@ fn a_dashboard_cookie_alone_does_not_enable_terminals() {
     stop(running);
 
     assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+}
+
+#[test]
+fn remote_terminals_still_require_the_cookie() {
+    if skip_without_wildcard("remote_terminals_still_require_the_cookie") {
+        return;
+    }
+    let (_temp, base) = workspace();
+    let options = ServeOptions {
+        dashboard_token: Some(token()),
+        terminal_token: Some(token()),
+    };
+    let (port, running) = start_dashboard(base, options);
+    let origin = format!("http://127.0.0.1:{port}");
+
+    let refused = request(port, &terminal_request(port, None, Some(&origin)));
+    let cookie = bootstrap_cookie(port);
+    // Panics unless the handshake completes: the cookie admits the upgrade.
+    drop(connect_terminal(port, &token()));
+    stop(running);
+
+    assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+    assert_eq!(
+        cookie,
+        format!("{}={}", web::cookie_name_for_port(port), token())
+    );
 }
 
 #[test]

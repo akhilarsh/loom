@@ -1,7 +1,8 @@
-//! Routing an already-peeked request to a WebSocket upgrade, and the one
-//! unauthenticated remote success: exchanging a bootstrap query token for the
-//! dashboard's port cookie. Split out of `connection` to keep that file under
-//! its line budget once both lanes became policy-aware.
+//! Routing an already-peeked request to a WebSocket upgrade, and exchanging a
+//! bootstrap query token for the dashboard's port cookie - the cookie that
+//! terminals and remote settings writes require. Split out of `connection`
+//! to keep that file under its line budget once both lanes became
+//! policy-aware.
 
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
@@ -43,9 +44,8 @@ pub(super) fn route_upgrade(
     Some(stream)
 }
 
-/// Handle the one unauthenticated remote success: `GET`/`HEAD /?token=`.
-/// Loopback mode reaches this too, when terminals are enabled, exactly as
-/// before.
+/// Handle the cookie bootstrap: `GET`/`HEAD /?token=`. Loopback mode reaches
+/// this too, when terminals are enabled.
 ///
 /// Remote mode validates `Origin` here, ahead of the token exchange: an
 /// absent `Origin` is fine (this is the same navigation a bootstrap link

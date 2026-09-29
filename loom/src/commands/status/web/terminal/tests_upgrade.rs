@@ -21,7 +21,11 @@ fn cookie(port: u16, value: &str) -> String {
     format!("{}={value}", web::cookie_name_for_port(port))
 }
 
-fn terminal_request(port: u16, cookie: Option<&str>, origin: Option<&str>) -> String {
+pub(in crate::commands::status::web) fn terminal_request(
+    port: u16,
+    cookie: Option<&str>,
+    origin: Option<&str>,
+) -> String {
     let cookie = cookie.map(|cookie| format!("Cookie: {cookie}\r\n"));
     let origin = origin.map(|origin| format!("Origin: {origin}\r\n"));
     format!(
@@ -30,7 +34,10 @@ fn terminal_request(port: u16, cookie: Option<&str>, origin: Option<&str>) -> St
     )
 }
 
-fn connect_terminal(port: u16, token: &str) -> tungstenite::WebSocket<TcpStream> {
+pub(in crate::commands::status::web) fn connect_terminal(
+    port: u16,
+    token: &str,
+) -> tungstenite::WebSocket<TcpStream> {
     let url = format!("ws://127.0.0.1:{port}/ws/terminal/missing/view");
     let mut request = url
         .as_str()

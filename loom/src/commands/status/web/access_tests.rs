@@ -185,7 +185,7 @@ fn remote_origin_presence_follows_the_requirement() {
 }
 
 #[test]
-fn remote_dashboard_auth_gates_every_route_by_cookie() {
+fn remote_write_auth_checks_the_dashboard_cookie() {
     let policy = remote_policy();
     assert!(!policy.authenticated(None));
     assert!(!policy.authenticated(Some("loom_dashboard_7373=wrong")));

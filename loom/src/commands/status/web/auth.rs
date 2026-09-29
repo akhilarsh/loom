@@ -4,7 +4,8 @@
 //!
 //! [`super::TerminalLane`] mints and checks its own copy of this same shape
 //! for the terminal WebSocket lane; [`Auth`] backs the dashboard-wide
-//! equivalent that remote mode requires on every other route. The two
+//! equivalent that remote mode requires on `/api/config` writes. Viewing
+//! routes never ask for either. The two
 //! cookies carry the same name and, whenever both exist, the same value -
 //! `ServeOptions` requires `terminal_token` and `dashboard_token` to agree -
 //! so a browser holding either has effectively satisfied both.

@@ -11,7 +11,10 @@
 //! `Access-Control-Allow-*` header would hand both halves back to the attacker.
 //!
 //! It is a second layer behind the strict `Origin` check
-//! (`http::origin_allowed_strict`), not a replacement for it.
+//! (`http::origin_allowed_strict`), not a replacement for it. The token is no
+//! secret from a network client: on a remote bind `GET /api/config` needs no
+//! cookie, so there the dashboard cookie plus the exact `Origin` is the write
+//! gate, and this token only guards a browser that already holds the cookie.
 
 use std::sync::OnceLock;
 

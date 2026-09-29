@@ -121,9 +121,13 @@ pub(super) fn handle(
 }
 
 /// Peek the request head and clear every pre-routing gate: read/write
-/// timeouts, `Host`, the bootstrap redirect, and (in remote mode) the
-/// dashboard cookie. `None` means the connection is already finished -
-/// refused or redirected - and `handle` must return without reading further.
+/// timeouts, `Host`, and the bootstrap redirect. `None` means the connection
+/// is already finished - refused or redirected - and `handle` must return
+/// without reading further.
+///
+/// No dashboard cookie is checked here: viewing needs none on any bind. The
+/// routes that change something check it themselves - the terminal lane in
+/// `terminal::upgrade::admit`, `/api/config` writes in `config_api`.
 fn gate(
     stream: &mut TcpStream,
     running: &AtomicBool,
@@ -144,12 +148,6 @@ fn gate(
         return None;
     }
     if bootstrap_terminal_token(stream, &peeked, policy, lane, local) {
-        return None;
-    }
-    // Every route past the bootstrap above requires the dashboard cookie in
-    // remote mode; a no-op check in the default loopback posture.
-    if !policy.authenticated(peeked.cookie.as_deref()) {
-        fail(stream, 401, "Unauthorized", b"dashboard cookie required");
         return None;
     }
     Some(peeked)

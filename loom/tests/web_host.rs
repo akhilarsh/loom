@@ -1,7 +1,7 @@
 //! Binary-level proof that `loom status --web 0 --host 0.0.0.0` binds a
-//! wildcard listener, prints a working bootstrap URL, and enforces the
-//! remote-mode cookie on every other route - all against the real compiled
-//! binary, not the library directly.
+//! wildcard listener, prints a working bootstrap URL, serves viewing routes
+//! without the cookie, and refuses a cookieless settings write - all against
+//! the real compiled binary, not the library directly.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -176,12 +176,12 @@ fn cookie_value(response: &str) -> String {
 }
 
 /// `loom status --web 0 --host 0.0.0.0`, in a disposable workspace, proves the
-/// full remote-mode contract against the real binary: no-cookie refusal on
-/// every route, a working bootstrap redirect, and an authenticated read.
+/// remote-mode contract against the real binary: viewing needs no cookie, the
+/// bootstrap redirect sets one, and a settings write without it is refused.
 #[test]
-fn remote_wildcard_dashboard_requires_the_bootstrap_cookie() {
+fn remote_wildcard_dashboard_serves_viewing_without_the_cookie() {
     let (_temp, base, home) = workspace();
-    const NAME: &str = "remote_wildcard_dashboard_requires_the_bootstrap_cookie";
+    const NAME: &str = "remote_wildcard_dashboard_serves_viewing_without_the_cookie";
     let Some((_guard, port, token)) = spawn_remote_dashboard(&base, home.path()) else {
         eprintln!("SKIP {NAME}: dashboard did not start (no bindable wildcard address?)");
         return;
@@ -189,22 +189,24 @@ fn remote_wildcard_dashboard_requires_the_bootstrap_cookie() {
     assert_eq!(token.len(), 64, "process token must be 64 hex characters");
     let host = format!("Host: 127.0.0.1:{port}\r\n");
 
-    let unauthenticated = request(port, &format!("GET / HTTP/1.1\r\n{host}\r\n"));
-    assert!(
-        unauthenticated.starts_with("HTTP/1.1 401"),
-        "{unauthenticated}"
-    );
+    for path in ["/", "/api/status"] {
+        let viewed = request(port, &format!("GET {path} HTTP/1.1\r\n{host}\r\n"));
+        assert!(viewed.starts_with("HTTP/1.1 200"), "{path}: {viewed}");
+    }
 
     let bootstrap = request(port, &format!("GET /?token={token} HTTP/1.1\r\n{host}\r\n"));
     assert!(bootstrap.starts_with("HTTP/1.1 302"), "{bootstrap}");
     assert!(bootstrap.contains("Location: /"), "{bootstrap}");
+    assert!(!cookie_value(&bootstrap).is_empty());
 
-    let authenticated = request(
+    let body = "{}";
+    let write = request(
         port,
         &format!(
-            "GET /api/status HTTP/1.1\r\n{host}Cookie: {}\r\n\r\n",
-            cookie_value(&bootstrap)
+            "POST /api/config HTTP/1.1\r\n{host}Origin: http://127.0.0.1:{port}\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
         ),
     );
-    assert!(authenticated.starts_with("HTTP/1.1 200"), "{authenticated}");
+    assert!(write.starts_with("HTTP/1.1 401"), "{write}");
 }

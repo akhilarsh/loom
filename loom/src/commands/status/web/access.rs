@@ -69,9 +69,10 @@ impl AccessPolicy {
         self.dashboard_auth.as_ref()
     }
 
-    /// Whether this connection may proceed without presenting the dashboard
-    /// cookie: always true in the default loopback posture, since that mode
-    /// authenticates nothing beyond `Host`/`Origin`.
+    /// Whether this request carries the dashboard cookie a write route
+    /// requires in remote posture. Viewing routes never ask. Always true in
+    /// the default loopback posture, since that mode authenticates nothing
+    /// beyond `Host`/`Origin`.
     pub(super) fn authenticated(&self, cookie: Option<&str>) -> bool {
         match &self.dashboard_auth {
             None => true,
