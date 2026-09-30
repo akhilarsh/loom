@@ -55,6 +55,7 @@
 //! reference. There is no global: the tunables belong to a retrieval, not to
 //! the process.
 
+pub mod census;
 pub mod config;
 pub mod coverage;
 pub mod delivery;
@@ -79,6 +80,7 @@ pub mod schema;
 pub mod source_graph;
 pub mod store;
 pub(crate) mod untrusted;
+pub mod window;
 pub mod worktree_graph;
 
 pub use config::RetrievalConfig;

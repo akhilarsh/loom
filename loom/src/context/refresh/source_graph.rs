@@ -71,7 +71,7 @@ pub struct SourceGraphOutcome {
     pub counters: SourceGraphCounters,
 }
 
-pub(super) const EXCLUDED_ROOTS: &[&str] = &[
+pub(crate) const EXCLUDED_ROOTS: &[&str] = &[
     ".loom",
     ".work",
     ".worktrees",
@@ -80,7 +80,7 @@ pub(super) const EXCLUDED_ROOTS: &[&str] = &[
     ".git",
 ];
 
-pub(super) fn excluded(path: &str) -> bool {
+pub(crate) fn excluded(path: &str) -> bool {
     let first = path.split('/').next().unwrap_or(path);
     EXCLUDED_ROOTS.contains(&first)
 }
