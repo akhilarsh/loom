@@ -1,28 +1,18 @@
 //! Assemble a [`FileExtraction`] from one file's collected matches.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::context::extract::{file_node, FileExtraction};
 use crate::context::source_graph::{
-    body_hash, file_node_id, node_id, FileCoverage, NodeLanguage, SourceEdge, SourceEdgeKind,
-    SourceNode, Span,
+    body_hash, file_node_id, node_id, syntax_confidence, EdgeProvenance, FileCoverage,
+    NodeLanguage, SourceEdge, SourceEdgeKind, SourceNode, Span,
 };
 
-use super::collect::{enclosing, Collected, Definition, Reference};
-use super::{IMPORT_CONFIDENCE, UNRESOLVED_CALL_CONFIDENCE};
-
-/// Scope bookkeeping produced while walking definitions, needed to resolve
-/// the calls that come after them.
-struct DefinitionScopes {
-    /// Span of every definition, for locating which one encloses a call site.
-    spans: Vec<(Span, String)>,
-    /// Every spelling a definition answers to — its bare name and each
-    /// scope-qualified suffix, so `Widget::new()` finds the `new` inside
-    /// `impl Widget` rather than any other. Last definition of a spelling wins,
-    /// matching how a reader resolves a shadowed name by reading top to bottom.
-    by_spelling: BTreeMap<String, String>,
-}
+use super::binding::{
+    call_edges, reference_edges, Binder, BindingRules, DefinitionInfo, DefinitionScopes,
+};
+use super::collect::{Collected, Definition, Reference};
+use super::ids::disambiguate;
 
 /// Read-only, file-wide context every emitted definition node carries.
 struct DefinitionContext<'a> {
@@ -33,6 +23,14 @@ struct DefinitionContext<'a> {
     coverage: &'a FileCoverage,
 }
 
+/// A definition with its scope and innermost enclosing definition resolved.
+struct Placed<'a> {
+    definition: &'a Definition,
+    scope: Vec<String>,
+    /// Index of the innermost enclosing definition, if any.
+    parent: Option<usize>,
+}
+
 /// Assemble nodes and edges from one file's collected matches.
 pub(super) fn build(
     path: &Path,
@@ -40,6 +38,7 @@ pub(super) fn build(
     node_language: NodeLanguage,
     parser_version: String,
     walk: Collected,
+    rules: &BindingRules,
 ) -> FileExtraction {
     let coverage = coverage_of(&walk);
 
@@ -63,7 +62,14 @@ pub(super) fn build(
     let scopes = build_definitions(&walk.definitions, &ctx, &mut nodes, &mut edges);
 
     import_edges(&walk.imports, &file_id, &mut edges);
-    call_edges(&walk.calls, &scopes, &file_id, &mut edges);
+    let binder = Binder {
+        scopes: &scopes,
+        imports: &walk.bindings,
+        rules,
+        file_id: &file_id,
+    };
+    call_edges(&walk.calls, &binder, &mut edges);
+    reference_edges(&walk.references, &binder, &mut edges);
 
     dedupe(&mut edges);
 
@@ -71,6 +77,7 @@ pub(super) fn build(
         nodes,
         edges,
         coverage,
+        imports: walk.bindings,
     }
 }
 
@@ -87,72 +94,108 @@ fn coverage_of(walk: &Collected) -> FileCoverage {
 
 /// Emit a node and a `Contains` edge for every definition, in source order.
 ///
-/// Definitions are in source order, so a stack of still-open enclosing
-/// definitions is enough to derive scope without re-walking the tree.
+/// Every id is settled before anything is emitted: a parent's final id
+/// depends on duplicates of it that may come after its children.
 fn build_definitions(
     definitions: &[Definition],
     ctx: &DefinitionContext,
     nodes: &mut Vec<SourceNode>,
     edges: &mut Vec<SourceEdge>,
 ) -> DefinitionScopes {
-    let mut open: Vec<(Span, String, String)> = Vec::new();
-    let mut scopes = DefinitionScopes {
-        spans: Vec::new(),
-        by_spelling: BTreeMap::new(),
-    };
+    let placed = place(definitions);
+    let bases: Vec<(String, &str)> = placed
+        .iter()
+        .map(|entry| {
+            let definition = entry.definition;
+            let base = node_id(ctx.path, definition.kind, &entry.scope);
+            (base, definition.signature.as_str())
+        })
+        .collect();
+    let ids = disambiguate(&bases);
 
-    for definition in definitions {
-        emit_definition(definition, ctx, &mut open, &mut scopes, nodes, edges);
+    let mut scopes = DefinitionScopes::default();
+    for (entry, (id, symbol_key)) in placed.iter().zip(&ids) {
+        let definition = entry.definition;
+        let parent = entry.parent.map(|index| ids[index].0.clone());
+        edges.push(SourceEdge::structural(
+            parent.as_deref().unwrap_or(ctx.file_id),
+            id.clone(),
+            definition.name.clone(),
+        ));
+        nodes.push(definition_node(entry, id, symbol_key, ctx));
+        let info = DefinitionInfo {
+            kind: definition.kind,
+            scope: entry.scope.clone(),
+            parent,
+            qualified: !definition.qualifier.is_empty(),
+        };
+        record_scope(&mut scopes, id, definition.span, info);
     }
-
     scopes
 }
 
-/// Resolve one definition's scope against the still-open stack, then record
-/// its node, its `Contains` edge, and its scope-lookup entries.
-fn emit_definition(
-    definition: &Definition,
-    ctx: &DefinitionContext,
-    open: &mut Vec<(Span, String, String)>,
-    scopes: &mut DefinitionScopes,
-    nodes: &mut Vec<SourceNode>,
-    edges: &mut Vec<SourceEdge>,
-) {
-    open.retain(|(span, _, _)| span.end_byte >= definition.span.end_byte);
-
-    let mut scope: Vec<String> = open.iter().map(|(_, name, _)| name.clone()).collect();
-    scope.push(definition.name.clone());
-    let id = node_id(ctx.path, definition.kind, &scope);
-    for spelling in spellings(&scope) {
-        scopes.by_spelling.insert(spelling, id.clone());
+/// Resolve every definition's scope and innermost enclosing definition.
+///
+/// Definitions are in source order, so a stack of still-open enclosing
+/// definitions is enough to derive scope without re-walking the tree. A
+/// definition's scope is its parent's, then any qualifier written on it, then
+/// its own name.
+fn place(definitions: &[Definition]) -> Vec<Placed<'_>> {
+    let mut open: Vec<usize> = Vec::new();
+    let mut placed: Vec<Placed> = Vec::with_capacity(definitions.len());
+    for (index, definition) in definitions.iter().enumerate() {
+        open.retain(|&outer| definitions[outer].span.end_byte >= definition.span.end_byte);
+        let parent = open.last().copied();
+        let mut scope = parent
+            .map(|outer| placed[outer].scope.clone())
+            .unwrap_or_default();
+        scope.extend(definition.qualifier.iter().cloned());
+        scope.push(definition.name.clone());
+        placed.push(Placed {
+            definition,
+            scope,
+            parent,
+        });
+        open.push(index);
     }
+    placed
+}
 
-    let parent = open
-        .last()
-        .map(|(_, _, parent_id)| parent_id.clone())
-        .unwrap_or_else(|| ctx.file_id.to_string());
-    edges.push(SourceEdge::parser(
-        parent,
-        id.clone(),
-        SourceEdgeKind::Contains,
-        definition.name.clone(),
-    ));
-
-    nodes.push(SourceNode {
-        id: id.clone(),
+/// The node for one placed definition, under its final id.
+fn definition_node(
+    placed: &Placed,
+    id: &str,
+    symbol_key: &str,
+    ctx: &DefinitionContext,
+) -> SourceNode {
+    let definition = placed.definition;
+    SourceNode {
+        id: id.to_string(),
         kind: definition.kind,
         path: ctx.path.to_path_buf(),
-        scope,
+        scope: placed.scope.clone(),
         span: definition.span,
         signature: definition.signature.clone(),
         body_hash: body_hash(&definition.body),
         language: ctx.node_language.clone(),
         parser_version: ctx.parser_version.to_string(),
         coverage: ctx.coverage.clone(),
-    });
+        symbol_key: symbol_key.to_string(),
+    }
+}
 
-    scopes.spans.push((definition.span, id.clone()));
-    open.push((definition.span, definition.name.clone(), id));
+/// Record a definition's span, its binding facts, and every spelling it
+/// answers to. Final ids are unique, so each spelling lists an id once.
+fn record_scope(scopes: &mut DefinitionScopes, id: &str, span: Span, info: DefinitionInfo) {
+    for spelling in spellings(&info.scope) {
+        scopes
+            .by_spelling
+            .entry(spelling)
+            .or_default()
+            .push(id.to_string());
+    }
+    scopes.spans.push((span, id.to_string()));
+    scopes.by_id.insert(id.to_string(), info);
 }
 
 /// Every spelling a scope answers to, from the bare name outwards:
@@ -162,69 +205,59 @@ fn spellings(scope: &[String]) -> impl Iterator<Item = String> + '_ {
 }
 
 /// Import edges: the imported file is a different translation unit; nothing
-/// here can resolve it, so it is inferred by construction.
+/// here can resolve it, so it is a syntax edge by construction.
 fn import_edges(imports: &[Reference], file_id: &str, edges: &mut Vec<SourceEdge>) {
     for import in imports {
-        edges.push(SourceEdge::inferred(
+        edges.push(SourceEdge::syntax(
             file_id,
-            crate::context::source_graph::UNRESOLVED_TARGET,
             SourceEdgeKind::Imports,
             import.symbol.clone(),
-            IMPORT_CONFIDENCE,
+            import.site,
+            syntax_confidence(SourceEdgeKind::Imports),
         ));
     }
 }
 
-/// Call edges: a callee this file defines is a parser edge, anything else is
-/// inferred and capped below full confidence.
+/// Sort edges into a canonical order and merge equal ones, so two calls to
+/// one callee are one edge with two sites, and cold and incremental
+/// extraction of the same bytes serialize identically.
 ///
-/// A qualified callee matches only the spelling it was written with, so
-/// `Widget::new()` finds the `new` inside `impl Widget` and a path into another
-/// module (`crate::other::new()`) matches nothing here — whole-graph resolution
-/// decides that one, with evidence this file does not have.
-fn call_edges(
-    calls: &[Reference],
-    scopes: &DefinitionScopes,
-    file_id: &str,
-    edges: &mut Vec<SourceEdge>,
-) {
-    for call in calls {
-        let from = enclosing(&scopes.spans, call.at_byte).unwrap_or_else(|| file_id.to_string());
-        edges.push(match scopes.by_spelling.get(&call.symbol) {
-            Some(target) => SourceEdge::parser(
-                from,
-                target.clone(),
-                SourceEdgeKind::Calls,
-                call.symbol.clone(),
-            ),
-            None => SourceEdge::inferred(
-                from,
-                crate::context::source_graph::UNRESOLVED_TARGET,
-                SourceEdgeKind::Calls,
-                call.symbol.clone(),
-                UNRESOLVED_CALL_CONFIDENCE,
-            ),
-        });
+/// Edges are equal on `(from, to, kind, provenance, symbol, receiver)`; their
+/// sites merge, sorted by position and deduplicated.
+fn dedupe(edges: &mut Vec<SourceEdge>) {
+    edges.sort_by(|a, b| edge_key(a).cmp(&edge_key(b)));
+    edges.dedup_by(|next, kept| {
+        let equal = edge_key(next) == edge_key(kept);
+        if equal {
+            kept.sites.append(&mut next.sites);
+        }
+        equal
+    });
+    for edge in edges.iter_mut() {
+        edge.sites
+            .sort_by_key(|site| (site.start_byte, site.end_byte));
+        edge.sites.dedup();
     }
 }
 
-/// Sort edges into a canonical order and drop exact duplicates, so cold and
-/// incremental extraction of the same bytes serialize identically.
-fn dedupe(edges: &mut Vec<SourceEdge>) {
-    edges.sort_by(|a, b| {
-        (&a.from, &a.to, a.kind, a.provenance, &a.symbol).cmp(&(
-            &b.from,
-            &b.to,
-            b.kind,
-            b.provenance,
-            &b.symbol,
-        ))
-    });
-    edges.dedup_by(|a, b| {
-        a.from == b.from
-            && a.to == b.to
-            && a.kind == b.kind
-            && a.provenance == b.provenance
-            && a.symbol == b.symbol
-    });
+/// The identity [`dedupe`] merges on: `(from, to, kind, provenance, symbol,
+/// receiver)`.
+type EdgeKey<'a> = (
+    &'a str,
+    &'a str,
+    SourceEdgeKind,
+    EdgeProvenance,
+    &'a str,
+    Option<&'a str>,
+);
+
+fn edge_key(edge: &SourceEdge) -> EdgeKey<'_> {
+    (
+        edge.from.as_str(),
+        edge.to.as_str(),
+        edge.kind,
+        edge.provenance,
+        edge.symbol.as_str(),
+        edge.receiver.as_deref(),
+    )
 }
