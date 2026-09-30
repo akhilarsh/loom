@@ -131,7 +131,7 @@ said no size limit was enforced at all.
 version of this doc invented it, along with the coverage-weighted-retrieval
 mechanism it described. No function concatenates the tier-1 architecture summary
 with tier-2 architecture topics to weight source-directory matches.
-(`context/coverage.rs` does define a `CoverageReport`, but it reports source-graph
+(`context/coverage/mod.rs` does define a `CoverageReport`, but it reports source-graph
 parse coverage per file, which is unrelated to knowledge docs.) There is no
 `--min-coverage` gate either.
 

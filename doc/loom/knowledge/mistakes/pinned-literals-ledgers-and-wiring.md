@@ -48,7 +48,7 @@ edit from tripping the gate, and two are exactly AT 400 —
 include `utils.rs` 399, `terminal/native/detection.rs` 399, `verify/before_after.rs`
 398, `terminal/tmux/reconcile.rs` 398, `terminal/native/mod.rs` 398,
 `context/refresh/source_graph.rs` 397, `git/merge/in_progress.rs` 396,
-`context/coverage.rs` 394, `signals/format/brief.rs` 392, `verify/wiring_detection.rs`
+`context/coverage.rs` 394 (since renamed to the `context/coverage/` module), `signals/format/brief.rs` 392, `verify/wiring_detection.rs`
 390. None is a violation today. `wc -l` your target first; at >=390 plan the split in
 the same round, because a split then collides with the wiring pins below.
 

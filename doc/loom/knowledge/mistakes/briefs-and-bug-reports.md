@@ -107,7 +107,7 @@ The pre-commit hook runs markdownlint with automatic fixes on every staged markd
 
 ## A Stage Bug Report's Suspected Cause Is a Lead, Not a Diagnosis
 
-**What happened:** `BUGS-map-api-freshness-session.md` blamed a stuck integrity dispute on the dispute apply path or a lost update. The session started planning fixes from those suspicions, and the user stopped it: validate first. The orchestrator log and shell history showed a different chain. `loom update` had replaced the binary under the running daemon, so the adjudicator spawn failed. The stage was escalated to NeedsHumanReview with its disputing worker still alive. An operator `--approve` then re-queued the stage, and adoption re-attached the idle worker.
+**What happened:** the stage's bug report (BUGS-map-api-freshness-session.md, removed once its entries were fixed) blamed a stuck integrity dispute on the dispute apply path or a lost update. The session started planning fixes from those suspicions, and the user stopped it: validate first. The orchestrator log and shell history showed a different chain. `loom update` had replaced the binary under the running daemon, so the adjudicator spawn failed. The stage was escalated to NeedsHumanReview with its disputing worker still alive. An operator `--approve` then re-queued the stage, and adoption re-attached the idle worker.
 
 **Why:** a stage session writes its report from inside a sandbox. It cannot see `orchestrator.log` timing, operator commands, or daemon restarts, so its suspected causes are guesses about code it never traced.
 

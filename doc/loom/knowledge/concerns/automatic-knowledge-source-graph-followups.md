@@ -69,7 +69,7 @@ with no backoff.
 This is the shape recorded in
 [visibility-and-reachability.md](../mistakes/visibility-and-reachability.md): one value that means
 two things cannot gate a claim about either. Stage `map-api-freshness` of
-`doc/plans/PLAN-source-graph-mechanism.md` makes `current | stale | never built | unavailable`
+the source-graph-mechanism plan makes `current | stale | never built | unavailable`
 explicit and stops the prompt hook from rebuilding a never-built graph.
 
 ## Stopwording drops the words a natural-language source-graph question is asked in (2026-09-06)
@@ -82,8 +82,8 @@ explicit and stops the prompt hook from rebuilding a never-built graph.
 
 ## An Unparseable Base Layer Wedges the Graph Cache
 
-`read_layer` (`context/graph_store/mod.rs`) returns `Err` when a layer file fails to deserialize. `ensure_base` (`context/refresh/snapshot.rs`) calls `load_base(..)?` before its `layer_is_current` check and its delete, so a corrupt base for `HEAD` never reaches the rebuild. The snapshot reports `Unavailable` and marks the semantic layer stale. `resolve_scope_layers` uses `load_newest_base()?`, so an unparseable newest base also blocks building any other base until it is pruned or removed by hand. Retrieval (`context/retrieve/graph.rs::load_resolved_graph`) degrades to an empty graph with no banner, and `build_worktree_graph` (`context/worktree_graph.rs`) propagates the error into `reachable` checks and impact-selected tests. No test covers a stored layer that fails to deserialize. The graph layer has no schema version: the only versioning is the per-node `parser_version`. Stage `graph-contract` of `doc/plans/PLAN-source-graph-mechanism.md` adds `GRAPH_SCHEMA_VERSION` and treats a corrupt layer as absent.
+`read_layer` (`context/graph_store/mod.rs`) returns `Err` when a layer file fails to deserialize. `ensure_base` (`context/refresh/snapshot.rs`) calls `load_base(..)?` before its `layer_is_current` check and its delete, so a corrupt base for `HEAD` never reaches the rebuild. The snapshot reports `Unavailable` and marks the semantic layer stale. `resolve_scope_layers` uses `load_newest_base()?`, so an unparseable newest base also blocks building any other base until it is pruned or removed by hand. Retrieval (`context/retrieve/graph.rs::load_resolved_graph`) degrades to an empty graph with no banner, and `build_worktree_graph` (`context/worktree_graph.rs`) propagates the error into `reachable` checks and impact-selected tests. No test covers a stored layer that fails to deserialize. The graph layer has no schema version: the only versioning is the per-node `parser_version`. Stage `graph-contract` of the source-graph-mechanism plan adds `GRAPH_SCHEMA_VERSION` and treats a corrupt layer as absent.
 
 ## Worktree Graphs Trust Stale Extractor Output
 
-`build_worktree_graph` (`context/worktree_graph.rs`) loads the nearest published base and re-extracts only the files changed in the worktree. It never compares a base entry's `parser_version` with the current extractor identity. A base written by an older extractor therefore serves old-shape entries for every unchanged file, mixed with new-shape entries for the changed ones, in `reachable` checks and impact-selected tests. Stage `graph-contract` of `doc/plans/PLAN-source-graph-mechanism.md` re-extracts mismatched entries.
+`build_worktree_graph` (`context/worktree_graph.rs`) loads the nearest published base and re-extracts only the files changed in the worktree. It never compares a base entry's `parser_version` with the current extractor identity. A base written by an older extractor therefore serves old-shape entries for every unchanged file, mixed with new-shape entries for the changed ones, in `reachable` checks and impact-selected tests. Stage `graph-contract` of the source-graph-mechanism plan re-extracts mismatched entries.
