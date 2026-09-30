@@ -42,6 +42,12 @@ impl GraphStore {
         Ok(())
     }
 
+    /// True when a denied cache write made this store keep a layer in memory
+    /// only, so that layer will not outlive the process.
+    pub fn fell_back(&self) -> bool {
+        !self.memory_fallback.borrow().is_empty()
+    }
+
     /// `read_layer`, preferring a layer this process already fell back to
     /// in memory for this exact path.
     pub(super) fn read_layer_or_memory(&self, path: &Path) -> Result<Option<GraphLayer>> {

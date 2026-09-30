@@ -79,14 +79,21 @@ fn rank_source_item(line_start: Option<usize>, line_end: Option<usize>) -> Conte
     )
 }
 
+fn built(revision: &str) -> Freshness {
+    Freshness {
+        revision: revision.to_string(),
+        ..Freshness::default()
+    }
+}
+
 fn pack(items: Vec<ContextItem>, omitted: usize) -> ContextPack {
     ContextPack {
         query: "signal test".to_string(),
         scope: vec![Channel::Knowledge],
         budget_tokens: 3000,
         estimated_tokens: 12,
-        structural_freshness: Freshness::default(),
-        semantic_freshness: Freshness::default(),
+        structural_freshness: built("structural"),
+        semantic_freshness: built("semantic"),
         items,
         unmet_required: Vec::new(),
         omitted: OmissionSummary {
@@ -232,6 +239,19 @@ fn a_healthy_pack_leaves_the_revision_line_exactly_as_before() {
         .expect("a revision line");
     assert!(!revision_line.contains("DEGRADED"), "{revision_line}");
     assert!(revision_line.contains("Structural: current  |  Semantic: current"));
+}
+
+#[test]
+fn the_revision_line_names_the_four_graph_states() {
+    let mut pack = pack(vec![item("chunk-1", None)], 0);
+    pack.structural_freshness.stale = true;
+    pack.semantic_freshness = Freshness::never_built("x");
+    let rendered = format_knowledge_brief(&pack, Some("stage-1"), "q");
+    assert!(rendered.contains("Structural: stale  |  Semantic: never built"));
+
+    pack.semantic_freshness = Freshness::unavailable("x");
+    let rendered = format_knowledge_brief(&pack, Some("stage-1"), "q");
+    assert!(rendered.contains("Semantic: unavailable"));
 }
 
 #[test]

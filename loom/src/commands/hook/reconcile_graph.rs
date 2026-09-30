@@ -9,14 +9,15 @@
 //! `doc/PROPOSAL-retrieval-precision.md` §A.12/§A.22 and §P3 recommendation
 //! 12 for the design.
 //!
-//! ## Debounce
+//! ## Lease and backoff
 //!
-//! See the `lock` submodule for the `reconcile.lock` file's encoding and the
-//! full Spawn/Skip policy table. In short: `try_reconcile` never unlinks
-//! the lock, it REWRITES it — once at the very start, correcting the pid
-//! field from whatever [`spawn_if_needed`] claimed it with to this process's
-//! own pid, and once at the very end to a finished marker, on BOTH outcomes.
-//! See `try_reconcile`'s own comments for why each rewrite is necessary.
+//! See the `lock` submodule for the `reconcile.lock` line's encoding and the
+//! full Spawn/Skip policy table. In short: the lock is a lease. A hook that
+//! decides to spawn claims it, the reconciler re-stamps it with its own pid and
+//! keeps that pid through every pass, and a request that arrives while it runs
+//! only sets `pending`, which earns exactly one more pass. A run that does not
+//! end `Current` counts a failure, and each failure doubles the throttle on
+//! the next attempt. `loom hook reconcile-graph --cancel` stops the holder.
 //!
 //! ## Scope resolution
 //!
@@ -32,94 +33,143 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 
 use crate::context::config::RetrievalConfig;
+use crate::context::freshness::{Freshness, GraphState};
 use crate::context::graph_store::GraphStore;
-use crate::context::refresh::ensure_snapshot;
+use crate::context::refresh::{ensure_snapshot, SnapshotOutcome};
 use crate::context::schema::ContextPack;
 use crate::context::store::ContextStore;
 use crate::fs::work_dir::WorkDir;
 
 use super::target::{non_empty_env, HookTarget};
 
+mod cancel;
 mod lock;
-use lock::{claim_lock, decide, reconcile_lock_path, unix_now, LockDecision};
+use lock::{
+    begin_run, decide, end_pass, held_by, mark_pending, reconcile_lock_path, release_failed,
+    unix_now, update_lock, LockDecision, PassEnd,
+};
 
 /// The `loom hook reconcile-graph` subcommand body: a best-effort, one-shot
 /// reconcile of the source graph for whatever scope
-/// `HookTarget::from_environment` resolves.
+/// `HookTarget::from_environment` resolves, or with `cancel` a stop of the
+/// running one.
 ///
 /// Always exits `Ok(())` and prints nothing: this is an internal maintenance
 /// entry point [`spawn_if_needed`] launches detached from a hook, so nothing
 /// here may ever surface as a session-visible error or stray output. Every
 /// failure — no resolvable state directory, a git failure, a graph-store I/O error —
-/// is logged at `tracing::debug` and swallowed.
-pub fn reconcile_graph() -> Result<()> {
-    if let Err(error) = try_reconcile() {
-        tracing::debug!(%error, "reconcile-graph: best-effort reconcile did not complete");
+/// is logged at `tracing::debug` and swallowed; a failed reconcile is counted
+/// in the lock, not reported.
+pub fn reconcile_graph(cancel: bool) -> Result<()> {
+    let result = if cancel {
+        try_cancel()
+    } else {
+        try_reconcile()
+    };
+    if let Err(error) = result {
+        tracing::debug!(%error, "reconcile-graph: best-effort run did not complete");
     }
     Ok(())
 }
 
-/// The fallible half of [`reconcile_graph`]: resolve scope, correct the
-/// lock's pid, reconcile, and leave a finished marker on the way out
-/// regardless of the reconcile's own outcome.
-fn try_reconcile() -> Result<()> {
+/// The target and cache store this invocation acts on, or `None` when no
+/// state directory is resolvable from the environment or cwd at all — nothing
+/// to act on, and not a failure: a bare checkout with no loom project is a
+/// legitimate place for this to be invoked from.
+fn resolve_store() -> Result<Option<(HookTarget, ContextStore)>> {
     let Some(target) = HookTarget::from_environment().filter(HookTarget::exists) else {
-        // No state directory resolvable from the environment or cwd at all — nothing
-        // to reconcile, and not a failure: a bare checkout with no loom
-        // project is a legitimate place for this to be invoked from.
-        return Ok(());
+        return Ok(None);
     };
     let work_dir = WorkDir::new(&target.work_dir)?;
     let store = ContextStore::open(&work_dir)?;
+    Ok(Some((target, store)))
+}
+
+/// The fallible half of [`reconcile_graph`]: resolve scope, take over the
+/// lease, and run passes until no request is pending.
+fn try_reconcile() -> Result<()> {
+    let Some((target, store)) = resolve_store()? else {
+        return Ok(());
+    };
     let lock_path = reconcile_lock_path(&store);
+    run_passes(&lock_path, || {
+        reconcile(&target, &store).state() != GraphState::Current
+    });
+    Ok(())
+}
 
-    // Correct the lock to THIS process's own pid. `spawn_if_needed` claims it
-    // with the SPAWNING hook's pid, because it does not yet know the child's
-    // real pid before `Command::spawn` returns — but that spawning hook is
-    // short-lived and typically exits within its own latency budget, well
-    // before a slow reconcile finishes. Leaving its pid on record would make
-    // `decide` read a still-running reconcile as "owner dead" moments after
-    // spawn and take over it with a duplicate. A plain overwrite (`take_over
-    // = true`) is correct here regardless of whether a lock existed at all —
-    // this also covers `reconcile_graph` being invoked directly, with no
-    // prior claim (as the tests and a manual operator invocation both do).
-    let _ = claim_lock(&lock_path, unix_now(), std::process::id(), true);
+/// `--cancel`: stop the lease holder, if the lock names a live reconciler.
+fn try_cancel() -> Result<()> {
+    if let Some((_, store)) = resolve_store()? {
+        cancel::cancel_holder(&reconcile_lock_path(&store), unix_now());
+    }
+    Ok(())
+}
 
-    let outcome = reconcile(&target, &store);
-
-    // Finished marker, both outcomes — see the module doc's "Debounce"
-    // section. Best-effort: a failed write here costs only a debounce
-    // interval, never the reconcile's own result.
-    let _ = claim_lock(&lock_path, unix_now(), 0, true);
-
-    outcome
+/// The holder protocol. The first write re-stamps the lease with this
+/// process's own pid: [`try_spawn`] claims it with the SPAWNING hook's pid,
+/// which does not know the child's pid before `Command::spawn` returns, and
+/// that hook is short-lived — leaving its pid on record would make
+/// `lock::decide` read a running reconcile as "owner dead" and take it over
+/// with a duplicate. After every pass, `lock::end_pass` either keeps the lease
+/// (a request queued meanwhile: one more pass) or releases it with the run's
+/// failure count, and a holder whose line another pid took over stops without
+/// writing. `pass` returns whether the pass failed.
+fn run_passes(lock_path: &Path, mut pass: impl FnMut() -> bool) {
+    let pid = std::process::id();
+    begin_run(lock_path, unix_now(), pid);
+    loop {
+        let failed = pass();
+        if end_pass(lock_path, unix_now(), pid, failed) != PassEnd::Again {
+            break;
+        }
+    }
 }
 
 /// Reconcile exactly the graph scope resolved for the other hook delegates.
-fn reconcile(target: &HookTarget, store: &ContextStore) -> Result<()> {
+fn reconcile(target: &HookTarget, store: &ContextStore) -> SnapshotOutcome {
     let graph_store = GraphStore::new(store.root(), &target.work_dir);
     ensure_snapshot(
         store,
         &graph_store,
         &target.project_root,
         target.snapshot_policy(),
-    );
-    Ok(())
+    )
 }
 
-/// Spawn a detached `loom hook reconcile-graph` when `pack` reports the
-/// source graph stale or degraded (A.11), debounced through
-/// `reconcile_lock_path` so a burst of hook invocations spawns at most one
-/// reconcile at a time.
+/// Whether a pack's source graph warrants a background rebuild. The one
+/// decision behind [`spawn_if_needed`]:
+///
+/// | `freshness.state()` | `degraded` | result |
+/// | ------------------- | ---------- | ------ |
+/// | `Stale`             | any        | true   |
+/// | `Current`           | `Some`     | true   |
+/// | `Current`           | `None`     | false  |
+/// | `NeverBuilt`        | any        | false  |
+/// | `Unavailable`       | any        | false  |
+///
+/// A never-built graph is built only by explicit commands (`loom init`,
+/// `loom run`, `loom map`, `loom knowledge sync`), never by a prompt hook.
+pub fn wants_rebuild(freshness: &Freshness, degraded: Option<&str>) -> bool {
+    match freshness.state() {
+        GraphState::Stale => true,
+        GraphState::Current => degraded.is_some(),
+        GraphState::NeverBuilt | GraphState::Unavailable => false,
+    }
+}
+
+/// Spawn a detached `loom hook reconcile-graph` when [`wants_rebuild`] says
+/// `pack`'s source graph needs one, throttled through `reconcile_lock_path`
+/// so a burst of hook invocations spawns at most one reconcile at a time.
 ///
 /// Fire-and-forget by contract: never waits on the child, never fails, never
 /// prints — the hook's own latency budget must stay unaffected by however
 /// long a background reconcile takes.
 pub fn spawn_if_needed(pack: &ContextPack, project_root: &Path) {
-    if !pack.semantic_freshness.stale && pack.degraded.is_none() {
+    if !wants_rebuild(&pack.semantic_freshness, pack.degraded.as_deref()) {
         return;
     }
-    if let Err(error) = try_spawn(project_root) {
+    if let Err(error) = try_spawn(project_root, unix_now()) {
         tracing::debug!(%error, "reconcile-graph: could not spawn a background reconcile");
     }
 }
@@ -151,9 +201,44 @@ fn allowed_to_spawn(store: &ContextStore) -> bool {
     non_empty_env("LOOM_WORK_DIR").is_some() || store.root().is_dir()
 }
 
+/// What [`try_claim`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Claim {
+    /// The lease is now this caller's: spawn the reconciler.
+    Won,
+    /// A live holder runs; `pending` is set so it makes one more pass.
+    Queued,
+    /// Throttled by the backoff, or the lock could not be written.
+    Refused,
+}
+
+/// Decide and act in one critical section, so no holder can finish between a
+/// skip and its `pending` mark: [`Claim::Won`] writes the caller's pid,
+/// [`Claim::Queued`] sets `pending` on a live holder's line (its epoch and pid
+/// untouched), [`Claim::Refused`] writes nothing.
+fn try_claim(
+    lock_path: &Path,
+    now: u64,
+    debounce_secs: u64,
+    stale_lock_secs: u64,
+    is_alive: impl Fn(u32) -> bool,
+    pid: u32,
+) -> Claim {
+    update_lock(lock_path, |state| {
+        match decide(lock_path, now, debounce_secs, stale_lock_secs, is_alive) {
+            LockDecision::Spawn => (Some(held_by(state, now, pid)), Claim::Won),
+            LockDecision::Skip => match state {
+                Some(holder) if holder.pid != 0 => (mark_pending(holder), Claim::Queued),
+                _ => (None, Claim::Refused),
+            },
+        }
+    })
+    .unwrap_or(Claim::Refused)
+}
+
 /// The fallible half of [`spawn_if_needed`]: check the target is trusted,
-/// decide, claim the lock, spawn.
-fn try_spawn(project_root: &Path) -> Result<()> {
+/// claim the lease (or queue behind its holder), spawn.
+fn try_spawn(project_root: &Path, now: u64) -> Result<()> {
     let work_dir = WorkDir::new(project_root)?;
     let store = ContextStore::open(&work_dir)?;
 
@@ -172,34 +257,42 @@ fn try_spawn(project_root: &Path) -> Result<()> {
         .unwrap_or_else(|| project_root.to_path_buf());
     let config = RetrievalConfig::load(&main_root);
 
-    let now = unix_now();
-    let decision = decide(
+    let claim = try_claim(
         &lock_path,
         now,
         config.reconcile_debounce_secs,
         config.reconcile_stale_lock_secs,
         crate::process::is_process_alive,
+        std::process::id(),
     );
-    if decision == LockDecision::Skip {
+    if claim != Claim::Won {
+        // Throttled, queued behind a live holder, or the lock is unwritable —
+        // never a second, uncoordinated reconcile on top of whatever holds it.
         return Ok(());
     }
 
-    let take_over = lock_path.exists();
-    if !claim_lock(&lock_path, now, std::process::id(), take_over) {
-        // Lost the claim race to another hook, or the cache dir is
-        // unwritable — either way, do not spawn a second, uncoordinated
-        // reconcile on top of whatever just won.
-        return Ok(());
-    }
+    spawn_claimed(&lock_path, now, std::process::id(), || {
+        spawn_detached(project_root)
+    })
+}
 
-    spawn_detached(project_root)
+/// Run `spawn` for a lease `pid` just won. A failed spawn leaves no child to
+/// release it, so the lease is freed here with a failure counted, and the
+/// backoff throttles the next attempt instead of every prompt retrying.
+fn spawn_claimed(
+    lock_path: &Path,
+    now: u64,
+    pid: u32,
+    spawn: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    spawn().inspect_err(|_| release_failed(lock_path, now, pid))
 }
 
 /// Set false to suppress every detached spawn for the remainder of this
 /// process. [`spawn_detached`] is the ONLY place this is read — everything
 /// above it in the call chain ([`spawn_if_needed`]'s staleness check,
-/// [`allowed_to_spawn`]'s inferred-root gate, `lock::decide`'s debounce
-/// policy, `lock::claim_lock`'s lock claim) keeps running and stays
+/// [`allowed_to_spawn`]'s inferred-root gate, [`try_claim`]'s
+/// throttle and lease) keeps running and stays
 /// exercisable by tests exactly as before; only the actual
 /// `Command::spawn()` call is suppressed. A process-group-leading child that
 /// outlives the test harness is not something a test build may create: the
@@ -286,3 +379,6 @@ fn spawn_detached(project_root: &Path) -> Result<()> {
 #[cfg(test)]
 #[path = "tests_reconcile_graph.rs"]
 mod tests;
+
+#[cfg(test)]
+mod tests_wants_rebuild;

@@ -132,7 +132,7 @@ fn dispatch_context(command: ContextCommands) -> Result<()> {
 fn dispatch_hook(command: HookCommands) -> Result<()> {
     match command {
         HookCommands::UserPrompt => hook::user_prompt::user_prompt(),
-        HookCommands::ReconcileGraph => hook::reconcile_graph::reconcile_graph(),
+        HookCommands::ReconcileGraph { cancel } => hook::reconcile_graph::reconcile_graph(cancel),
         HookCommands::PreCompact => hook::pre_compact::pre_compact(),
         HookCommands::ContextCeilings => hook::context_ceilings::context_ceilings(),
         HookCommands::ForwardReceipt { transcript } => {

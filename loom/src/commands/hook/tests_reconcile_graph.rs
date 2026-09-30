@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 use tempfile::TempDir;
 
 use super::lock::read_lock;
+use super::tests_wants_rebuild::seed;
 
 /// Run one git command with ambient global/system config neutralized, so a
 /// developer's or CI runner's `~/.gitconfig` cannot change test behavior.
@@ -61,7 +62,7 @@ fn enter_checkout(root: &Path) {
     std::env::set_var("LOOM_WORK_DIR", root.join(".loom").join("work"));
 }
 
-fn leave() {
+pub(super) fn leave() {
     std::env::remove_var("LOOM_STAGE_ID");
     std::env::remove_var("LOOM_WORK_DIR");
 }
@@ -84,7 +85,7 @@ fn reconcile_graph_moves_a_stale_semantic_revision_to_head() {
         .unwrap();
 
     enter_checkout(root);
-    let result = reconcile_graph();
+    let result = reconcile_graph(false);
     leave();
 
     assert!(result.is_ok(), "reconcile_graph must always return Ok(())");
@@ -106,20 +107,15 @@ fn reconcile_graph_leaves_a_finished_marker_after_a_successful_run() {
     let lock_path = reconcile_lock_path(&store);
     // A pre-existing in-progress claim, as `spawn_if_needed` would have left
     // before spawning this same process.
-    assert!(claim_lock(
-        &lock_path,
-        unix_now(),
-        std::process::id(),
-        false
-    ));
+    seed(&lock_path, unix_now(), std::process::id(), 0, false);
 
     enter_checkout(root);
-    reconcile_graph().unwrap();
+    reconcile_graph(false).unwrap();
     leave();
 
-    let (_, pid) = read_lock(&lock_path)
+    let marker = read_lock(&lock_path)
         .expect("reconcile_graph must leave a marker behind, never unlink the lock");
-    assert_eq!(pid, 0, "a completed run's marker must carry pid 0");
+    assert_eq!(marker.pid, 0, "a completed run's marker must carry pid 0");
 }
 
 #[test]
@@ -141,7 +137,7 @@ fn reconcile_graph_with_no_resolvable_work_dir_creates_nothing() {
 
     std::env::remove_var("LOOM_STAGE_ID");
     std::env::set_var("LOOM_WORK_DIR", temp.path());
-    let result = reconcile_graph();
+    let result = reconcile_graph(false);
     leave();
 
     assert!(
@@ -184,7 +180,7 @@ fn reconcile_graph_with_a_stale_loom_work_dir_pin_creates_nothing() {
 
     std::env::remove_var("LOOM_STAGE_ID");
     std::env::set_var("LOOM_WORK_DIR", &stale_work_dir_path);
-    let result = reconcile_graph();
+    let result = reconcile_graph(false);
     leave();
 
     assert!(result.is_ok());
@@ -215,7 +211,7 @@ fn reconcile_graph_in_a_stage_reconciles_that_stages_overlay_through_ensure_snap
     std::env::remove_var("LOOM_STAGE_ID");
     std::env::set_var("LOOM_WORK_DIR", &work_dir_path);
     std::env::set_var("LOOM_STAGE_ID", &stage.id);
-    let result = reconcile_graph();
+    let result = reconcile_graph(false);
     leave();
 
     assert!(result.is_ok());
@@ -234,15 +230,19 @@ fn reconcile_graph_in_a_stage_reconciles_that_stages_overlay_through_ensure_snap
     );
 }
 
-/// A pack that would trip `spawn_if_needed`'s own `stale || degraded` gate.
-fn degraded_pack() -> ContextPack {
+/// A pack over a built graph (revision `abc`) that trips `wants_rebuild`
+/// through its `degraded` reason.
+pub(super) fn degraded_pack() -> ContextPack {
     ContextPack {
         query: "query".to_string(),
         scope: vec![Channel::Source],
         budget_tokens: 100,
         estimated_tokens: 0,
         structural_freshness: Freshness::default(),
-        semantic_freshness: Freshness::default(),
+        semantic_freshness: Freshness {
+            revision: "abc".to_string(),
+            ..Freshness::default()
+        },
         items: Vec::new(),
         unmet_required: Vec::new(),
         omitted: OmissionSummary::default(),
@@ -290,20 +290,21 @@ fn spawn_if_needed_leaves_a_young_live_lock_untouched() {
     // Skip branch is the only one `try_spawn` can take — no subprocess is
     // ever launched by this test.
     let now = unix_now();
-    assert!(claim_lock(&lock_path, now, std::process::id(), false));
+    seed(&lock_path, now, std::process::id(), 0, false);
 
     spawn_if_needed(&degraded_pack(), root);
 
+    let queued = read_lock(&lock_path).expect("the live holder's lock stays");
     assert_eq!(
-        read_lock(&lock_path),
-        Some((now, std::process::id())),
-        "a young lock owned by a live pid must be left exactly as it was"
+        (queued.epoch, queued.pid, queued.pending),
+        (now, std::process::id(), true),
+        "a young lock owned by a live pid keeps its holder and only queues pending"
     );
 }
 
 // ---------------------------------------------------------------------------
 // `allowed_to_spawn` — the inferred-root gate. A refused target must never
-// even claim the debounce lock; an allowed one must reach `claim_lock` (and,
+// even claim the debounce lock; an allowed one must reach `try_claim` (and,
 // suppressed by the test guard below, `spawn_detached`) exactly as before.
 // ---------------------------------------------------------------------------
 

@@ -294,7 +294,8 @@ fn retrieve_for_stage_is_not_degraded_when_the_semantic_base_exists() {
 }
 
 /// No `state.json` write at all: the semantic layer stays at its empty
-/// default revision, which reads as "never built", not "degraded".
+/// default revision and the resolved graph is empty, so the pack is degraded
+/// with the fixed never-built reason.
 #[test]
 fn retrieve_for_stage_is_not_degraded_when_the_semantic_layer_was_never_built() {
     let temp = project_with_knowledge();
@@ -303,9 +304,24 @@ fn retrieve_for_stage_is_not_degraded_when_the_semantic_layer_was_never_built() 
     let pack = retrieve_for_stage(&query, 500).unwrap();
 
     assert_eq!(
-        pack.degraded, None,
-        "an empty semantic revision means never built, not degraded"
+        pack.degraded.as_deref(),
+        Some("source graph never built; run loom map to build it"),
+        "an empty semantic revision over an empty graph is degraded"
     );
+}
+
+/// An overlay supplies content while `state.json` records no semantic
+/// revision: the read answers queries, so it is not degraded.
+#[test]
+fn retrieve_for_stage_is_not_degraded_when_an_overlay_backs_an_empty_semantic_revision() {
+    let temp = project_with_knowledge();
+    let root = temp.path();
+    write_local_overlay(root, &distinctive_node());
+    let query = StageQuery::new(root, format!("Where is {DISTINCTIVE_SYMBOL} defined?"));
+
+    let pack = retrieve_for_stage(&query, 500).unwrap();
+
+    assert_eq!(pack.degraded, None, "{:?}", pack.degraded);
 }
 
 #[test]

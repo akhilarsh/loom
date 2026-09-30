@@ -7,6 +7,7 @@
 //! call and no network access anywhere in this path.
 
 use crate::context::delivery::dependency_chunk_ids;
+use crate::context::freshness::GraphState;
 use crate::context::local_overlay::OverlayScope;
 use crate::context::render::render_excerpt_block;
 use crate::context::retrieve::{resolve_roots, retrieve_for_stage, StageQuery};
@@ -234,10 +235,11 @@ fn format_degraded(pack: &ContextPack) -> Option<String> {
 }
 
 fn print_freshness_line(label: &str, freshness: &Freshness) {
-    let marker = if freshness.stale {
-        "stale".yellow()
-    } else {
-        "current".green()
+    let word = freshness.state().as_str();
+    let marker = match freshness.state() {
+        GraphState::Current => word.green(),
+        GraphState::Stale | GraphState::NeverBuilt => word.yellow(),
+        GraphState::Unavailable => word.red(),
     };
     match &freshness.detail {
         Some(detail) => println!("{label}: {marker} ({detail})"),
