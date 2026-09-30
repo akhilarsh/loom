@@ -11,7 +11,7 @@ use crate::context::source_graph::{
 };
 
 /// A file whose last symbol makes one unresolved call, on `receiver` if given.
-fn caller(
+pub(super) fn caller(
     path: &str,
     symbols: Symbols,
     symbol: &str,
@@ -25,23 +25,23 @@ fn caller(
 }
 
 /// A file holding `symbols` and nothing else.
-fn defining(path: &str, symbols: Symbols) -> FileEntry {
+pub(super) fn defining(path: &str, symbols: Symbols) -> FileEntry {
     dialect_file(path, symbols, vec![], vec![])
 }
 
 /// The first edge of `path` once the whole graph is resolved.
-fn first_edge(files: Vec<FileEntry>, path: &str) -> SourceEdge {
+pub(super) fn first_edge(files: Vec<FileEntry>, path: &str) -> SourceEdge {
     let mut graph = graph_of_files(files);
     resolve_graph(&mut graph);
     graph.files[path].edges[0].clone()
 }
 
-fn assert_bound(edge: &SourceEdge, to: &str, provenance: EdgeProvenance) {
+pub(super) fn assert_bound(edge: &SourceEdge, to: &str, provenance: EdgeProvenance) {
     assert_eq!(edge.to, to, "edge: {edge:#?}");
     assert_eq!(edge.provenance, provenance, "edge: {edge:#?}");
 }
 
-fn assert_candidates(edge: &SourceEdge, candidates: &[String]) {
+pub(super) fn assert_candidates(edge: &SourceEdge, candidates: &[String]) {
     assert_eq!(edge.to, UNRESOLVED_TARGET, "edge: {edge:#?}");
     assert_eq!(edge.provenance, EdgeProvenance::Syntax, "edge: {edge:#?}");
     assert_eq!(edge.candidates, candidates, "edge: {edge:#?}");

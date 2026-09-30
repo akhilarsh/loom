@@ -1,0 +1,239 @@
+//! Design 14.2's metrics: labels scored against the graph loom built.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::labels::{Expectation, Labels, ReferenceLabel};
+use super::{EdgeQualityReport, LabelCounts};
+use crate::context::graph_store::ResolvedGraph;
+use crate::context::resolve::{impact_with, ImpactOptions};
+use crate::context::source_graph::{SourceEdge, SourceEdgeKind};
+
+/// A bound edge at or above this confidence asserts its target.
+const HIGH_CONFIDENCE: f32 = 0.8;
+
+/// The edge kinds a reference label can name, and the kinds impact walks.
+const SEMANTIC_KINDS: [SourceEdgeKind; 4] = [
+    SourceEdgeKind::Calls,
+    SourceEdgeKind::References,
+    SourceEdgeKind::Implements,
+    SourceEdgeKind::Extends,
+];
+
+/// Score `labels` against `graph`.
+pub(super) fn score(labels: &Labels, graph: &ResolvedGraph) -> EdgeQualityReport {
+    let mut failures = Vec::new();
+    let mut undefined_ratios = Vec::new();
+    let matched = count_declarations(labels, graph, &mut failures);
+    let tally = tally_references(labels, graph, &mut failures);
+    let counts = LabelCounts::of(labels);
+    let references = labels.references.len();
+    let mut rate = |n, d, name| ratio(n, d, name, &mut undefined_ratios);
+    let declaration_recall = rate(matched, labels.declarations.len(), "declaration_recall");
+    let target_precision = rate(tally.correct_targets, tally.bound, "target_precision");
+    let target_recall = rate(tally.correct_targets, counts.targets, "target_recall");
+    let unresolved_rate = rate(tally.unresolved, references, "unresolved_rate");
+    let ambiguous_rate = rate(tally.ambiguous, references, "ambiguous_rate");
+    let impact_false_negatives = count_impact_misses(labels, graph, &mut failures);
+    EdgeQualityReport {
+        dialect: labels.dialect.clone(),
+        declaration_recall,
+        target_precision,
+        target_recall,
+        unresolved_rate,
+        ambiguous_rate,
+        false_high_confidence: tally.false_high_confidence,
+        impact_false_negatives,
+        labels: counts,
+        undefined_ratios,
+        failures,
+    }
+}
+
+/// `numerator / denominator`; a zero denominator records `name` as undefined
+/// and yields 0.0, which `Thresholds::check` reports as a violation.
+fn ratio(
+    numerator: usize,
+    denominator: usize,
+    name: &'static str,
+    undefined: &mut Vec<&'static str>,
+) -> f64 {
+    if denominator == 0 {
+        undefined.push(name);
+        return 0.0;
+    }
+    numerator as f64 / denominator as f64
+}
+
+/// Declarations matched on `(path, kind, scope)`.
+fn count_declarations(labels: &Labels, graph: &ResolvedGraph, failures: &mut Vec<String>) -> usize {
+    let mut matched = 0;
+    for label in &labels.declarations {
+        let found = graph.files.get(&label.path).is_some_and(|entry| {
+            entry
+                .nodes
+                .iter()
+                .any(|node| node.kind.as_str() == label.kind && node.scope == label.scope)
+        });
+        if found {
+            matched += 1;
+        } else {
+            failures.push(format!(
+                "{}:{} declaration {} {}: expected a node, found none",
+                label.path,
+                label.line,
+                label.kind,
+                label.scope.join("::")
+            ));
+        }
+    }
+    matched
+}
+
+#[derive(Default)]
+struct ReferenceTally {
+    bound: usize,
+    correct_targets: usize,
+    unresolved: usize,
+    ambiguous: usize,
+    false_high_confidence: usize,
+}
+
+fn tally_references(
+    labels: &Labels,
+    graph: &ResolvedGraph,
+    failures: &mut Vec<String>,
+) -> ReferenceTally {
+    let mut tally = ReferenceTally::default();
+    for label in &labels.references {
+        let expectation = label.expect.expectation();
+        let edge = find_edge(graph, label, &expectation);
+        let is_bound = edge.is_some_and(|edge| !edge.is_unresolved());
+        match edge {
+            Some(edge) if is_bound => {
+                tally.bound += 1;
+                let differs = !matches!(&expectation, Expectation::Target(t) if edge.to == *t);
+                if differs && edge.confidence >= HIGH_CONFIDENCE {
+                    tally.false_high_confidence += 1;
+                }
+            }
+            Some(edge) if !edge.candidates.is_empty() => tally.ambiguous += 1,
+            _ => tally.unresolved += 1,
+        }
+        if is_correct(&expectation, edge) {
+            if matches!(expectation, Expectation::Target(_)) {
+                tally.correct_targets += 1;
+            }
+        } else {
+            failures.push(describe_miss(label, &expectation, edge));
+        }
+    }
+    tally
+}
+
+/// Whether `edge` (a missing edge counts as unbound) satisfies `expectation`.
+fn is_correct(expectation: &Expectation<'_>, edge: Option<&SourceEdge>) -> bool {
+    let unbound = edge.is_none_or(SourceEdge::is_unresolved);
+    match expectation {
+        Expectation::Target(target) => edge.is_some_and(|edge| edge.to == *target),
+        Expectation::External => unbound,
+        Expectation::Ambiguous(expected) => {
+            unbound
+                && edge.is_some_and(|edge| {
+                    edge.candidates.iter().collect::<BTreeSet<_>>()
+                        == expected.iter().collect::<BTreeSet<_>>()
+                })
+        }
+    }
+}
+
+/// The edge a label names: from its path, at its line, for its symbol.
+/// Several matches prefer the one already bound to a labelled target.
+fn find_edge<'a>(
+    graph: &'a ResolvedGraph,
+    label: &ReferenceLabel,
+    expectation: &Expectation<'_>,
+) -> Option<&'a SourceEdge> {
+    let entry = graph.files.get(&label.path)?;
+    let matches: Vec<&SourceEdge> = entry
+        .edges
+        .iter()
+        .filter(|edge| {
+            SEMANTIC_KINDS.contains(&edge.kind)
+                && edge
+                    .sites
+                    .iter()
+                    .any(|site| site.line_start <= label.line && label.line <= site.line_end)
+                && symbol_matches(&edge.symbol, &label.symbol)
+        })
+        .collect();
+    let on_target = match expectation {
+        Expectation::Target(target) => matches.iter().find(|edge| edge.to == *target),
+        _ => None,
+    };
+    on_target.or(matches.first()).copied()
+}
+
+/// `written` equals `label`, or ends with it after a `::` or `.` separator.
+pub(super) fn symbol_matches(written: &str, label: &str) -> bool {
+    written
+        .strip_suffix(label)
+        .is_some_and(|head| head.is_empty() || head.ends_with("::") || head.ends_with('.'))
+}
+
+fn describe_miss(
+    label: &ReferenceLabel,
+    expectation: &Expectation<'_>,
+    edge: Option<&SourceEdge>,
+) -> String {
+    let expected = match expectation {
+        Expectation::Target(target) => format!("target {target}"),
+        Expectation::External => "unbound (external)".to_string(),
+        Expectation::Ambiguous(ids) => format!("unbound with candidates [{}]", ids.join(", ")),
+    };
+    let actual = match edge {
+        None => "no edge".to_string(),
+        Some(edge) if edge.is_unresolved() => {
+            format!("unbound with candidates [{}]", edge.candidates.join(", "))
+        }
+        Some(edge) => format!(
+            "bound to {} ({} {:.2})",
+            edge.to, edge.provenance, edge.confidence
+        ),
+    };
+    format!(
+        "{}:{} {}: expected {expected}; actual {actual}",
+        label.path, label.line, label.symbol
+    )
+}
+
+/// Expected ids missing from `impact_with(start, depth d)`, summed per depth.
+/// Every labelled depth has an entry, zero when nothing is missing.
+fn count_impact_misses(
+    labels: &Labels,
+    graph: &ResolvedGraph,
+    failures: &mut Vec<String>,
+) -> BTreeMap<usize, usize> {
+    let mut misses = BTreeMap::new();
+    for label in &labels.impact {
+        let options = ImpactOptions {
+            max_depth: label.depth,
+            kinds: SEMANTIC_KINDS.to_vec(),
+            follow_candidates: true,
+            ..ImpactOptions::default()
+        };
+        let reached: BTreeSet<String> = impact_with(graph, &label.start, &options)
+            .hits
+            .into_iter()
+            .map(|hit| hit.id)
+            .collect();
+        let count = misses.entry(label.depth).or_insert(0);
+        for id in label.expect.iter().filter(|id| !reached.contains(*id)) {
+            *count += 1;
+            failures.push(format!(
+                "impact {} depth {}: expected {id}; actual not reached",
+                label.start, label.depth
+            ));
+        }
+    }
+    misses
+}

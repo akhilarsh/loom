@@ -11,6 +11,7 @@ use crate::context::source_graph::{ImportBinding, NodeLanguage, SourceNodeKind, 
 mod imports;
 
 /// Extracts declarations from `.php` files, including `<?php` blocks inside HTML. A method without a body (abstract, interface) is not a definition.
+/// A trait `use` inside a class is a `References` edge from the class to the trait.
 pub struct PhpExtractor;
 
 impl PhpExtractor {
@@ -118,6 +119,14 @@ const QUERY: &str = r#"
       .)
   ]) @import.statement
 
+; `use Loggable;` in a class body: a `References` edge from the class to the
+; trait, whose methods are the class's own.
+(use_declaration
+  [
+    (name)
+    (qualified_name)
+  ] @reference.name)
+
 ; A call through a variable (`$f()`) or a qualified name (`A\f()`) has no
 ; `name` callee and is not captured.
 (function_call_expression
@@ -152,7 +161,7 @@ impl QueryHarness for PhpExtractor {
             dialect: "php",
             grammar_version: "0.24.2",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 1,
+            extractor_version: 2,
         }
     }
 

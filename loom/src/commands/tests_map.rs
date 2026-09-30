@@ -62,7 +62,7 @@ fn map_without_a_view_flag_names_all_available_views() {
         error,
         "loom map needs a view flag: --outline <PATH>, --find-all <SYMBOL>, \
          --impact <SYMBOL_OR_PATH>, --callers <SYMBOL>, --callees <SYMBOL>, \
-         --references <SYMBOL>, --window <ID>, or --census"
+         --references <SYMBOL>, --window <ID>, --census, or --eval-edges <DIR>"
     );
 }
 

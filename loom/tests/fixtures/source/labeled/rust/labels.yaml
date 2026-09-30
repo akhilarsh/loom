@@ -1,0 +1,84 @@
+dialect: rust
+syntax_error_files:
+  - src/broken.rs
+declarations:
+  - {path: src/main.rs, kind: module, scope: [model], line: 1}
+  - {path: src/main.rs, kind: module, scope: [store], line: 2}
+  - {path: src/main.rs, kind: module, scope: [util], line: 3}
+  - {path: src/main.rs, kind: module, scope: [tests], line: 6}
+  - {path: src/main.rs, kind: function, scope: [main], line: 14}
+  - {path: src/util.rs, kind: module, scope: [legacy], line: 1}
+  - {path: src/util.rs, kind: function, scope: [legacy, clean], line: 2}
+  - {path: src/util.rs, kind: function, scope: [legacy, shout], line: 6}
+  - {path: src/util.rs, kind: function, scope: [clean], line: 11}
+  - {path: src/util.rs, kind: function, scope: [normalize], line: 15}
+  - {path: src/util.rs, kind: function, scope: [parse_id], line: 20}
+  - {path: src/model.rs, kind: constant, scope: [MAX_ID], line: 1}
+  - {path: src/model.rs, kind: type, scope: [Widget], line: 3}
+  - {path: src/model.rs, kind: type, scope: [Count], line: 8}
+  - {path: src/model.rs, kind: implementation, scope: [Widget], line: 12}
+  - {path: src/model.rs, kind: function, scope: [Widget, new], line: 13}
+  - {path: src/model.rs, kind: function, scope: [Widget, label], line: 20}
+  - {path: src/model.rs, kind: function, scope: [Widget, describe], line: 24}
+  - {path: src/model.rs, kind: function, scope: [Widget, clamp], line: 28}
+  - {path: src/model.rs, kind: implementation, scope: [Count], line: 33}
+  - {path: src/model.rs, kind: function, scope: [Count, from], line: 34}
+  - {path: src/model.rs, kind: implementation, scope: [Count], line: 39}
+  - {path: src/model.rs, kind: function, scope: [Count, from], line: 40}
+  - {path: src/store.rs, kind: interface, scope: [Store], line: 3}
+  - {path: src/store.rs, kind: type, scope: [MemStore], line: 7}
+  - {path: src/store.rs, kind: type, scope: [DiskStore], line: 11}
+  - {path: src/store.rs, kind: implementation, scope: [MemStore], line: 15}
+  - {path: src/store.rs, kind: function, scope: [MemStore, new], line: 16}
+  - {path: src/store.rs, kind: implementation, scope: [MemStore], line: 21}
+  - {path: src/store.rs, kind: function, scope: [MemStore, save], line: 22}
+  - {path: src/store.rs, kind: implementation, scope: [DiskStore], line: 28}
+  - {path: src/store.rs, kind: function, scope: [DiskStore, save], line: 29}
+  - {path: src/store.rs, kind: function, scope: [persist], line: 34}
+  - {path: src/tests.rs, kind: function, scope: [widget_label_contains_id], line: 5}
+  - {path: src/tests.rs, kind: function, scope: [parse_id_rejects_text], line: 11}
+references:
+  # main.rs
+  - {path: src/main.rs, line: 15, symbol: parse_id, expect: {target: "src/util.rs#function:parse_id"}}
+  - {path: src/main.rs, line: 15, symbol: unwrap_or, expect: {external: true}}
+  - {path: src/main.rs, line: 16, symbol: "Widget::new", expect: {target: "src/model.rs#function:Widget::new"}}
+  - {path: src/main.rs, line: 17, symbol: canonical, expect: {target: "src/util.rs#function:normalize"}}
+  - {path: src/main.rs, line: 18, symbol: "MemStore::new", expect: {target: "src/store.rs#function:MemStore::new"}}
+  - {path: src/main.rs, line: 19, symbol: persist, expect: {target: "src/store.rs#function:persist"}}
+  - path: src/main.rs
+    line: 20
+    symbol: "Count::from"
+    expect:
+      ambiguous:
+        - "src/model.rs#function:Count::from@16bb7dca"
+        - "src/model.rs#function:Count::from@db2d9ab8"
+  - {path: src/main.rs, line: 21, symbol: to_string, expect: {external: true}}
+  - {path: src/main.rs, line: 21, symbol: label, expect: {target: "src/model.rs#function:Widget::label"}}
+  # util.rs
+  - {path: src/util.rs, line: 3, symbol: to_string, expect: {external: true}}
+  - {path: src/util.rs, line: 7, symbol: clean, expect: {target: "src/util.rs#function:legacy::clean"}}
+  - {path: src/util.rs, line: 7, symbol: to_uppercase, expect: {external: true}}
+  - {path: src/util.rs, line: 12, symbol: trim, expect: {external: true}}
+  - {path: src/util.rs, line: 12, symbol: to_lowercase, expect: {external: true}}
+  - {path: src/util.rs, line: 16, symbol: clean, expect: {target: "src/util.rs#function:clean"}}
+  - {path: src/util.rs, line: 17, symbol: "legacy::shout", expect: {target: "src/util.rs#function:legacy::shout"}}
+  - {path: src/util.rs, line: 21, symbol: trim, expect: {external: true}}
+  - {path: src/util.rs, line: 22, symbol: parse, expect: {external: true}}
+  - {path: src/util.rs, line: 22, symbol: ok, expect: {external: true}}
+  # model.rs
+  - {path: src/model.rs, line: 15, symbol: clamp, expect: {target: "src/model.rs#function:Widget::clamp"}}
+  - {path: src/model.rs, line: 16, symbol: "crate::util::normalize", expect: {target: "src/util.rs#function:normalize"}}
+  - {path: src/model.rs, line: 21, symbol: describe, expect: {target: "src/model.rs#function:Widget::describe"}}
+  # store.rs
+  - {path: src/store.rs, line: 17, symbol: "Vec::new", expect: {external: true}}
+  - {path: src/store.rs, line: 23, symbol: push, expect: {external: true}}
+  - {path: src/store.rs, line: 30, symbol: "std::fs::write", expect: {external: true}}
+  - {path: src/store.rs, line: 30, symbol: label, expect: {target: "src/model.rs#function:Widget::label"}}
+  - {path: src/store.rs, line: 30, symbol: is_ok, expect: {external: true}}
+  - {path: src/store.rs, line: 35, symbol: save, expect: {ambiguous: ["src/store.rs#function:MemStore::save", "src/store.rs#function:DiskStore::save"]}}
+impact:
+  - {start: "src/util.rs#function:clean", depth: 1, expect: ["src/util.rs#function:normalize"]}
+  - {start: "src/util.rs#function:clean", depth: 2, expect: ["src/main.rs#function:main", "src/model.rs#function:Widget::new"]}
+  - {start: "src/util.rs#function:legacy::clean", depth: 2, expect: ["src/util.rs#function:legacy::shout", "src/util.rs#function:normalize"]}
+  - {start: "src/store.rs#function:MemStore::save", depth: 1, expect: ["src/store.rs#function:persist"]}
+  - {start: "src/store.rs#function:MemStore::save", depth: 2, expect: ["src/main.rs#function:main"]}

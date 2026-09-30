@@ -1,0 +1,39 @@
+dialect: tsx
+syntax_error_files:
+  - src/broken.tsx
+declarations:
+  - {path: src/text.tsx, kind: function, scope: [shorten], line: 1}
+  - {path: src/text.tsx, kind: function, scope: [Bold], line: 5}
+  - {path: src/ui/Badge.tsx, kind: interface, scope: [BadgeProps], line: 3}
+  - {path: src/ui/Badge.tsx, kind: function, scope: [Badge], line: 8}
+  - {path: src/ui/Panel.tsx, kind: type, scope: [PanelProps], line: 3}
+  - {path: src/ui/Panel.tsx, kind: type, scope: [Panel], line: 5}
+  - {path: src/ui/Panel.tsx, kind: function, scope: [Panel, header], line: 6}
+  - {path: src/ui/Panel.tsx, kind: function, scope: [Panel, render], line: 10}
+  - {path: src/ui/Panel.tsx, kind: type, scope: [Sidebar], line: 20}
+  - {path: src/ui/Panel.tsx, kind: function, scope: [Sidebar, header], line: 21}
+  - {path: src/ui/Panel.tsx, kind: function, scope: [heading], line: 26}
+  - {path: src/ui/List.tsx, kind: function, scope: [List], line: 5}
+  - {path: src/app.tsx, kind: function, scope: [mount], line: 5}
+references:
+  # text.tsx
+  - {path: src/text.tsx, line: 2, symbol: slice, expect: {external: true}}
+  # Panel.tsx
+  - {path: src/ui/Panel.tsx, line: 13, symbol: header, expect: {target: "src/ui/Panel.tsx#function:Panel::header"}}
+  - {path: src/ui/Panel.tsx, line: 27, symbol: header, expect: {ambiguous: ["src/ui/Panel.tsx#function:Panel::header", "src/ui/Panel.tsx#function:Sidebar::header"]}}
+  # List.tsx
+  - {path: src/ui/List.tsx, line: 7, symbol: Panel, expect: {target: "src/ui/Panel.tsx#type:Panel"}}
+  - {path: src/ui/List.tsx, line: 8, symbol: map, expect: {external: true}}
+  - {path: src/ui/List.tsx, line: 10, symbol: Bold, expect: {target: "src/text.tsx#function:Bold"}}
+  - {path: src/ui/List.tsx, line: 10, symbol: trim, expect: {target: "src/text.tsx#function:shorten"}}
+  - {path: src/ui/List.tsx, line: 11, symbol: Badge, expect: {target: "src/ui/Badge.tsx#function:Badge"}}
+  # app.tsx
+  - {path: src/app.tsx, line: 6, symbol: createRoot, expect: {external: true}}
+  - {path: src/app.tsx, line: 6, symbol: render, expect: {external: true}}
+  - {path: src/app.tsx, line: 8, symbol: Sidebar, expect: {target: "src/ui/Panel.tsx#type:Sidebar"}}
+  - {path: src/app.tsx, line: 9, symbol: List, expect: {target: "src/ui/List.tsx#function:List"}}
+impact:
+  - {start: "src/ui/Badge.tsx#function:Badge", depth: 1, expect: ["src/ui/List.tsx#function:List"]}
+  - {start: "src/ui/Badge.tsx#function:Badge", depth: 2, expect: ["src/app.tsx#function:mount"]}
+  - {start: "src/text.tsx#function:shorten", depth: 1, expect: ["src/ui/List.tsx#function:List"]}
+  - {start: "src/ui/Panel.tsx#function:Panel::header", depth: 1, expect: ["src/ui/Panel.tsx#function:Panel::render", "src/ui/Panel.tsx#function:heading"]}

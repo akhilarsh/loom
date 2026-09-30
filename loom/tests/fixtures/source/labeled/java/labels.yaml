@@ -1,0 +1,71 @@
+# Labels record what javac binds, written from the language rules before loom
+# ran. `app.core` and `app.util` are two packages; `Saver` is an interface, so
+# `saver.save(this)` is dispatched at run time and a reader cannot choose
+# between its two implementations without the runtime type. `Saver.save` has no
+# body, so it is not a declaration the extractor claims.
+dialect: java
+declarations:
+  - {path: src/main/java/app/util/Strings.java, kind: module, scope: ["app.util"], line: 1}
+  - {path: src/main/java/app/util/Strings.java, kind: type, scope: [Strings], line: 3}
+  - {path: src/main/java/app/util/Strings.java, kind: function, scope: [Strings, shout], line: 4}
+  - {path: src/main/java/app/util/Strings.java, kind: function, scope: [Strings, clean], line: 8}
+  - {path: src/main/java/app/core/Saver.java, kind: module, scope: ["app.core"], line: 1}
+  - {path: src/main/java/app/core/Saver.java, kind: interface, scope: [Saver], line: 3}
+  - {path: src/main/java/app/core/DiskSaver.java, kind: module, scope: ["app.core"], line: 1}
+  - {path: src/main/java/app/core/DiskSaver.java, kind: type, scope: [DiskSaver], line: 3}
+  - {path: src/main/java/app/core/DiskSaver.java, kind: function, scope: [DiskSaver, save], line: 4}
+  - {path: src/main/java/app/core/MemSaver.java, kind: module, scope: ["app.core"], line: 1}
+  - {path: src/main/java/app/core/MemSaver.java, kind: type, scope: [MemSaver], line: 6}
+  - {path: src/main/java/app/core/MemSaver.java, kind: function, scope: [MemSaver, save], line: 9}
+  - {path: src/main/java/app/core/Widget.java, kind: module, scope: ["app.core"], line: 1}
+  - {path: src/main/java/app/core/Widget.java, kind: type, scope: [Widget], line: 6}
+  - {path: src/main/java/app/core/Widget.java, kind: function, scope: [Widget, Widget], line: 9}
+  - {path: src/main/java/app/core/Widget.java, kind: function, scope: [Widget, run], line: 13}
+  - {path: src/main/java/app/core/Widget.java, kind: function, scope: [Widget, step], line: 21}
+  - {path: src/main/java/app/core/Widget.java, kind: function, scope: [Widget, step], line: 25}
+  - {path: src/main/java/app/core/Widget.java, kind: function, scope: [Widget, ping], line: 29}
+  - {path: src/main/java/app/core/Widget.java, kind: function, scope: [Widget, describe], line: 32}
+  - {path: src/main/java/app/core/Widget.java, kind: type, scope: [Widget, Inner], line: 36}
+  - {path: src/main/java/app/core/Widget.java, kind: function, scope: [Widget, Inner, ping], line: 37}
+  - {path: src/main/java/app/core/Widget.java, kind: function, scope: [Widget, Inner, pong], line: 40}
+  - {path: src/test/java/app/core/WidgetTest.java, kind: module, scope: ["app.core"], line: 1}
+  - {path: src/test/java/app/core/WidgetTest.java, kind: type, scope: [WidgetTest], line: 3}
+  - {path: src/test/java/app/core/WidgetTest.java, kind: function, scope: [WidgetTest, runsWithDisk], line: 4}
+references:
+  # Strings: methods of java.lang.String are outside the corpus.
+  - {path: src/main/java/app/util/Strings.java, line: 5, symbol: toUpperCase, expect: {external: true}}
+  - {path: src/main/java/app/util/Strings.java, line: 9, symbol: trim, expect: {external: true}}
+  # DiskSaver and MemSaver: JDK calls.
+  - {path: src/main/java/app/core/DiskSaver.java, line: 5, symbol: println, expect: {external: true}}
+  - {path: src/main/java/app/core/MemSaver.java, line: 7, symbol: ArrayList, expect: {external: true}}
+  - {path: src/main/java/app/core/MemSaver.java, line: 10, symbol: add, expect: {external: true}}
+  # Widget.run. `this.step(1)` picks the int overload by argument type (JLS 15.12.2).
+  - {path: src/main/java/app/core/Widget.java, line: 14, symbol: step, expect: {target: "src/main/java/app/core/Widget.java#function:Widget::step@f571501e"}}
+  # A static import brings `shout` into scope as a bare name.
+  - {path: src/main/java/app/core/Widget.java, line: 15, symbol: shout, expect: {target: "src/main/java/app/util/Strings.java#function:Strings::shout"}}
+  - path: src/main/java/app/core/Widget.java
+    line: 16
+    symbol: save
+    expect:
+      ambiguous:
+        - "src/main/java/app/core/DiskSaver.java#function:DiskSaver::save"
+        - "src/main/java/app/core/MemSaver.java#function:MemSaver::save"
+  # `ping` is a member of Widget and of Inner; from run only Widget.ping is in scope.
+  - {path: src/main/java/app/core/Widget.java, line: 17, symbol: ping, expect: {target: "src/main/java/app/core/Widget.java#function:Widget::ping"}}
+  - {path: src/main/java/app/core/Widget.java, line: 18, symbol: println, expect: {external: true}}
+  - {path: src/main/java/app/core/Widget.java, line: 18, symbol: describe, expect: {target: "src/main/java/app/core/Widget.java#function:Widget::describe"}}
+  - {path: src/main/java/app/core/Widget.java, line: 22, symbol: ping, expect: {target: "src/main/java/app/core/Widget.java#function:Widget::ping"}}
+  - {path: src/main/java/app/core/Widget.java, line: 26, symbol: ping, expect: {target: "src/main/java/app/core/Widget.java#function:Widget::ping"}}
+  # `import app.util.*` makes `Strings` visible; `clean` is a static method of it.
+  - {path: src/main/java/app/core/Widget.java, line: 33, symbol: clean, expect: {target: "src/main/java/app/util/Strings.java#function:Strings::clean"}}
+  # Inside Inner the innermost class with a member named ping wins (JLS 15.12.1).
+  - {path: src/main/java/app/core/Widget.java, line: 41, symbol: ping, expect: {target: "src/main/java/app/core/Widget.java#function:Widget::Inner::ping"}}
+  # The explicit constructor is what `new Widget("w")` runs.
+  - {path: src/test/java/app/core/WidgetTest.java, line: 5, symbol: Widget, expect: {target: "src/main/java/app/core/Widget.java#function:Widget::Widget"}}
+impact:
+  - {start: "src/main/java/app/util/Strings.java#function:Strings::shout", depth: 1, expect: ["src/main/java/app/core/Widget.java#function:Widget::run"]}
+  - {start: "src/main/java/app/util/Strings.java#function:Strings::shout", depth: 2, expect: ["src/test/java/app/core/WidgetTest.java#function:WidgetTest::runsWithDisk"]}
+  - {start: "src/main/java/app/core/Widget.java#function:Widget::Inner::ping", depth: 1, expect: ["src/main/java/app/core/Widget.java#function:Widget::Inner::pong"]}
+  - {start: "src/main/java/app/core/Widget.java#function:Widget::ping", depth: 1, expect: ["src/main/java/app/core/Widget.java#function:Widget::run", "src/main/java/app/core/Widget.java#function:Widget::step@f571501e", "src/main/java/app/core/Widget.java#function:Widget::step@5b411d84"]}
+syntax_error_files:
+  - src/main/java/app/core/Broken.java

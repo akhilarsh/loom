@@ -1,0 +1,9 @@
+# Edge-quality thresholds (design 14.2). Published on 2026-09-30, before any
+# holdout project was examined. The same values apply to every dialect on its
+# labelled fixture; `loom map --eval-edges` and the cargo test
+# `every_dialect_meets_published_thresholds` check them.
+declaration_recall: 1.0
+false_high_confidence: 0
+target_precision: 0.95
+target_recall: 0.5
+impact_false_negatives_depth_1: 0

@@ -1,0 +1,61 @@
+dialect: go
+syntax_error_files:
+  - inventory/broken.go
+declarations:
+  - {path: main.go, kind: module, scope: [main], line: 1}
+  - {path: main.go, kind: function, scope: [main], line: 10}
+  - {path: pricing/pricing.go, kind: module, scope: [pricing], line: 1}
+  - {path: pricing/pricing.go, kind: constant, scope: [Currency], line: 5}
+  - {path: pricing/pricing.go, kind: type, scope: [Line], line: 7}
+  - {path: pricing/pricing.go, kind: function, scope: [Total], line: 12}
+  - {path: pricing/pricing.go, kind: function, scope: [Format], line: 20}
+  - {path: pricing/tax.go, kind: module, scope: [pricing], line: 1}
+  - {path: pricing/tax.go, kind: constant, scope: [rate], line: 5}
+  - {path: pricing/tax.go, kind: function, scope: [applyTax], line: 7}
+  - {path: pricing/tax.go, kind: function, scope: [round], line: 11}
+  - {path: inventory/stock.go, kind: module, scope: [inventory], line: 1}
+  - {path: inventory/stock.go, kind: interface, scope: [Saver], line: 9}
+  - {path: inventory/stock.go, kind: type, scope: [Stock], line: 13}
+  - {path: inventory/stock.go, kind: type, scope: [Ledger], line: 17}
+  - {path: inventory/stock.go, kind: function, scope: [NewStock], line: 21}
+  - {path: inventory/stock.go, kind: function, scope: [Add], line: 25}
+  - {path: inventory/stock.go, kind: function, scope: [Count], line: 29}
+  - {path: inventory/stock.go, kind: function, scope: [Value], line: 33}
+  - {path: inventory/stock.go, kind: function, scope: [Save], line: 38}
+  - {path: inventory/stock.go, kind: function, scope: [Save], line: 43}
+  - {path: inventory/stock.go, kind: function, scope: [Persist], line: 48}
+  - {path: inventory/stock.go, kind: function, scope: [round], line: 52}
+  - {path: inventory/label.go, kind: module, scope: [inventory], line: 1}
+  - {path: inventory/label.go, kind: function, scope: [Label], line: 6}
+  - {path: inventory/stock_test.go, kind: module, scope: [inventory], line: 1}
+  - {path: inventory/stock_test.go, kind: function, scope: [TestCount], line: 5}
+references:
+  # main.go
+  - {path: main.go, line: 11, symbol: NewStock, expect: {target: "inventory/stock.go#function:NewStock"}}
+  - {path: main.go, line: 12, symbol: Add, expect: {target: "inventory/stock.go#function:Add"}}
+  - {path: main.go, line: 13, symbol: Persist, expect: {target: "inventory/stock.go#function:Persist"}}
+  - {path: main.go, line: 14, symbol: Println, expect: {external: true}}
+  - {path: main.go, line: 14, symbol: Value, expect: {target: "inventory/stock.go#function:Value"}}
+  - {path: main.go, line: 14, symbol: Format, expect: {target: "pricing/pricing.go#function:Format"}}
+  - {path: main.go, line: 14, symbol: Label, expect: {target: "inventory/label.go#function:Label"}}
+  # pricing
+  - {path: pricing/pricing.go, line: 15, symbol: applyTax, expect: {target: "pricing/tax.go#function:applyTax"}}
+  - {path: pricing/pricing.go, line: 21, symbol: Sprintf, expect: {external: true}}
+  - {path: pricing/tax.go, line: 8, symbol: round, expect: {target: "pricing/tax.go#function:round"}}
+  - {path: pricing/tax.go, line: 12, symbol: Round, expect: {external: true}}
+  # inventory
+  - {path: inventory/stock.go, line: 30, symbol: len, expect: {external: true}}
+  - {path: inventory/stock.go, line: 35, symbol: round, expect: {target: "inventory/stock.go#function:round"}}
+  - {path: inventory/stock.go, line: 35, symbol: Total, expect: {target: "pricing/pricing.go#function:Total"}}
+  - {path: inventory/stock.go, line: 39, symbol: Add, expect: {target: "inventory/stock.go#function:Add"}}
+  - {path: inventory/stock.go, line: 44, symbol: append, expect: {external: true}}
+  - {path: inventory/stock.go, line: 49, symbol: Save, expect: {ambiguous: ["inventory/stock.go#function:Save@d977a147", "inventory/stock.go#function:Save@a44c49d4"]}}
+  - {path: inventory/stock.go, line: 53, symbol: Floor, expect: {external: true}}
+  - {path: inventory/label.go, line: 7, symbol: Format, expect: {target: "pricing/pricing.go#function:Format"}}
+impact:
+  - {start: "pricing/pricing.go#function:Total", depth: 1, expect: ["inventory/stock.go#function:Value"]}
+  - {start: "pricing/pricing.go#function:Total", depth: 2, expect: ["main.go#function:main"]}
+  - {start: "pricing/pricing.go#function:Format", depth: 1, expect: ["inventory/label.go#function:Label", "main.go#function:main"]}
+  - {start: "pricing/tax.go#function:round", depth: 2, expect: ["pricing/tax.go#function:applyTax", "pricing/pricing.go#function:Total"]}
+  - {start: "inventory/stock.go#function:Add", depth: 1, expect: ["main.go#function:main", "inventory/stock.go#function:Save@d977a147"]}
+  - {start: "inventory/stock.go#function:Add", depth: 2, expect: ["inventory/stock.go#function:Persist"]}

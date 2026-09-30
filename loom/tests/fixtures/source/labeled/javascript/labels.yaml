@@ -1,0 +1,50 @@
+dialect: javascript
+syntax_error_files:
+  - src/broken.js
+declarations:
+  - {path: src/utils.js, kind: constant, scope: [PRECISION], line: 1}
+  - {path: src/utils.js, kind: function, scope: [scale], line: 3}
+  - {path: src/utils.js, kind: function, scope: [round], line: 7}
+  - {path: src/utils.js, kind: function, scope: [percent], line: 11}
+  - {path: src/utils.js, kind: function, scope: [percent, scale], line: 12}
+  - {path: src/utils.js, kind: function, scope: [ratio], line: 16}
+  - {path: src/shapes.js, kind: type, scope: [Circle], line: 3}
+  - {path: src/shapes.js, kind: function, scope: [Circle, constructor], line: 4}
+  - {path: src/shapes.js, kind: function, scope: [Circle, area], line: 8}
+  - {path: src/shapes.js, kind: function, scope: [Circle, describe], line: 12}
+  - {path: src/shapes.js, kind: type, scope: [Square], line: 17}
+  - {path: src/shapes.js, kind: function, scope: [Square, constructor], line: 18}
+  - {path: src/shapes.js, kind: function, scope: [Square, area], line: 22}
+  - {path: src/shapes.js, kind: function, scope: [largest], line: 27}
+  - {path: src/format.js, kind: function, scope: [pad], line: 1}
+  - {path: src/registry.js, kind: function, scope: [register], line: 4}
+  - {path: src/app.js, kind: function, scope: [report], line: 5}
+references:
+  # utils.js
+  - {path: src/utils.js, line: 8, symbol: Number, expect: {external: true}}
+  - {path: src/utils.js, line: 8, symbol: toFixed, expect: {external: true}}
+  - {path: src/utils.js, line: 13, symbol: round, expect: {target: "src/utils.js#function:round"}}
+  - {path: src/utils.js, line: 13, symbol: scale, expect: {target: "src/utils.js#function:percent::scale"}}
+  - {path: src/utils.js, line: 17, symbol: scale, expect: {target: "src/utils.js#function:scale"}}
+  # shapes.js
+  - {path: src/shapes.js, line: 9, symbol: round, expect: {target: "src/utils.js#function:round"}}
+  - {path: src/shapes.js, line: 13, symbol: area, expect: {target: "src/shapes.js#function:Circle::area"}}
+  - {path: src/shapes.js, line: 30, symbol: area, expect: {ambiguous: ["src/shapes.js#function:Circle::area", "src/shapes.js#function:Square::area"]}}
+  - {path: src/shapes.js, line: 31, symbol: area, expect: {ambiguous: ["src/shapes.js#function:Circle::area", "src/shapes.js#function:Square::area"]}}
+  # format.js
+  - {path: src/format.js, line: 2, symbol: String, expect: {external: true}}
+  - {path: src/format.js, line: 2, symbol: padStart, expect: {external: true}}
+  # registry.js
+  - {path: src/registry.js, line: 5, symbol: sortBy, expect: {external: true}}
+  - {path: src/registry.js, line: 6, symbol: map, expect: {external: true}}
+  - {path: src/registry.js, line: 6, symbol: pad, expect: {target: "src/format.js#function:pad"}}
+  # app.js
+  - {path: src/app.js, line: 7, symbol: biggest, expect: {target: "src/shapes.js#function:largest"}}
+  - {path: src/app.js, line: 8, symbol: register, expect: {target: "src/registry.js#function:register"}}
+  - {path: src/app.js, line: 9, symbol: percent, expect: {target: "src/utils.js#function:percent"}}
+  - {path: src/app.js, line: 9, symbol: area, expect: {ambiguous: ["src/shapes.js#function:Circle::area", "src/shapes.js#function:Square::area"]}}
+impact:
+  - {start: "src/utils.js#function:round", depth: 1, expect: ["src/utils.js#function:percent", "src/shapes.js#function:Circle::area"]}
+  - {start: "src/utils.js#function:round", depth: 2, expect: ["src/app.js#function:report", "src/shapes.js#function:Circle::describe", "src/shapes.js#function:largest"]}
+  - {start: "src/format.js#function:pad", depth: 1, expect: ["src/registry.js#function:register"]}
+  - {start: "src/format.js#function:pad", depth: 2, expect: ["src/app.js#function:report"]}

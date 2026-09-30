@@ -1,0 +1,8 @@
+namespace App.Core
+{
+    public class Broken
+    {
+        void Oops( {
+            int x = ;
+        }
+}

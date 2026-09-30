@@ -9,12 +9,17 @@
 //! - `pathset:{family}` for a module-path or package-scope lookup, which depends
 //!   only on which files exist.
 //!
+//! A rule that reads another file's own entry (a re-export among its import
+//! bindings, a prototype among its edges) records that file's `name:` keys for
+//! its file node ([`record_file`]): every change to the file touches them.
+//!
 //! [`answers_to`] is the one definition of the spellings a node is indexed
 //! under. [`SymbolIndex::build`](super::SymbolIndex::build) indexes by it and
 //! [`touched_keys`] emits the keys of it, so every bucket a lookup can land in
 //! maps to a key that the file owning the bucket's nodes touches.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -73,18 +78,35 @@ pub fn touched_keys(entry: &FileEntry, added_or_removed: bool) -> BTreeSet<Strin
     keys
 }
 
+/// Record that a rule read the entry of the file at `path` itself (its import
+/// bindings or its edges), not only its definitions: the keys its file node
+/// answers to, which [`touched_keys`] emits for every change to that file.
+pub(super) fn record_file(path: &str, keys: &mut BTreeSet<String>) {
+    let Some(family) = family_of(path) else {
+        return;
+    };
+    for name in file_names(Path::new(path)) {
+        keys.insert(name_key(family, &name));
+    }
+}
+
 /// Every name a node is indexed under. A file claims both its file name and its
 /// extension-less stem, so `language` finds `src/language.rs`; a stem that also
 /// names a symbol shares a bucket precisely so resolution refuses to pick.
 pub(crate) fn node_names(node: &SourceNode) -> Vec<String> {
     if node.kind == SourceNodeKind::File {
-        return [node.path.file_name(), node.path.file_stem()]
-            .into_iter()
-            .flatten()
-            .map(|name| name.to_string_lossy().into_owned())
-            .collect();
+        return file_names(&node.path);
     }
     node.scope.last().cloned().into_iter().collect()
+}
+
+/// A file's name and its extension-less stem.
+fn file_names(path: &Path) -> Vec<String> {
+    [path.file_name(), path.file_stem()]
+        .into_iter()
+        .flatten()
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Every scope-qualified spelling a node also answers to: a `helper` in

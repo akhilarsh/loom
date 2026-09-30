@@ -1,0 +1,53 @@
+dialect: typescript
+syntax_error_files:
+  - src/broken.ts
+declarations:
+  - {path: src/util.ts, kind: constant, scope: [MAX_ITEMS], line: 3}
+  - {path: src/util.ts, kind: function, scope: [clean], line: 5}
+  - {path: src/util.ts, kind: function, scope: [slugify], line: 9}
+  - {path: src/util.ts, kind: function, scope: [slugify, clean], line: 10}
+  - {path: src/util.ts, kind: function, scope: [headline], line: 16}
+  - {path: src/util.ts, kind: function, scope: [parseCount], line: 20}
+  - {path: src/util.ts, kind: function, scope: [stamp], line: 22}
+  - {path: src/models.ts, kind: interface, scope: [Entity], line: 1}
+  - {path: src/models.ts, kind: type, scope: [Task], line: 6}
+  - {path: src/models.ts, kind: function, scope: [Task, constructor], line: 7}
+  - {path: src/models.ts, kind: function, scope: [Task, save], line: 9}
+  - {path: src/models.ts, kind: function, scope: [Task, validate], line: 13}
+  - {path: src/models.ts, kind: function, scope: [Task, label], line: 17}
+  - {path: src/models.ts, kind: function, scope: [Task, label], line: 21}
+  - {path: src/models.ts, kind: type, scope: [Note], line: 26}
+  - {path: src/models.ts, kind: function, scope: [Note, constructor], line: 27}
+  - {path: src/models.ts, kind: function, scope: [Note, save], line: 29}
+  - {path: src/storage.ts, kind: type, scope: [Storage], line: 5}
+  - {path: src/storage.ts, kind: function, scope: [Storage, add], line: 8}
+  - {path: src/storage.ts, kind: function, scope: [Storage, sync], line: 16}
+  - {path: src/index.ts, kind: function, scope: [run], line: 8}
+  - {path: src/cli.ts, kind: function, scope: [main], line: 3}
+references:
+  # util.ts
+  - {path: src/util.ts, line: 6, symbol: trim, expect: {external: true}}
+  - {path: src/util.ts, line: 11, symbol: trim, expect: {external: true}}
+  - {path: src/util.ts, line: 11, symbol: toLowerCase, expect: {external: true}}
+  - {path: src/util.ts, line: 13, symbol: clean, expect: {target: "src/util.ts#function:slugify::clean"}}
+  - {path: src/util.ts, line: 17, symbol: clean, expect: {target: "src/util.ts#function:clean"}}
+  - {path: src/util.ts, line: 20, symbol: Number, expect: {external: true}}
+  - {path: src/util.ts, line: 23, symbol: format, expect: {external: true}}
+  # models.ts
+  - {path: src/models.ts, line: 10, symbol: validate, expect: {target: "src/models.ts#function:Task::validate"}}
+  # storage.ts
+  - {path: src/storage.ts, line: 12, symbol: push, expect: {external: true}}
+  - {path: src/storage.ts, line: 12, symbol: toKey, expect: {target: "src/util.ts#function:slugify"}}
+  - {path: src/storage.ts, line: 13, symbol: save, expect: {ambiguous: ["src/models.ts#function:Task::save", "src/models.ts#function:Note::save"]}}
+  - {path: src/storage.ts, line: 17, symbol: post, expect: {external: true}}
+  # index.ts
+  - {path: src/index.ts, line: 10, symbol: count, expect: {target: "src/util.ts#function:parseCount"}}
+  - {path: src/index.ts, line: 11, symbol: add, expect: {target: "src/storage.ts#function:Storage::add"}}
+  # cli.ts
+  - {path: src/cli.ts, line: 4, symbol: slugify, expect: {target: "src/util.ts#function:slugify"}}
+  - {path: src/cli.ts, line: 5, symbol: run, expect: {target: "src/index.ts#function:run"}}
+impact:
+  - {start: "src/util.ts#function:slugify", depth: 1, expect: ["src/storage.ts#function:Storage::add", "src/cli.ts#function:main"]}
+  - {start: "src/util.ts#function:slugify", depth: 2, expect: ["src/index.ts#function:run"]}
+  - {start: "src/models.ts#function:Task::validate", depth: 1, expect: ["src/models.ts#function:Task::save"]}
+  - {start: "src/models.ts#function:Task::validate", depth: 2, expect: ["src/storage.ts#function:Storage::add"]}

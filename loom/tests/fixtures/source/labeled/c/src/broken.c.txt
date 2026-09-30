@@ -1,0 +1,6 @@
+#include "shapes.h"
+
+int broken(const Shape *s
+{
+    return area(s) +;
+}

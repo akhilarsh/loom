@@ -1,0 +1,56 @@
+dialect: python
+syntax_error_files:
+  - shop/broken.py
+declarations:
+  - {path: shop/models.py, kind: type, scope: [Item], line: 1}
+  - {path: shop/models.py, kind: function, scope: [Item, __init__], line: 2}
+  - {path: shop/models.py, kind: function, scope: [Item, price], line: 8}
+  - {path: shop/models.py, kind: function, scope: [Item, price], line: 12}
+  - {path: shop/models.py, kind: function, scope: [Item, _check], line: 15}
+  - {path: shop/models.py, kind: function, scope: [Item, describe], line: 18}
+  - {path: shop/models.py, kind: type, scope: [Bundle], line: 22}
+  - {path: shop/models.py, kind: function, scope: [Bundle, __init__], line: 23}
+  - {path: shop/models.py, kind: function, scope: [Bundle, describe], line: 26}
+  - {path: shop/pricing.py, kind: function, scope: [line], line: 4}
+  - {path: shop/pricing.py, kind: function, scope: [apply_tax], line: 8}
+  - {path: shop/pricing.py, kind: function, scope: [total], line: 12}
+  - {path: shop/pricing.py, kind: function, scope: [total, line], line: 13}
+  - {path: shop/pricing.py, kind: function, scope: [summarize], line: 19}
+  - {path: shop/cart.py, kind: type, scope: [Cart], line: 7}
+  - {path: shop/cart.py, kind: function, scope: [Cart, __init__], line: 8}
+  - {path: shop/cart.py, kind: function, scope: [Cart, add], line: 11}
+  - {path: shop/cart.py, kind: function, scope: [Cart, size], line: 15}
+  - {path: shop/cart.py, kind: function, scope: [Cart, checkout], line: 18}
+  - {path: shop/cli.py, kind: function, scope: [main], line: 6}
+  - {path: tests/test_cart.py, kind: function, scope: [test_total_empty], line: 5}
+  - {path: tests/test_cart.py, kind: function, scope: [test_add_returns_size], line: 9}
+references:
+  # models.py
+  - {path: shop/models.py, line: 13, symbol: _check, expect: {target: "shop/models.py#function:Item::_check"}}
+  - {path: shop/models.py, line: 16, symbol: max, expect: {external: true}}
+  - {path: shop/models.py, line: 27, symbol: join, expect: {external: true}}
+  - {path: shop/models.py, line: 27, symbol: describe, expect: {ambiguous: ["shop/models.py#function:Item::describe", "shop/models.py#function:Bundle::describe"]}}
+  # pricing.py
+  - {path: shop/pricing.py, line: 9, symbol: round, expect: {external: true}}
+  - {path: shop/pricing.py, line: 14, symbol: apply_tax, expect: {target: "shop/pricing.py#function:apply_tax"}}
+  - {path: shop/pricing.py, line: 16, symbol: sum, expect: {external: true}}
+  - {path: shop/pricing.py, line: 16, symbol: line, expect: {target: "shop/pricing.py#function:total::line"}}
+  - {path: shop/pricing.py, line: 20, symbol: line, expect: {target: "shop/pricing.py#function:line"}}
+  # cart.py
+  - {path: shop/cart.py, line: 12, symbol: append, expect: {external: true}}
+  - {path: shop/cart.py, line: 12, symbol: Product, expect: {target: "shop/models.py#type:Item"}}
+  - {path: shop/cart.py, line: 13, symbol: size, expect: {target: "shop/cart.py#function:Cart::size"}}
+  - {path: shop/cart.py, line: 16, symbol: len, expect: {external: true}}
+  - {path: shop/cart.py, line: 19, symbol: compute_total, expect: {target: "shop/pricing.py#function:total"}}
+  - {path: shop/cart.py, line: 20, symbol: post, expect: {external: true}}
+  # cli.py
+  - {path: shop/cli.py, line: 7, symbol: Cart, expect: {target: "shop/cart.py#type:Cart"}}
+  - {path: shop/cli.py, line: 9, symbol: add, expect: {target: "shop/cart.py#function:Cart::add"}}
+  - {path: shop/cli.py, line: 10, symbol: checkout, expect: {target: "shop/cart.py#function:Cart::checkout"}}
+  - {path: shop/cli.py, line: 14, symbol: exit, expect: {external: true}}
+  - {path: shop/cli.py, line: 14, symbol: main, expect: {target: "shop/cli.py#function:main"}}
+impact:
+  - {start: "shop/pricing.py#function:apply_tax", depth: 1, expect: ["shop/pricing.py#function:total::line"]}
+  - {start: "shop/pricing.py#function:apply_tax", depth: 2, expect: ["shop/pricing.py#function:total"]}
+  - {start: "shop/pricing.py#function:total", depth: 1, expect: ["shop/cart.py#function:Cart::checkout"]}
+  - {start: "shop/pricing.py#function:total", depth: 2, expect: ["shop/cli.py#function:main"]}
