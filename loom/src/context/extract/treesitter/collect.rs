@@ -169,9 +169,12 @@ fn record(
     walk.skipped += found.skipped;
     if let Some(raw) = found.definition {
         match found.name {
-            Some(name) => walk
-                .definitions
-                .push(materialize(raw, name, found.qualifier, bytes)),
+            Some(name) => walk.definitions.push(materialize(
+                raw,
+                harness.definition_name(&name),
+                found.qualifier,
+                bytes,
+            )),
             // An unnamed definition cannot get a stable id, so it is a
             // coverage gap, not a node.
             None => walk.skipped += 1,
@@ -218,12 +221,18 @@ fn record_imports(
     walk: &mut Collected,
 ) {
     for (path, site) in import_paths {
-        match import_statement {
-            Some(statement) => walk
-                .bindings
-                .extend(harness.import_bindings(statement, &path, site)),
-            None => walk.bindings.push(default_import_binding(&path, site)),
-        }
+        let path = match import_statement {
+            Some(statement) => {
+                let spec = harness.import_spec(statement, &path);
+                walk.bindings
+                    .extend(harness.import_bindings(statement, &spec, site));
+                spec
+            }
+            None => {
+                walk.bindings.push(default_import_binding(&path, site));
+                path
+            }
+        };
         walk.imports.push(Reference {
             symbol: path,
             site,

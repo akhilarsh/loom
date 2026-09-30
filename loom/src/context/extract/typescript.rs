@@ -11,10 +11,8 @@ use crate::context::source_graph::{ImportBinding, NodeLanguage, SourceNodeKind, 
 mod imports;
 
 /// Extracts definitions, imports, and calls from `.ts`, `.mts`, and `.cts`
-/// files. It excludes `.tsx`: that needs the separately pinned `LANGUAGE_TSX`
-/// grammar, and no extractor is registered for dialect `tsx`. A `.tsx` path
-/// resolves to a `Lookup::Gap` for that dialect and yields a file-level node
-/// with `LexicalOnly` coverage.
+/// files. It excludes `.tsx`, which needs the separately pinned `LANGUAGE_TSX`
+/// grammar and belongs to the `tsx` dialect's own extractor.
 pub struct TypeScriptExtractor;
 
 impl TypeScriptExtractor {
@@ -82,6 +80,16 @@ const QUERY: &str = r#"
     property: (property_identifier) @call.name))
 "#;
 
+/// The bindings of one `import` or `export ... from` statement, shared by every
+/// ECMAScript dialect.
+pub(super) fn ecmascript_import_bindings(
+    statement: &str,
+    path: &str,
+    site: Span,
+) -> Vec<ImportBinding> {
+    imports::statement_bindings(statement, path, site)
+}
+
 impl QueryHarness for TypeScriptExtractor {
     fn language(&self) -> tree_sitter::Language {
         tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
@@ -116,7 +124,7 @@ impl QueryHarness for TypeScriptExtractor {
     }
 
     fn import_bindings(&self, statement: &str, path: &str, site: Span) -> Vec<ImportBinding> {
-        imports::statement_bindings(statement, path, site)
+        ecmascript_import_bindings(statement, path, site)
     }
 }
 
