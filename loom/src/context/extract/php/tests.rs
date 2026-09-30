@@ -246,3 +246,15 @@ fn a_syntax_error_yields_a_parse_error_and_no_symbols() {
     );
     assert_eq!(sorted_ids(&extraction), vec!["src/broken.php"]);
 }
+
+/// A trait `use` is a `References` edge, and the capability says so.
+#[test]
+fn the_references_capability_matches_the_edges_emitted() {
+    let extraction = extract("src/w.php", WIDGET);
+
+    assert!(extraction
+        .edges
+        .iter()
+        .any(|edge| edge.kind == SourceEdgeKind::References));
+    assert!(PhpExtractor::new().capabilities().references);
+}

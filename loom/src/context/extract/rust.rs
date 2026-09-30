@@ -60,8 +60,24 @@ const QUERY: &str = r#"
 (static_item
   name: (identifier) @name) @definition.constant
 
+; An `impl` is named by the base name of its self type, however that type is
+; written: `impl Foo`, `impl<T> Foo<T>`, `impl<'a> Tr for Foo<'a>`,
+; `impl crate::a::Foo` and `impl<T> a::Foo<T>` all scope their members as `Foo`.
 (impl_item
   type: (type_identifier) @name) @definition.implementation
+
+(impl_item
+  type: (generic_type
+    type: (type_identifier) @name)) @definition.implementation
+
+(impl_item
+  type: (scoped_type_identifier
+    name: (type_identifier) @name)) @definition.implementation
+
+(impl_item
+  type: (generic_type
+    type: (scoped_type_identifier
+      name: (type_identifier) @name))) @definition.implementation
 
 (use_declaration
   argument: (_) @import.path) @import.statement
@@ -129,7 +145,7 @@ impl QueryHarness for RustExtractor {
             dialect: "rust",
             grammar_version: "0.24.2",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 3,
+            extractor_version: 4,
         }
     }
 
@@ -186,3 +202,7 @@ mod tests;
 #[cfg(test)]
 #[path = "rust/tests_imports.rs"]
 mod tests_imports;
+
+#[cfg(test)]
+#[path = "rust/tests_impls.rs"]
+mod tests_impls;

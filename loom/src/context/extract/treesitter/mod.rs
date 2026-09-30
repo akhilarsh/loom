@@ -72,6 +72,10 @@ pub trait QueryHarness {
     fn language(&self) -> Language;
 
     /// The embedded query source. Must use the capture protocol above.
+    ///
+    /// Compiled queries are cached per process, keyed by
+    /// `(node_language, query_source)`, so that pair must identify the
+    /// grammar: two harnesses sharing it must share [`QueryHarness::language`].
     fn query_source(&self) -> &'static str;
 
     /// Identity of this extractor build.
@@ -85,9 +89,10 @@ pub trait QueryHarness {
     fn kind_for_capture(&self, suffix: &str) -> Option<SourceNodeKind>;
 
     /// The names one import statement binds. `statement` is the
-    /// `@import.statement` text, `path` the module spec (the normalized
-    /// `@import.path` after `import_spec`) and `site` the path's span. The default binds the whole module under its last
-    /// path segment.
+    /// `@import.statement` text, `path` the module spec that
+    /// [`QueryHarness::import_spec`] returned for it (Ruby `./x`, a PHP group
+    /// member's full path), and `site` the span of the `@import.path` node.
+    /// The default binds the whole module under its last path segment.
     fn import_bindings(&self, _statement: &str, path: &str, site: Span) -> Vec<ImportBinding> {
         vec![default_import_binding(path, site)]
     }
@@ -116,6 +121,13 @@ pub trait QueryHarness {
             .map(|dialect| dialect.self_receivers)
             .unwrap_or_default()
     }
+
+    /// Whether a self receiver outside every type names the file's top
+    /// level, so `self.run()` there binds like a bare `run()`. False by
+    /// default: such a call stays unbound, like a call on any other receiver.
+    fn top_level_self(&self) -> bool {
+        false
+    }
 }
 
 /// The binding of an import match that has no `@import.statement`, and of
@@ -126,6 +138,7 @@ fn default_import_binding(path: &str, site: Span) -> ImportBinding {
         name: None,
         alias: None,
         glob: false,
+        exported_as: None,
         site,
     }
 }
@@ -203,12 +216,14 @@ fn compiled_query(harness: &dyn QueryHarness, node_language: &NodeLanguage) -> R
 }
 
 /// The same-file binding rules `harness` runs under: its own receiver
-/// spellings, and whether its dialect lets a bare call reach a member.
+/// spellings and top-level `self`, and whether its dialect lets a bare call
+/// reach a member.
 fn binding_rules(harness: &dyn QueryHarness, node_language: &NodeLanguage) -> BindingRules {
     BindingRules {
         self_receivers: harness.self_receivers(),
         bare_calls_reach_members: dialect_by_id(node_language.as_str())
             .is_some_and(|dialect| dialect.bare_calls_reach_members),
+        top_level_self: harness.top_level_self(),
     }
 }
 
@@ -225,3 +240,5 @@ fn parse(harness: &dyn QueryHarness, bytes: &[u8]) -> Result<Option<Tree>> {
 mod tests;
 #[cfg(test)]
 mod tests_identity;
+#[cfg(test)]
+mod tests_receivers;

@@ -1,7 +1,8 @@
 //! The bindings one TypeScript `import` or `export ... from` statement declares.
 //!
 //! A re-export binds no name in its own file, so its named forms carry
-//! `alias: Some("")`; only `export * from` is a glob.
+//! `alias: Some("")` and record the name the module exports in `exported_as`;
+//! only `export * from` is a glob.
 
 use crate::context::source_graph::{ImportBinding, Span};
 
@@ -13,7 +14,14 @@ pub(super) fn statement_bindings(statement: &str, path: &str, site: Span) -> Vec
         name: name.map(str::to_string),
         alias: alias.map(str::to_string),
         glob,
+        exported_as: None,
         site,
+    };
+    // `name` from the module, known here as `bound`: the local name of an
+    // import, the exported name of a re-export.
+    let named = |name: Option<&str>, bound: &str| ImportBinding {
+        exported_as: is_export.then(|| bound.to_string()),
+        ..make(name, Some(if is_export { "" } else { bound }), false)
     };
     if clause.is_empty() {
         // `import "x"`: evaluated for its effects, binds nothing.
@@ -31,35 +39,35 @@ pub(super) fn statement_bindings(statement: &str, path: &str, site: Span) -> Vec
             None if part.is_empty() => {}
             // `export * from "x"`.
             Some(None) => bindings.push(make(None, None, true)),
-            // `import * as ns` binds the module as `ns`; `export * as ns` binds nothing.
-            Some(Some(alias)) => bindings.push(make(None, local(is_export, alias.trim()), false)),
+            // `import * as ns` binds the module as `ns`; `export * as ns` exports it.
+            Some(Some(alias)) => bindings.push(named(None, alias.trim())),
             // `import d from "x"`: the default export, bound as `d`.
-            None => bindings.push(make(Some("default"), local(is_export, part), false)),
+            None => bindings.push(named(Some("default"), part)),
         }
     }
-    for item in group
-        .split(',')
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-    {
-        let item = item.strip_prefix("type ").unwrap_or(item);
-        let (name, alias) = match item.split_once(" as ") {
-            Some((name, alias)) => (name.trim(), alias.trim()),
-            None => (item, item),
-        };
-        bindings.push(make(
-            Some(name.trim_matches(['"', '\''])),
-            local(is_export, alias.trim_matches(['"', '\''])),
-            false,
-        ));
+    for (name, bound) in group_items(group) {
+        bindings.push(named(Some(name), bound));
     }
     bindings
 }
 
-/// The local alias a name is bound under: itself for an import, nothing for a
-/// re-export.
-fn local(is_export: bool, name: &str) -> Option<&str> {
-    Some(if is_export { "" } else { name })
+/// Each item of a `{ ... }` group as `(name, bound)`: `a` gives `(a, a)` and
+/// `a as b` gives `(a, b)`, `type` markers and quotes dropped.
+fn group_items(group: &str) -> impl Iterator<Item = (&str, &str)> {
+    group
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            let item = item.strip_prefix("type ").unwrap_or(item);
+            let (name, bound) = item
+                .split_once(" as ")
+                .map_or((item, item), |(name, bound)| (name.trim(), bound.trim()));
+            (
+                name.trim_matches(['"', '\'']),
+                bound.trim_matches(['"', '\'']),
+            )
+        })
 }
 
 /// Whether the statement is an `export`, and the text between its keyword and

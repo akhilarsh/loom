@@ -2,7 +2,9 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::context::extract::c::{c_family_query, include_bindings};
+use crate::context::extract::c::{
+    c_family_query, c_prototype_shapes, include_bindings, prototypes_under,
+};
 use crate::context::extract::dialect::{dialect_by_id, DialectSpec};
 use crate::context::extract::{
     run_query, Capabilities, ExtractorIdentity, FileExtraction, QueryHarness, SourceGraphExtractor,
@@ -50,6 +52,19 @@ macro_rules! function_with_declarator {
             "))\n    (reference_declarator (function_declarator declarator: ",
             $declarator,
             "))\n  ]\n  body: (compound_statement)) @definition.function\n\n"
+        )
+    };
+}
+
+/// The C prototype shapes plus one returning a reference.
+macro_rules! cpp_prototype_shapes {
+    () => {
+        concat!(
+            c_prototype_shapes!(),
+            r#"
+      (reference_declarator
+        (function_declarator
+          declarator: (identifier) @reference.name))"#
         )
     };
 }
@@ -106,12 +121,6 @@ const QUERY: &str = concat!(
 (namespace_definition
   name: [(namespace_identifier) (nested_namespace_specifier)] @name) @definition.module
 
-; A prototype returning a reference; the shared patterns cover the others.
-(declaration
-  declarator: (reference_declarator
-    (function_declarator
-      declarator: (identifier) @reference.name)))
-
 (call_expression
   function: (qualified_identifier) @call.name)
 
@@ -125,7 +134,10 @@ const QUERY: &str = concat!(
     field: (template_method
       name: (field_identifier) @call.name)))
 "#,
-    c_family_query!()
+    // A template or friend declaration of a function is a prototype too; the
+    // shared patterns cover every other parent.
+    prototypes_under!(cpp_prototype_shapes!(); "template_declaration", "friend_declaration"),
+    c_family_query!(cpp_prototype_shapes!())
 );
 
 impl QueryHarness for CppExtractor {
@@ -142,7 +154,7 @@ impl QueryHarness for CppExtractor {
             dialect: "cpp",
             grammar_version: "0.23.4",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 2,
+            extractor_version: 3,
         }
     }
 
@@ -176,7 +188,7 @@ impl SourceGraphExtractor for CppExtractor {
             import_bindings: true,
             calls: true,
             receivers: true,
-            references: false,
+            references: true,
         }
     }
 

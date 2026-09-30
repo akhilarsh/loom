@@ -121,7 +121,7 @@ impl QueryHarness for CSharpExtractor {
             dialect: "csharp",
             grammar_version: "0.23.5",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 1,
+            extractor_version: 2,
         }
     }
 
@@ -155,6 +155,7 @@ impl QueryHarness for CSharpExtractor {
             glob: alias.is_none(),
             name,
             alias,
+            exported_as: None,
             site,
         }]
     }

@@ -48,6 +48,8 @@ pub mod cpp;
 #[cfg(feature = "source-graph-wave-b")]
 pub mod csharp;
 #[cfg(feature = "source-graph")]
+mod ecmascript;
+#[cfg(feature = "source-graph")]
 pub mod go;
 #[cfg(feature = "source-graph-wave-b")]
 pub mod java;

@@ -88,6 +88,25 @@ fn a_re_export_binds_no_local_name_and_a_star_re_export_is_a_glob() {
 }
 
 #[test]
+fn a_re_export_records_the_name_it_exports() {
+    let exported: Vec<Option<String>> =
+        extraction("export { a as b, c } from \"x\";\nimport { d } from \"y\";\n")
+            .imports
+            .into_iter()
+            .map(|binding| binding.exported_as)
+            .collect();
+    assert_eq!(
+        exported,
+        [Some("b".to_string()), Some("c".to_string()), None]
+    );
+
+    let namespace = imports::statement_bindings("export * as ns from \"z\";", "z", Span::default());
+    assert_eq!(namespace.len(), 1);
+    assert_eq!(namespace[0].exported_as.as_deref(), Some("ns"));
+    assert_eq!(namespace[0].local_name(), None);
+}
+
+#[test]
 fn a_this_call_binds_to_the_enclosing_class_by_receiver() {
     let extraction = extraction("class S {\n  a() {\n    this.b();\n  }\n  b() {}\n}\n");
     let edge = extraction

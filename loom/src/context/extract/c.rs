@@ -29,24 +29,59 @@ impl Default for CExtractor {
     }
 }
 
-/// The patterns C and C++ share: type declarations (`typedef struct Foo {..}
-/// Foo;` is one `type:Foo`, since the typedef's own type is named), includes,
-/// prototypes, and calls by bare name or through a member. A macro so the C++
-/// extractor can `concat!` its own patterns onto it without copying these.
-macro_rules! c_family_query {
+/// The declarator shapes of a C prototype, as query alternatives: returning a
+/// value or a pointer. C++ adds a reference.
+macro_rules! c_prototype_shapes {
     () => {
         r#"
-; A prototype (`int area(const Shape *s);`) declares a function without
-; defining it: a `References` edge naming it, never a node.
-(declaration
-  declarator: [
-    (function_declarator
-      declarator: (identifier) @reference.name)
-    (pointer_declarator
-      declarator: (function_declarator
-        declarator: (identifier) @reference.name))
-  ])
+      (function_declarator
+        declarator: (identifier) @reference.name)
+      (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @reference.name))"#
+    };
+}
+pub(super) use c_prototype_shapes;
 
+/// A prototype (`int area(const Shape *s);`) declares a function without
+/// defining it: a `References` edge naming it, never a node. One pattern per
+/// `$parent`, matching a `declaration` directly under it whose declarator is
+/// one of `$shapes`.
+macro_rules! prototypes_under {
+    ($shapes:expr; $($parent:literal),+ $(,)?) => {
+        concat!($(
+            "(", $parent, "\n  (declaration\n    declarator: [", $shapes, "\n    ]))\n\n",
+        )+)
+    };
+}
+pub(super) use prototypes_under;
+
+/// The patterns C and C++ share: prototypes with the dialect's
+/// `$prototype_shapes`, type declarations (`typedef struct Foo {..} Foo;` is
+/// one `type:Foo`, since the typedef's own type is named), includes, and
+/// calls by bare name or through a member. A macro so the C++ extractor can
+/// `concat!` its own patterns onto it without copying these.
+///
+/// A prototype counts only directly under a parent outside every function
+/// body: inside one, C++ `Foo w(x);` is a variable initialised from `x`,
+/// which the grammar parses as a function declarator too. So a prototype
+/// written in a function body is a gap, and a declaration in an `#if` block
+/// inside a function body still counts.
+macro_rules! c_family_query {
+    ($prototype_shapes:expr) => {
+        concat!(
+            $crate::context::extract::c::prototypes_under!(
+                $prototype_shapes;
+                "translation_unit",
+                "declaration_list",
+                "linkage_specification",
+                "preproc_if",
+                "preproc_ifdef",
+                "preproc_elif",
+                "preproc_elifdef",
+                "preproc_else",
+            ),
+            r#"
 (struct_specifier
   name: (type_identifier) @name
   body: (_)) @definition.type
@@ -74,6 +109,7 @@ macro_rules! c_family_query {
     argument: (_) @call.receiver
     field: (field_identifier) @call.name))
 "#
+        )
     };
 }
 pub(super) use c_family_query;
@@ -93,7 +129,7 @@ const QUERY: &str = concat!(
           declarator: (identifier) @name)))
   ]) @definition.function
 "#,
-    c_family_query!()
+    c_family_query!(c_prototype_shapes!())
 );
 
 /// The one glob binding of an `#include`. `path` arrives with its quotes
@@ -106,6 +142,7 @@ pub(super) fn include_bindings(path: &str, site: Span) -> Vec<ImportBinding> {
         name: None,
         alias: None,
         glob: true,
+        exported_as: None,
         site,
     }]
 }
@@ -124,7 +161,7 @@ impl QueryHarness for CExtractor {
             dialect: "c",
             grammar_version: "0.24.2",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 2,
+            extractor_version: 3,
         }
     }
 
@@ -157,7 +194,7 @@ impl SourceGraphExtractor for CExtractor {
             import_bindings: true,
             calls: true,
             receivers: true,
-            references: false,
+            references: true,
         }
     }
 

@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::context::extract::dialect::{dialect_by_id, DialectSpec};
-use crate::context::extract::tsx::jsx_patterns;
+use crate::context::extract::ecmascript::jsx_patterns;
 use crate::context::extract::typescript::ecmascript_import_bindings;
 use crate::context::extract::{
     run_query, Capabilities, ExtractorIdentity, FileExtraction, QueryHarness, SourceGraphExtractor,
@@ -29,7 +29,7 @@ impl Default for JavaScriptExtractor {
 }
 
 /// Declarations, imports, re-exports, CommonJS `require` and calls, followed by
-/// the JSX patterns the TSX extractor shares.
+/// the JSX patterns shared with the TSX extractor.
 const QUERY: &str = concat!(
     r#"
 (function_declaration
@@ -108,7 +108,7 @@ impl QueryHarness for JavaScriptExtractor {
             dialect: "javascript",
             grammar_version: "0.25.0",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 1,
+            extractor_version: 2,
         }
     }
 

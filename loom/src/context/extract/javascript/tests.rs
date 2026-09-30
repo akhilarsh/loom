@@ -370,6 +370,21 @@ fn jsx_components_become_reference_edges_and_intrinsic_tags_do_not() {
 }
 
 #[test]
+fn a_reexport_records_the_name_it_exports() {
+    let extraction = javascript("src/classes.js", CLASSES);
+    let exported = |path: &str| {
+        let bindings = extraction.imports.iter().filter(|b| b.path == path);
+        bindings
+            .map(|b| b.exported_as.as_deref())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(exported("./other"), [Some("d")]);
+    assert_eq!(exported("./alias"), [None]);
+    assert_eq!(exported("./everything"), [None]);
+}
+
+#[test]
 fn syntax_errors_keep_only_the_file_node() {
     let extraction = javascript("src/broken.js", SYNTAX_ERROR);
 
