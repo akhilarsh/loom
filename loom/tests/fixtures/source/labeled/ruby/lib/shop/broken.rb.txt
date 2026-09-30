@@ -1,0 +1,5 @@
+module Shop
+  class Broken
+    def oops(
+      1 +
+  end

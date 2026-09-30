@@ -1,0 +1,66 @@
+# Labels record what Ruby binds, written from the language rules before loom
+# ran. `require_relative 'x'` is relative to the requiring file, so app/a.rb
+# loads app/x.rb. `require 'x'` searches the load path, which in a gem layout
+# holds lib/, so app/b.rb loads lib/x.rb. Both x.rb files define `helper`.
+# `gateway.charge` has no receiver type: Card and Cash both define `charge`.
+dialect: ruby
+declarations:
+  - {path: app/x.rb, kind: function, scope: [helper], line: 1}
+  - {path: lib/x.rb, kind: function, scope: [helper], line: 1}
+  - {path: app/a.rb, kind: function, scope: [run_a], line: 2}
+  - {path: app/b.rb, kind: function, scope: [run_b], line: 2}
+  - {path: lib/shop/pricing.rb, kind: module, scope: [Shop], line: 1}
+  - {path: lib/shop/pricing.rb, kind: module, scope: [Shop, Pricing], line: 2}
+  - {path: lib/shop/pricing.rb, kind: function, scope: [Shop, Pricing, tax], line: 3}
+  - {path: lib/shop/pricing.rb, kind: function, scope: [Shop, Pricing, round_cents], line: 7}
+  - {path: lib/shop/payments.rb, kind: module, scope: [Shop], line: 1}
+  - {path: lib/shop/payments.rb, kind: type, scope: [Shop, Card], line: 2}
+  - {path: lib/shop/payments.rb, kind: function, scope: [Shop, Card, charge], line: 3}
+  - {path: lib/shop/payments.rb, kind: type, scope: [Shop, Cash], line: 8}
+  - {path: lib/shop/payments.rb, kind: function, scope: [Shop, Cash, charge], line: 9}
+  - {path: lib/shop/cart.rb, kind: module, scope: [Shop], line: 4}
+  - {path: lib/shop/cart.rb, kind: type, scope: [Shop, Cart], line: 5}
+  - {path: lib/shop/cart.rb, kind: function, scope: [Shop, Cart, initialize], line: 8}
+  - {path: lib/shop/cart.rb, kind: function, scope: [Shop, Cart, add], line: 12}
+  - {path: lib/shop/cart.rb, kind: function, scope: [Shop, Cart, total], line: 17}
+  - {path: lib/shop/cart.rb, kind: function, scope: [Shop, Cart, subtotal], line: 21}
+  - {path: lib/shop/cart.rb, kind: function, scope: [Shop, Cart, checkout], line: 25}
+  - {path: lib/shop/cart.rb, kind: function, scope: [Shop, Cart, to_json], line: 29}
+  - {path: lib/shop/cart_ext.rb, kind: module, scope: [Shop], line: 1}
+  - {path: lib/shop/cart_ext.rb, kind: type, scope: [Shop, Cart], line: 2}
+  - {path: lib/shop/cart_ext.rb, kind: function, scope: [Shop, Cart, touch], line: 3}
+  - {path: lib/shop/cart_ext.rb, kind: function, scope: [Shop, Cart, summary], line: 7}
+  - {path: test/cart_test.rb, kind: function, scope: [test_total], line: 3}
+references:
+  # The pair fixed by the plan: file-relative require_relative versus load-path require.
+  - {path: app/a.rb, line: 3, symbol: helper, expect: {target: "app/x.rb#function:helper"}}
+  - {path: app/b.rb, line: 3, symbol: helper, expect: {target: "lib/x.rb#function:helper"}}
+  # Pricing: Float#round is outside the corpus.
+  - {path: lib/shop/pricing.rb, line: 8, symbol: round, expect: {external: true}}
+  # Array#push; the class reopened in cart_ext.rb defines `touch`.
+  - {path: lib/shop/cart.rb, line: 13, symbol: push, expect: {external: true}}
+  - {path: lib/shop/cart.rb, line: 14, symbol: touch, expect: {target: "lib/shop/cart_ext.rb#function:Shop::Cart::touch"}}
+  # `Pricing` resolves lexically to Shop::Pricing.
+  - {path: lib/shop/cart.rb, line: 18, symbol: tax, expect: {target: "lib/shop/pricing.rb#function:Shop::Pricing::tax"}}
+  - {path: lib/shop/cart.rb, line: 18, symbol: subtotal, expect: {target: "lib/shop/cart.rb#function:Shop::Cart::subtotal"}}
+  - {path: lib/shop/cart.rb, line: 22, symbol: sum, expect: {external: true}}
+  - path: lib/shop/cart.rb
+    line: 26
+    symbol: charge
+    expect:
+      ambiguous:
+        - "lib/shop/payments.rb#function:Shop::Card::charge"
+        - "lib/shop/payments.rb#function:Shop::Cash::charge"
+  - {path: lib/shop/cart.rb, line: 26, symbol: total, expect: {target: "lib/shop/cart.rb#function:Shop::Cart::total"}}
+  # json is a gem outside the corpus.
+  - {path: lib/shop/cart.rb, line: 30, symbol: generate, expect: {external: true}}
+  # `self.total` in the reopened class reaches the method of the first file.
+  - {path: lib/shop/cart_ext.rb, line: 8, symbol: total, expect: {target: "lib/shop/cart.rb#function:Shop::Cart::total"}}
+impact:
+  - {start: "app/x.rb#function:helper", depth: 1, expect: ["app/a.rb#function:run_a"]}
+  - {start: "lib/x.rb#function:helper", depth: 1, expect: ["app/b.rb#function:run_b"]}
+  - {start: "lib/shop/pricing.rb#function:Shop::Pricing::tax", depth: 1, expect: ["lib/shop/cart.rb#function:Shop::Cart::total"]}
+  - {start: "lib/shop/pricing.rb#function:Shop::Pricing::tax", depth: 2, expect: ["lib/shop/cart.rb#function:Shop::Cart::checkout", "lib/shop/cart_ext.rb#function:Shop::Cart::summary"]}
+  - {start: "lib/shop/cart.rb#function:Shop::Cart::total", depth: 1, expect: ["lib/shop/cart.rb#function:Shop::Cart::checkout", "lib/shop/cart_ext.rb#function:Shop::Cart::summary"]}
+syntax_error_files:
+  - lib/shop/broken.rb

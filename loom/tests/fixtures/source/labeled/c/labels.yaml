@@ -1,0 +1,53 @@
+# Labels record what a C compiler and linker bind, written from the language
+# rules before loom ran. `clamp` is static in shapes.c and in util.c: each call
+# binds its own translation unit's copy. `mode` has two bodies selected by
+# `#ifdef FAST`; without knowing the macro a reader cannot choose, so the call
+# is ambiguous and both bodies (identical first lines, hence the `.n` suffix)
+# are the candidates. `op(s)` calls through a parameter: nothing in the corpus
+# is bound statically. include/shapes.h is a header, which loom reads as C++.
+dialect: c
+declarations:
+  - {path: include/shapes.h, kind: type, scope: [Shape], line: 4}
+  - {path: src/shapes.c, kind: function, scope: [clamp], line: 4}
+  - {path: src/shapes.c, kind: function, scope: [area], line: 9}
+  - {path: src/shapes.c, kind: function, scope: [perimeter], line: 14}
+  - {path: src/shapes.c, kind: function, scope: [apply], line: 20}
+  - {path: src/util.c, kind: function, scope: [clamp], line: 3}
+  - {path: src/util.c, kind: function, scope: [scale], line: 8}
+  - {path: src/util.c, kind: function, scope: [mode], line: 14}
+  - {path: src/util.c, kind: function, scope: [mode], line: 19}
+  - {path: src/util.c, kind: function, scope: [current], line: 25}
+  - {path: src/main.c, kind: function, scope: [main], line: 7}
+  - {path: tests/test_shapes.c, kind: function, scope: [test_area], line: 3}
+references:
+  # shapes.c
+  - {path: src/shapes.c, line: 11, symbol: clamp, expect: {target: "src/shapes.c#function:clamp"}}
+  - {path: src/shapes.c, line: 16, symbol: printf, expect: {external: true}}
+  - {path: src/shapes.c, line: 17, symbol: clamp, expect: {target: "src/shapes.c#function:clamp"}}
+  # A function pointer call has no static target.
+  - {path: src/shapes.c, line: 22, symbol: op, expect: {external: true}}
+  # util.c: the static clamp of this file, and area defined in shapes.c.
+  - {path: src/util.c, line: 10, symbol: clamp, expect: {target: "src/util.c#function:clamp"}}
+  - {path: src/util.c, line: 10, symbol: area, expect: {target: "src/shapes.c#function:area"}}
+  - path: src/util.c
+    line: 27
+    symbol: mode
+    expect:
+      ambiguous:
+        - "src/util.c#function:mode@1868a5a7.1"
+        - "src/util.c#function:mode@1868a5a7.2"
+  # main.c
+  - {path: src/main.c, line: 10, symbol: area, expect: {target: "src/shapes.c#function:area"}}
+  - {path: src/main.c, line: 11, symbol: scale, expect: {target: "src/util.c#function:scale"}}
+  - {path: src/main.c, line: 12, symbol: printf, expect: {external: true}}
+  - {path: src/main.c, line: 12, symbol: current, expect: {target: "src/util.c#function:current"}}
+  - {path: src/main.c, line: 13, symbol: apply, expect: {target: "src/shapes.c#function:apply"}}
+  # tests/test_shapes.c
+  - {path: tests/test_shapes.c, line: 6, symbol: area, expect: {target: "src/shapes.c#function:area"}}
+impact:
+  - {start: "src/shapes.c#function:clamp", depth: 1, expect: ["src/shapes.c#function:area", "src/shapes.c#function:perimeter"]}
+  - {start: "src/shapes.c#function:area", depth: 1, expect: ["src/util.c#function:scale", "src/main.c#function:main", "tests/test_shapes.c#function:test_area"]}
+  - {start: "src/shapes.c#function:clamp", depth: 2, expect: ["src/util.c#function:scale", "src/main.c#function:main", "tests/test_shapes.c#function:test_area"]}
+  - {start: "src/util.c#function:clamp", depth: 1, expect: ["src/util.c#function:scale"]}
+syntax_error_files:
+  - src/broken.c

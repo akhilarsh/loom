@@ -1,0 +1,7 @@
+#include "widget.h"
+
+namespace shapes {
+
+void Widget::oops( {
+    int x = ;
+}

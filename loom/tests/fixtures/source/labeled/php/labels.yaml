@@ -1,0 +1,68 @@
+# Labels record what PHP binds, written from the language rules before loom
+# ran. Namespaces are declared with the statement form, so they scope nothing.
+# `Loggable` is a trait Widget uses: `$this->log()` runs the trait's method.
+# `Saver::save` has no body, so `$saver->save($this)` is dispatched at run time
+# and a reader cannot choose between DiskSaver and MemSaver without the runtime
+# type. `require_once 'bootstrap.php'` finds the file next to the including one.
+dialect: php
+declarations:
+  - {path: src/App/Support/Strings.php, kind: module, scope: ["App.Support"], line: 2}
+  - {path: src/App/Support/Strings.php, kind: type, scope: [Strings], line: 4}
+  - {path: src/App/Support/Strings.php, kind: function, scope: [Strings, shout], line: 6}
+  - {path: src/App/Support/Strings.php, kind: function, scope: [Strings, clean], line: 11}
+  - {path: src/App/Support/Loggable.php, kind: module, scope: ["App.Support"], line: 2}
+  - {path: src/App/Support/Loggable.php, kind: type, scope: [Loggable], line: 4}
+  - {path: src/App/Support/Loggable.php, kind: function, scope: [Loggable, log], line: 6}
+  - {path: src/App/Support/Loggable.php, kind: function, scope: [Loggable, format], line: 11}
+  - {path: src/App/Core/bootstrap.php, kind: function, scope: [bootstrap], line: 2}
+  - {path: src/App/Contracts/Saver.php, kind: module, scope: ["App.Contracts"], line: 2}
+  - {path: src/App/Contracts/Saver.php, kind: interface, scope: [Saver], line: 4}
+  - {path: src/App/Core/Savers.php, kind: module, scope: ["App.Core"], line: 2}
+  - {path: src/App/Core/Savers.php, kind: type, scope: [DiskSaver], line: 4}
+  - {path: src/App/Core/Savers.php, kind: function, scope: [DiskSaver, save], line: 6}
+  - {path: src/App/Core/Savers.php, kind: type, scope: [MemSaver], line: 12}
+  - {path: src/App/Core/Savers.php, kind: function, scope: [MemSaver, save], line: 16}
+  - {path: src/App/Core/Widget.php, kind: module, scope: ["App.Core"], line: 2}
+  - {path: src/App/Core/Widget.php, kind: type, scope: [Widget], line: 9}
+  - {path: src/App/Core/Widget.php, kind: function, scope: [Widget, run], line: 13}
+  - {path: src/App/Core/Widget.php, kind: function, scope: [Widget, step], line: 24}
+  - {path: src/App/Core/Widget.php, kind: function, scope: [Widget, ping], line: 29}
+  - {path: src/App/Core/Widget.php, kind: function, scope: [Widget, build], line: 33}
+  - {path: src/App/Core/Widget.php, kind: function, scope: [Widget, make], line: 37}
+  - {path: src/App/Core/Widget.php, kind: type, scope: [Gadget], line: 42}
+  - {path: src/App/Core/Widget.php, kind: function, scope: [Gadget, step], line: 44}
+  - {path: src/App/Core/Widget.php, kind: function, scope: [Gadget, ping], line: 49}
+  - {path: tests/WidgetTest.php, kind: function, scope: [test_run], line: 4}
+references:
+  # Strings: strtoupper and trim are PHP built-ins.
+  - {path: src/App/Support/Strings.php, line: 8, symbol: strtoupper, expect: {external: true}}
+  - {path: src/App/Support/Strings.php, line: 13, symbol: trim, expect: {external: true}}
+  - {path: src/App/Support/Loggable.php, line: 8, symbol: format, expect: {target: "src/App/Support/Loggable.php#function:Loggable::format"}}
+  - {path: src/App/Core/Savers.php, line: 8, symbol: file_put_contents, expect: {external: true}}
+  - {path: src/App/Core/Savers.php, line: 18, symbol: array_push, expect: {external: true}}
+  # bootstrap() is a global function defined by the required file.
+  - {path: src/App/Core/Widget.php, line: 15, symbol: bootstrap, expect: {target: "src/App/Core/bootstrap.php#function:bootstrap"}}
+  - {path: src/App/Core/Widget.php, line: 16, symbol: step, expect: {target: "src/App/Core/Widget.php#function:Widget::step"}}
+  - {path: src/App/Core/Widget.php, line: 17, symbol: build, expect: {target: "src/App/Core/Widget.php#function:Widget::build"}}
+  - {path: src/App/Core/Widget.php, line: 18, symbol: make, expect: {target: "src/App/Core/Widget.php#function:Widget::make"}}
+  # `S` aliases App\Support\Strings.
+  - {path: src/App/Core/Widget.php, line: 19, symbol: shout, expect: {target: "src/App/Support/Strings.php#function:Strings::shout"}}
+  - path: src/App/Core/Widget.php
+    line: 20
+    symbol: save
+    expect:
+      ambiguous:
+        - "src/App/Core/Savers.php#function:DiskSaver::save"
+        - "src/App/Core/Savers.php#function:MemSaver::save"
+  - {path: src/App/Core/Widget.php, line: 21, symbol: log, expect: {target: "src/App/Support/Loggable.php#function:Loggable::log"}}
+  # Widget and Gadget each define step and ping: `$this` picks the enclosing class.
+  - {path: src/App/Core/Widget.php, line: 26, symbol: ping, expect: {target: "src/App/Core/Widget.php#function:Widget::ping"}}
+  - {path: src/App/Core/Widget.php, line: 46, symbol: ping, expect: {target: "src/App/Core/Widget.php#function:Gadget::ping"}}
+impact:
+  - {start: "src/App/Core/Widget.php#function:Widget::ping", depth: 1, expect: ["src/App/Core/Widget.php#function:Widget::step"]}
+  - {start: "src/App/Core/Widget.php#function:Widget::ping", depth: 2, expect: ["src/App/Core/Widget.php#function:Widget::run"]}
+  - {start: "src/App/Core/Widget.php#function:Gadget::ping", depth: 1, expect: ["src/App/Core/Widget.php#function:Gadget::step"]}
+  - {start: "src/App/Core/bootstrap.php#function:bootstrap", depth: 1, expect: ["src/App/Core/Widget.php#function:Widget::run"]}
+  - {start: "src/App/Support/Loggable.php#function:Loggable::format", depth: 1, expect: ["src/App/Support/Loggable.php#function:Loggable::log"]}
+syntax_error_files:
+  - src/App/Core/Broken.php

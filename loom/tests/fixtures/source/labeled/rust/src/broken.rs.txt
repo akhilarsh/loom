@@ -1,0 +1,4 @@
+pub fn broken(x: u32 -> u32 {
+    let = ;
+    helper(x
+}

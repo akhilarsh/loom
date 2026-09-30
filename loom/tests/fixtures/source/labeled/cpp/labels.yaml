@@ -1,0 +1,59 @@
+# Labels record what a C++ compiler binds, written from the language rules
+# before loom ran. `Shape::area` is pure virtual and has no body, so
+# `s.area()` through a `const Shape &` is dispatched at run time and a reader
+# cannot choose between Circle and Square without the runtime type.
+# `twice<int>(2)` binds the template function; the explicit argument does not
+# change which function it is.
+dialect: cpp
+declarations:
+  - {path: include/shapes.h, kind: module, scope: [shapes], line: 3}
+  - {path: include/shapes.h, kind: type, scope: [shapes, Shape], line: 5}
+  - {path: include/shapes.h, kind: type, scope: [shapes, Circle], line: 10}
+  - {path: include/shapes.h, kind: function, scope: [shapes, Circle, area], line: 12}
+  - {path: include/shapes.h, kind: type, scope: [shapes, Square], line: 15}
+  - {path: include/shapes.h, kind: function, scope: [shapes, Square, area], line: 17}
+  - {path: include/widget.h, kind: module, scope: [shapes], line: 3}
+  - {path: include/widget.h, kind: type, scope: [shapes, Count], line: 5}
+  - {path: include/widget.h, kind: type, scope: [shapes, Widget], line: 7}
+  - {path: include/widget.h, kind: function, scope: [shapes, Widget, value], line: 13}
+  - {path: include/widget.h, kind: function, scope: [shapes, twice], line: 17}
+  - {path: src/widget.cpp, kind: module, scope: [shapes], line: 4}
+  - {path: src/widget.cpp, kind: function, scope: [shapes, Widget, run], line: 6}
+  - {path: src/widget.cpp, kind: function, scope: [shapes, Widget, step], line: 13}
+  - {path: src/widget.cpp, kind: function, scope: [shapes, Widget, step], line: 17}
+  - {path: src/widget.cpp, kind: function, scope: [shapes, Widget, ping], line: 21}
+  - {path: src/main.cpp, kind: function, scope: [helper], line: 9}
+  - {path: src/main.cpp, kind: function, scope: [shapes, total], line: 15}
+  - {path: src/main.cpp, kind: function, scope: [main], line: 19}
+  - {path: tests/widget_test.cpp, kind: function, scope: [test_widget], line: 3}
+references:
+  # widget.cpp. `this->ping()` and the bare `ping()` name the member of Widget.
+  - {path: src/widget.cpp, line: 7, symbol: ping, expect: {target: "src/widget.cpp#function:shapes::Widget::ping"}}
+  # `step(1)` picks the int overload by argument type ([over.match]).
+  - {path: src/widget.cpp, line: 8, symbol: step, expect: {target: "src/widget.cpp#function:shapes::Widget::step@45a81c8e"}}
+  - {path: src/widget.cpp, line: 9, symbol: twice, expect: {target: "include/widget.h#function:shapes::twice"}}
+  - {path: src/widget.cpp, line: 10, symbol: to_string, expect: {external: true}}
+  - {path: src/widget.cpp, line: 10, symbol: value, expect: {target: "include/widget.h#function:shapes::Widget::value"}}
+  - {path: src/widget.cpp, line: 14, symbol: ping, expect: {target: "src/widget.cpp#function:shapes::Widget::ping"}}
+  - {path: src/widget.cpp, line: 18, symbol: ping, expect: {target: "src/widget.cpp#function:shapes::Widget::ping"}}
+  # main.cpp
+  - path: src/main.cpp
+    line: 16
+    symbol: area
+    expect:
+      ambiguous:
+        - "include/shapes.h#function:shapes::Circle::area"
+        - "include/shapes.h#function:shapes::Square::area"
+  # `w` is a Widget, so `run` is the Widget member.
+  - {path: src/main.cpp, line: 21, symbol: run, expect: {target: "src/widget.cpp#function:shapes::Widget::run"}}
+  - {path: src/main.cpp, line: 23, symbol: push_back, expect: {external: true}}
+  - {path: src/main.cpp, line: 23, symbol: helper, expect: {target: "src/main.cpp#function:helper"}}
+  - {path: src/main.cpp, line: 24, symbol: size, expect: {external: true}}
+  - {path: src/main.cpp, line: 25, symbol: twice, expect: {target: "include/widget.h#function:shapes::twice"}}
+impact:
+  - {start: "src/widget.cpp#function:shapes::Widget::ping", depth: 1, expect: ["src/widget.cpp#function:shapes::Widget::run", "src/widget.cpp#function:shapes::Widget::step@45a81c8e", "src/widget.cpp#function:shapes::Widget::step@c5e604e3"]}
+  - {start: "src/widget.cpp#function:shapes::Widget::ping", depth: 2, expect: ["src/main.cpp#function:main", "tests/widget_test.cpp#function:test_widget"]}
+  - {start: "include/widget.h#function:shapes::twice", depth: 1, expect: ["src/widget.cpp#function:shapes::Widget::run", "src/main.cpp#function:main", "tests/widget_test.cpp#function:test_widget"]}
+  - {start: "src/main.cpp#function:helper", depth: 1, expect: ["src/main.cpp#function:main"]}
+syntax_error_files:
+  - src/broken.cpp

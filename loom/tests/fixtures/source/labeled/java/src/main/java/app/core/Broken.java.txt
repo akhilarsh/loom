@@ -1,0 +1,6 @@
+package app.core;
+
+public class Broken {
+    void oops( {
+        int x = ;
+    }

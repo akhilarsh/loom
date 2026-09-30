@@ -1,0 +1,74 @@
+# Labels record what the C# compiler binds, written from the language rules
+# before loom ran. `App.Util` is a file-scoped namespace and `App.Core` a
+# block namespace; `Widget` is a partial class split across two files.
+# `ISaver.Save` has no body, so `saver.Save(this)` is dispatched at run time
+# and a reader cannot choose between the two implementations without the
+# runtime type.
+dialect: csharp
+declarations:
+  - {path: src/Util/Strings.cs, kind: module, scope: ["App.Util"], line: 1}
+  - {path: src/Util/Strings.cs, kind: type, scope: [Strings], line: 3}
+  - {path: src/Util/Strings.cs, kind: function, scope: [Strings, Shout], line: 5}
+  - {path: src/Util/Strings.cs, kind: function, scope: [Strings, Clean], line: 10}
+  - {path: src/Core/ISaver.cs, kind: module, scope: ["App.Core"], line: 1}
+  - {path: src/Core/ISaver.cs, kind: interface, scope: ["App.Core", ISaver], line: 3}
+  - {path: src/Core/Savers.cs, kind: module, scope: ["App.Core"], line: 4}
+  - {path: src/Core/Savers.cs, kind: type, scope: ["App.Core", DiskSaver], line: 6}
+  - {path: src/Core/Savers.cs, kind: function, scope: ["App.Core", DiskSaver, Save], line: 8}
+  - {path: src/Core/Savers.cs, kind: type, scope: ["App.Core", MemSaver], line: 14}
+  - {path: src/Core/Savers.cs, kind: function, scope: ["App.Core", MemSaver, Save], line: 18}
+  - {path: src/Core/Widget.cs, kind: module, scope: ["App.Core"], line: 5}
+  - {path: src/Core/Widget.cs, kind: type, scope: ["App.Core", Widget], line: 7}
+  - {path: src/Core/Widget.cs, kind: function, scope: ["App.Core", Widget, Run], line: 11}
+  - {path: src/Core/Widget.cs, kind: function, scope: ["App.Core", Widget, Step], line: 21}
+  - {path: src/Core/Widget.cs, kind: function, scope: ["App.Core", Widget, Step], line: 26}
+  - {path: src/Core/Widget.Parts.cs, kind: module, scope: ["App.Core"], line: 3}
+  - {path: src/Core/Widget.Parts.cs, kind: type, scope: ["App.Core", Widget], line: 5}
+  - {path: src/Core/Widget.Parts.cs, kind: function, scope: ["App.Core", Widget, Ping], line: 7}
+  - {path: src/Core/Widget.Parts.cs, kind: function, scope: ["App.Core", Widget, Audit], line: 11}
+  - {path: src/Core/Widget.Parts.cs, kind: function, scope: ["App.Core", Widget, Describe], line: 16}
+  - {path: src/Core/Widget.Parts.cs, kind: type, scope: ["App.Core", Widget, Inner], line: 21}
+  - {path: src/Core/Widget.Parts.cs, kind: function, scope: ["App.Core", Widget, Inner, Ping], line: 23}
+  - {path: src/Core/Widget.Parts.cs, kind: function, scope: ["App.Core", Widget, Inner, Pong], line: 27}
+  - {path: tests/WidgetTests.cs, kind: module, scope: ["App.Tests"], line: 3}
+  - {path: tests/WidgetTests.cs, kind: type, scope: ["App.Tests", WidgetTests], line: 5}
+  - {path: tests/WidgetTests.cs, kind: function, scope: ["App.Tests", WidgetTests, RunsWithDisk], line: 7}
+references:
+  # Strings: members of System.String are outside the corpus.
+  - {path: src/Util/Strings.cs, line: 7, symbol: ToUpper, expect: {external: true}}
+  - {path: src/Util/Strings.cs, line: 12, symbol: Trim, expect: {external: true}}
+  # Savers: BCL calls.
+  - {path: src/Core/Savers.cs, line: 10, symbol: WriteLine, expect: {external: true}}
+  - {path: src/Core/Savers.cs, line: 16, symbol: List, expect: {external: true}}
+  - {path: src/Core/Savers.cs, line: 20, symbol: Add, expect: {external: true}}
+  # Widget.Run. `Step(1)` picks the int overload by argument type (C# spec 12.6.4).
+  - {path: src/Core/Widget.cs, line: 13, symbol: Step, expect: {target: "src/Core/Widget.cs#function:App.Core::Widget::Step@aaed32e9"}}
+  # `this.Ping()` reaches the other part of the partial class.
+  - {path: src/Core/Widget.cs, line: 14, symbol: Ping, expect: {target: "src/Core/Widget.Parts.cs#function:App.Core::Widget::Ping"}}
+  # `S` aliases App.Util.Strings.
+  - {path: src/Core/Widget.cs, line: 15, symbol: Shout, expect: {target: "src/Util/Strings.cs#function:Strings::Shout"}}
+  - path: src/Core/Widget.cs
+    line: 16
+    symbol: Save
+    expect:
+      ambiguous:
+        - "src/Core/Savers.cs#function:App.Core::DiskSaver::Save"
+        - "src/Core/Savers.cs#function:App.Core::MemSaver::Save"
+  - {path: src/Core/Widget.cs, line: 17, symbol: WriteLine, expect: {external: true}}
+  - {path: src/Core/Widget.cs, line: 17, symbol: Describe, expect: {target: "src/Core/Widget.Parts.cs#function:App.Core::Widget::Describe"}}
+  - {path: src/Core/Widget.cs, line: 18, symbol: Audit, expect: {target: "src/Core/Widget.Parts.cs#function:App.Core::Widget::Audit"}}
+  - {path: src/Core/Widget.cs, line: 23, symbol: Ping, expect: {target: "src/Core/Widget.Parts.cs#function:App.Core::Widget::Ping"}}
+  - {path: src/Core/Widget.cs, line: 28, symbol: Ping, expect: {target: "src/Core/Widget.Parts.cs#function:App.Core::Widget::Ping"}}
+  # From Audit only Widget.Ping is in scope; Inner.Ping is a member of a nested class.
+  - {path: src/Core/Widget.Parts.cs, line: 13, symbol: Ping, expect: {target: "src/Core/Widget.Parts.cs#function:App.Core::Widget::Ping"}}
+  # `using App.Util;` makes `Strings` visible.
+  - {path: src/Core/Widget.Parts.cs, line: 18, symbol: Clean, expect: {target: "src/Util/Strings.cs#function:Strings::Clean"}}
+  # Inside Inner the innermost type with a member named Ping wins (C# spec 12.8.4).
+  - {path: src/Core/Widget.Parts.cs, line: 29, symbol: Ping, expect: {target: "src/Core/Widget.Parts.cs#function:App.Core::Widget::Inner::Ping"}}
+impact:
+  - {start: "src/Util/Strings.cs#function:Strings::Shout", depth: 1, expect: ["src/Core/Widget.cs#function:App.Core::Widget::Run"]}
+  - {start: "src/Util/Strings.cs#function:Strings::Shout", depth: 2, expect: ["tests/WidgetTests.cs#function:App.Tests::WidgetTests::RunsWithDisk"]}
+  - {start: "src/Core/Widget.Parts.cs#function:App.Core::Widget::Ping", depth: 1, expect: ["src/Core/Widget.cs#function:App.Core::Widget::Run", "src/Core/Widget.Parts.cs#function:App.Core::Widget::Audit"]}
+  - {start: "src/Util/Strings.cs#function:Strings::Clean", depth: 2, expect: ["src/Core/Widget.cs#function:App.Core::Widget::Run"]}
+syntax_error_files:
+  - src/Core/Broken.cs
