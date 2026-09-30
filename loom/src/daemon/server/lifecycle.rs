@@ -114,6 +114,7 @@ impl DaemonServer {
         };
 
         // From here on we hold the singleton lock; destructive setup is safe.
+        crate::orchestrator::terminal::native::record_daemon_binary();
 
         // Remove stale socket if it exists (ignore NotFound to avoid TOCTOU race)
         remove_control_file(&self.work_dir, Path::new("orchestrator.sock"))
@@ -131,6 +132,16 @@ impl DaemonServer {
         // tokens; see `tokens::publish_fresh_tokens` for the full rationale.
         publish_fresh_tokens(&self.work_dir)?;
 
+        self.redirect_output_to_log()?;
+
+        // Run the server. The success byte is signaled to the original parent
+        // from inside `run_server`, immediately after the socket bind succeeds.
+        self.run_server(lock_guard, Some(write_fd))
+    }
+
+    /// Rotate the previous log, then point the daemon's stdin at nothing and
+    /// its stdout and stderr at a fresh private `orchestrator.log`.
+    fn redirect_output_to_log(&self) -> Result<()> {
         // Redirect stdout and stderr to log file.
         //
         // Preserve the previous run's log first. Restarting the daemon is the
@@ -150,10 +161,7 @@ impl DaemonServer {
             libc::dup2(log_file.as_raw_fd(), 1);
             libc::dup2(log_file.as_raw_fd(), 2);
         }
-
-        // Run the server. The success byte is signaled to the original parent
-        // from inside `run_server`, immediately after the socket bind succeeds.
-        self.run_server(lock_guard, Some(write_fd))
+        Ok(())
     }
 
     /// Main server loop (listens on socket and accepts connections).

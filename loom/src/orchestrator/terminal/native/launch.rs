@@ -21,8 +21,8 @@ use crate::sandbox::MergedSandboxConfig;
 
 use super::session_settings::{write_session_capsule, CapsuleRequest};
 use super::SessionCapsule;
-pub(crate) use host::run_host_facts;
 use host::LaunchHost;
+pub(crate) use host::{record_daemon_binary, run_host_facts};
 
 /// Derive the Remote Control session name for a spawn, prefixed by kind.
 ///

@@ -4,6 +4,7 @@
 //! verifies signatures, and installs new binaries with rollback support.
 
 pub(crate) mod client;
+mod daemon_notice;
 pub(crate) mod install;
 pub(crate) mod signature;
 
@@ -116,6 +117,7 @@ pub fn execute() -> Result<()> {
             "✓".green().bold(),
             latest.tag_name
         );
+        daemon_notice::warn_if_daemon_is_stale();
     } else {
         println!("{} Assets refreshed", "✓".green().bold());
     }

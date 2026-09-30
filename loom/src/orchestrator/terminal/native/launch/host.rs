@@ -12,6 +12,7 @@ use anyhow::{bail, Context, Result};
 use std::ffi::OsStr;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use super::super::capsule::{probed_capsule_support, CapsuleSupport};
 use super::super::wrapper::{
@@ -138,7 +139,7 @@ fn host_facts(
     uid: u32,
     home: Option<&Path>,
 ) -> Result<HostFacts> {
-    let exe = std::env::current_exe().context("cannot locate the running loom binary")?;
+    let exe = binary_to_accept(DAEMON_BINARY.get().map(PathBuf::as_path))?;
     let roots = writable_roots(work_dir, repo_root, scratch_root, home);
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let loom_bin = accepted_loom_bin(&exe, uid, &roots)
@@ -153,6 +154,32 @@ fn host_facts(
         hook_path,
         writable_roots: roots,
     })
+}
+
+/// The daemon's own binary path, canonicalized when the daemon started.
+static DAEMON_BINARY: OnceLock<PathBuf> = OnceLock::new();
+
+/// Record the running binary's canonical path, once per process. A binary
+/// replaced by `loom update` leaves `/proc/self/exe` naming a deleted backup,
+/// so a long-lived daemon spawns from the path recorded at its start, which
+/// then names the installed replacement. Later calls and an unresolvable
+/// executable path leave the first recording, or none, in place.
+pub(crate) fn record_daemon_binary() {
+    if let Some(path) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.canonicalize().ok())
+    {
+        let _ = DAEMON_BINARY.set(path);
+    }
+}
+
+/// The binary a spawn hands to `accepted_loom_bin`: the recorded path when
+/// the daemon recorded one, else the running executable.
+fn binary_to_accept(recorded: Option<&Path>) -> Result<PathBuf> {
+    match recorded {
+        Some(path) => Ok(path.to_path_buf()),
+        None => std::env::current_exe().context("cannot locate the running loom binary"),
+    }
 }
 
 fn current_uid() -> u32 {
@@ -265,4 +292,24 @@ pub(super) fn hook_path_entries(path_var: &OsStr, writable_roots: &[PathBuf]) ->
         }
     }
     kept
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_recorded_binary_wins_over_the_running_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let recorded = dir.path().join("loom");
+        assert_eq!(binary_to_accept(Some(&recorded)).unwrap(), recorded);
+    }
+
+    #[test]
+    fn without_a_recording_the_running_executable_is_used() {
+        assert_eq!(
+            binary_to_accept(None).unwrap(),
+            std::env::current_exe().unwrap()
+        );
+    }
 }
