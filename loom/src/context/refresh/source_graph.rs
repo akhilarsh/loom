@@ -39,6 +39,8 @@ pub struct SourceGraphCounters {
     pub files_reused: usize,
     pub files_deleted: usize,
     pub files_untracked: usize,
+    /// Source bytes read from disk or git to hash and parse files.
+    pub bytes_read: u64,
     pub bytes_serialized: u64,
     pub enumerate_ms: u64,
     pub hash_ms: u64,
@@ -54,6 +56,7 @@ impl SourceGraphCounters {
         self.files_reused = self.files_reused.saturating_add(other.files_reused);
         self.files_deleted = self.files_deleted.saturating_add(other.files_deleted);
         self.files_untracked = self.files_untracked.saturating_add(other.files_untracked);
+        self.bytes_read = self.bytes_read.saturating_add(other.bytes_read);
         self.bytes_serialized = self.bytes_serialized.saturating_add(other.bytes_serialized);
         self.enumerate_ms = self.enumerate_ms.saturating_add(other.enumerate_ms);
         self.hash_ms = self.hash_ms.saturating_add(other.hash_ms);

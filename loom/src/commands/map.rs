@@ -12,10 +12,11 @@ use crate::context::graph_store::{GraphStore, ResolvedGraph};
 use crate::context::refresh::{ensure_snapshot, SnapshotAction, SnapshotOutcome, SnapshotPolicy};
 use crate::context::source_graph::{EdgeProvenance, SourceEdgeKind};
 use crate::context::store::ContextStore;
+use crate::context::view::ViewOrigin;
 use crate::context::window::{read_window, SourceWindow, WindowError};
-use crate::context::{resolve_graph, ResolutionStats};
+use crate::context::ResolutionStats;
 use crate::fs::work_dir::WorkDir;
-use crate::map::views::snapshot::{load_graph as load_layers, SnapshotIdentity};
+use crate::map::views::snapshot::{identity_of, SnapshotIdentity};
 use crate::map::views::timings::{timed, Timings};
 use crate::map::views::{
     human_text, human_views, json_payload, json_views, parse_language, parse_provenance,
@@ -272,7 +273,7 @@ fn read_source_window(
     }
 }
 
-/// Ensure the local snapshot, load its selected layers, and resolve inferred edges.
+/// Ensure the local snapshot, then read the resolved view it selected.
 fn load_graph(project_root: &Path, work_dir: &WorkDir, timings: &mut Timings) -> Result<Loaded> {
     let store = ContextStore::open(work_dir)?;
     store.ensure()?;
@@ -286,11 +287,22 @@ fn load_graph(project_root: &Path, work_dir: &WorkDir, timings: &mut Timings) ->
         )
     });
     report_snapshot(&snapshot);
-    let (mut graph, identity) = timed(&mut timings.load, || load_layers(&graph_store, &snapshot))?;
-    let stats = timed(&mut timings.resolve, || resolve_graph(&mut graph));
+    let view_started = Instant::now();
+    let overlay = snapshot
+        .overlay
+        .as_ref()
+        .map(|(plan, stage)| (plan.as_str(), stage.as_str()));
+    let view = graph_store.view(&snapshot.revision, overlay)?;
+    let identity = identity_of(&graph_store, &snapshot, &view);
+    let view_elapsed = view_started.elapsed();
+    timings.view += view_elapsed;
+    match view.origin {
+        ViewOrigin::Materialized => timings.load += view_elapsed,
+        ViewOrigin::Built => timings.resolve += view_elapsed,
+    }
     Ok(Loaded {
-        graph,
-        stats,
+        graph: view.graph,
+        stats: view.stats,
         snapshot: identity,
     })
 }

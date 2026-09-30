@@ -190,3 +190,58 @@ fn oversized_base_entry_is_kept_not_reextracted() {
     );
     assert!(!built.graph.overlaid.contains("big.rs"));
 }
+
+/// Materialize the base view for `HEAD` in `root`'s own cache; returns the
+/// view directory.
+fn materialize_head_view(root: &Path) -> PathBuf {
+    let revision = git_ok(root, &["rev-parse", "HEAD"]);
+    let graph_store = read_only_store(root).unwrap();
+    graph_store.view(&revision, None).unwrap();
+    let view_dir = graph_store.view_dir();
+    assert!(view_dir.is_dir(), "no view was persisted");
+    view_dir
+}
+
+#[test]
+fn worktree_graph_relinked_from_the_base_view_equals_a_cold_build() {
+    let temp = repo_with_published_base();
+    let root = temp.path();
+    let view_dir = materialize_head_view(root);
+    fs::write(
+        root.join("consumer.rs"),
+        "pub fn consume() -> u32 {\n    helper()\n}\n",
+    )
+    .unwrap();
+    let cache = root.join(".loom");
+    let before = tree_bytes(&cache);
+
+    let relinked = build_for_worktree(root).unwrap();
+
+    assert_eq!(tree_bytes(&cache), before, "the cache was written to");
+    fs::remove_dir_all(&view_dir).unwrap();
+    let cold = build_for_worktree(root).unwrap();
+    assert_eq!(relinked, cold);
+    assert!(relinked.graph.files.contains_key("consumer.rs"));
+}
+
+#[test]
+fn a_base_view_of_stale_parser_entries_is_not_copied_into_the_worktree_graph() {
+    let temp = repo_with_published_base();
+    let root = temp.path();
+    materialize_head_view(root);
+    rewrite_base(root, |layer| {
+        for node in &mut layer.files.get_mut("base.rs").unwrap().nodes {
+            node.parser_version = "retired-extractor@0".to_string();
+        }
+    });
+
+    let built = build_for_worktree(root).unwrap();
+
+    assert!(
+        built.graph.files["base.rs"]
+            .nodes
+            .iter()
+            .all(|node| node.parser_version != "retired-extractor@0"),
+        "the stale base entry was served"
+    );
+}

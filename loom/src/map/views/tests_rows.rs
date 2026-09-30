@@ -6,6 +6,7 @@ use crate::context::source_graph::{
     EdgeProvenance, FileCoverage, NodeLanguage, SourceEdge, SourceEdgeKind, SourceNode,
     SourceNodeKind, Span,
 };
+use crate::context::view::ViewOrigin;
 use crate::context::window::SourceWindow;
 use crate::map::views::matching::find_symbol_matches;
 use crate::map::views::snapshot::SnapshotIdentity;
@@ -336,6 +337,8 @@ fn identity(overlay: bool) -> SnapshotIdentity {
         built_at: None,
         persisted: true,
         schema_version: 2,
+        resolver_version: 1,
+        view: ViewOrigin::Built,
         extractors: Default::default(),
     }
 }

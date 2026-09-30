@@ -336,3 +336,7 @@ mod tests_snapshot;
 #[cfg(test)]
 #[path = "refresh/tests_schema.rs"]
 mod tests_schema;
+
+#[cfg(test)]
+#[path = "refresh/tests_view_lifecycle.rs"]
+mod tests_view_lifecycle;

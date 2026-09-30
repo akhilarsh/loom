@@ -20,20 +20,24 @@ use crate::context::extract::{self, extract_file, extractor_for, Lookup};
 use crate::context::graph_store::{FileEntry, GraphLayer, GraphStore, ResolvedGraph};
 use crate::context::refresh::snapshot::parser_version_matches;
 use crate::context::refresh::BoxedExtractor;
-use crate::context::resolve_graph;
 use crate::context::source_graph::{FileCoverage, MAX_EXTRACTED_FILE_BYTES};
 use crate::context::store::CACHE_RELATIVE_DIR;
+use crate::context::view::{build_cold, relink, ResolvedView, ViewIdentity};
 use crate::fs::safe_read::read_bounded;
 use crate::fs::work_dir::WorkDir;
 use crate::git::branch::{commits_ahead_of, is_ancestor_of};
 use crate::git::runner::run_git_checked;
 use crate::git::worktree::is_worktree_scaffold_path;
 
+/// Overlay generation of the in-memory view a worktree graph is built as, so
+/// it can never be mistaken for a persisted base view.
+const WORKTREE_VIEW_GENERATION: &str = "worktree";
+
 /// A worktree's resolved source graph and what it was built from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorktreeGraph {
-    /// The base layer with every changed file re-extracted, after
-    /// [`resolve_graph`].
+    /// The base layer with every changed file re-extracted and every
+    /// cross-file edge resolved.
     pub graph: ResolvedGraph,
     /// One-line reason the graph was extracted from scratch rather than
     /// layered on a base; `None` when a base layer was used.
@@ -89,12 +93,17 @@ pub fn build_worktree_graph(
     changed: &[PathBuf],
 ) -> Result<WorktreeGraph> {
     let extractors = extract::registry();
+    let store = read_only_store(project_root)?;
     // A base written under another schema counts as missing.
-    let base = read_only_store(project_root)?
+    let base = store
         .load_base(base_revision)?
         .filter(GraphLayer::has_current_schema);
-    let (mut graph, degraded) = match base {
-        Some(layer) => (layered_graph(layer, worktree, changed, &extractors), None),
+    let (graph, degraded, seed) = match base {
+        Some(layer) => {
+            let seed = base_view(&store, base_revision, &layer, &extractors);
+            let graph = layered_graph(layer, worktree, changed, &extractors);
+            (graph, None, seed)
+        }
         None => {
             let graph = from_scratch(worktree, working_dir, &extractors)?;
             let reason = format!(
@@ -103,12 +112,17 @@ pub fn build_worktree_graph(
                 graph.files.len(),
                 working_dir.display()
             );
-            (graph, Some(reason))
+            (graph, Some(reason), None)
         }
     };
-    resolve_graph(&mut graph);
+    // Built in memory only: this graph is never persisted.
+    let identity = ViewIdentity::current(base_revision, WORKTREE_VIEW_GENERATION);
+    let view = match seed {
+        Some(previous) => relink(&previous, graph, identity),
+        None => build_cold(graph, identity),
+    };
     Ok(WorktreeGraph {
-        graph,
+        graph: view.graph,
         degraded,
         changed: changed.to_vec(),
     })
@@ -130,19 +144,39 @@ fn layered_graph(
     // An entry stamped by an extractor other than the current one is stale
     // even when its file did not change: re-extract it.
     let mut to_extract: BTreeSet<PathBuf> = changed.iter().cloned().collect();
-    to_extract.extend(
-        graph
-            .files
-            .iter()
-            .filter(|(path, entry)| !parser_version_matches(entry, extractors, Path::new(path)))
-            .map(|(path, _)| PathBuf::from(path)),
-    );
+    to_extract.extend(stale_paths(&graph.files, extractors).map(PathBuf::from));
     for path in &to_extract {
         if let Some(key) = apply_file(&mut graph.files, worktree, path, extractors) {
             graph.overlaid.insert(key);
         }
     }
     graph
+}
+
+/// The persisted view of `layer`'s base, which a relink starts from. `None`
+/// when there is no such view or an entry needs re-extracting: relink copies
+/// an unchanged file's previous entry, which would keep the stale one.
+fn base_view(
+    store: &GraphStore,
+    base_revision: &str,
+    layer: &GraphLayer,
+    extractors: &[BoxedExtractor],
+) -> Option<ResolvedView> {
+    if stale_paths(&layer.files, extractors).next().is_some() {
+        return None;
+    }
+    store.load_view(&ViewIdentity::current(base_revision, ""), None)
+}
+
+/// Paths whose entry was stamped by an extractor other than the current one.
+fn stale_paths<'a>(
+    files: &'a BTreeMap<String, FileEntry>,
+    extractors: &'a [BoxedExtractor],
+) -> impl Iterator<Item = &'a String> + 'a {
+    files
+        .iter()
+        .filter(|(path, entry)| !parser_version_matches(entry, extractors, Path::new(path)))
+        .map(|(path, _)| path)
 }
 
 /// A store over `project_root`'s shared cache. Constructing one touches

@@ -69,6 +69,9 @@ fn describe_counters(counters: &SourceGraphCounters) -> String {
     if parts.is_empty() {
         parts.push("0 parsed".to_string());
     }
+    if counters.bytes_read > 0 {
+        parts.push(format!("{} bytes read", counters.bytes_read));
+    }
     parts.join(", ")
 }
 
