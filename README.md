@@ -515,8 +515,11 @@ loom stage output remove <stage-id> <key>
 ### Knowledge / Memory
 
 ```bash
-loom map [--outline <path>] [--find-all <symbol>] [--impact <symbol|path>] [--callers <symbol>] [--callees <symbol>] [--json]
-                                                                # Query the derived source graph: file outlines, symbol lookup, impact/caller/callee analysis
+loom map [--outline <path>] [--find-all <symbol|id>] [--impact <symbol|path|id>] [--callers <symbol|id>] [--callees <symbol|id>] [--references <symbol|id>]
+         [--window <id>] [--window-lines <n>] [--limit <n>] [--path <prefix>] [--lang <dialect>] [--evidence <classes>] [--json] [--timings]
+                                                                # Query the derived source graph: outlines, symbol lookup, impact, direct callers/callees/references with call sites, exact source windows
+loom map --census [--root <dir>]...                             # Report what the graph can and cannot see: eligible, excluded, vendored, generated and unsupported files, coverage by dialect
+loom map --eval-edges <dir> [--thresholds <file>] [--json]      # Score labelled corpora against the published edge-quality thresholds (exit 1 on a failing threshold)
 loom knowledge context --query <text> [--stage <id>] [--budget-tokens <n>] [--explain] [--json]  # Token-budgeted context pack for a question
 loom knowledge update <file> [content]                        # Append a section to a tier-1 file or tier-2 topic (<category>/<slug>)
 loom knowledge replace-section <file> <heading> [content]      # Rewrite one section's body in place, at whatever level it's found
