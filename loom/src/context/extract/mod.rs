@@ -41,12 +41,28 @@ use dialect::{dialect_for_path, DialectSpec};
 pub mod dialect;
 pub mod lexical;
 
+#[cfg(feature = "source-graph-wave-c")]
+pub mod c;
+#[cfg(feature = "source-graph-wave-c")]
+pub mod cpp;
+#[cfg(feature = "source-graph-wave-b")]
+pub mod csharp;
 #[cfg(feature = "source-graph")]
 pub mod go;
+#[cfg(feature = "source-graph-wave-b")]
+pub mod java;
+#[cfg(feature = "source-graph")]
+pub mod javascript;
+#[cfg(feature = "source-graph-wave-b")]
+pub mod php;
 #[cfg(feature = "source-graph")]
 pub mod python;
+#[cfg(feature = "source-graph-wave-b")]
+pub mod ruby;
 #[cfg(feature = "source-graph")]
 pub mod rust;
+#[cfg(feature = "source-graph")]
+pub mod tsx;
 #[cfg(feature = "source-graph")]
 pub mod typescript;
 
@@ -213,19 +229,30 @@ pub type BoxedExtractor = Box<dyn SourceGraphExtractor + Send + Sync>;
 /// Boxed rather than an enum so a host without the `source-graph` feature gets
 /// an empty registry and the callers above it need no `cfg`.
 pub fn registry() -> Vec<BoxedExtractor> {
+    #[allow(unused_mut)]
+    let mut extractors: Vec<BoxedExtractor> = Vec::new();
     #[cfg(feature = "source-graph")]
     {
-        vec![
-            Box::new(rust::RustExtractor::new()),
-            Box::new(typescript::TypeScriptExtractor::new()),
-            Box::new(python::PythonExtractor::new()),
-            Box::new(go::GoExtractor::new()),
-        ]
+        extractors.push(Box::new(rust::RustExtractor::new()));
+        extractors.push(Box::new(typescript::TypeScriptExtractor::new()));
+        extractors.push(Box::new(tsx::TsxExtractor::new()));
+        extractors.push(Box::new(javascript::JavaScriptExtractor::new()));
+        extractors.push(Box::new(python::PythonExtractor::new()));
+        extractors.push(Box::new(go::GoExtractor::new()));
     }
-    #[cfg(not(feature = "source-graph"))]
+    #[cfg(feature = "source-graph-wave-b")]
     {
-        Vec::new()
+        extractors.push(Box::new(java::JavaExtractor::new()));
+        extractors.push(Box::new(csharp::CSharpExtractor::new()));
+        extractors.push(Box::new(ruby::RubyExtractor::new()));
+        extractors.push(Box::new(php::PhpExtractor::new()));
     }
+    #[cfg(feature = "source-graph-wave-c")]
+    {
+        extractors.push(Box::new(c::CExtractor::new()));
+        extractors.push(Box::new(cpp::CppExtractor::new()));
+    }
+    extractors
 }
 
 /// How a path maps onto the registry.

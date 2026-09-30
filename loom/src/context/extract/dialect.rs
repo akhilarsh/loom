@@ -34,7 +34,8 @@ impl GrammarPack {
     pub fn compiled(self) -> bool {
         match self {
             GrammarPack::Core => cfg!(feature = "source-graph"),
-            GrammarPack::WaveB | GrammarPack::WaveC => false,
+            GrammarPack::WaveB => cfg!(feature = "source-graph-wave-b"),
+            GrammarPack::WaveC => cfg!(feature = "source-graph-wave-c"),
         }
     }
 }

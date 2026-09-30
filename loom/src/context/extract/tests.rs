@@ -157,16 +157,48 @@ fn a_known_dialect_without_an_extractor_is_a_named_gap() {
         );
     }
 
-    let tsx_registered = extractors
-        .iter()
-        .any(|extractor| extractor.dialect().id == "tsx");
-    if GrammarPack::Core.compiled() && !tsx_registered {
-        let extraction = extract_file(&extractors, Path::new("src/App.tsx"), b"export {}");
+    if !GrammarPack::WaveC.compiled() {
+        let extraction = extract_file(&extractors, Path::new("src/run.c"), b"int run(void);");
         assert_eq!(
             extraction.coverage,
             FileCoverage::LexicalOnly {
-                detail: "no extractor registered for dialect tsx".to_string()
+                detail: "grammar pack source-graph-wave-c not compiled in (c)".to_string()
             }
+        );
+    }
+}
+
+/// A build without the wave-b pack names its dialects as gaps. Only compiled
+/// where the feature is off, so `--no-default-features --features source-graph`
+/// exercises it.
+#[cfg(not(feature = "source-graph-wave-b"))]
+#[test]
+fn uncompiled_wave_b_pack_is_a_named_gap() {
+    let extractors = registry();
+    let extraction = extract_file(&extractors, Path::new("src/Main.java"), b"class A {}");
+
+    assert_eq!(extraction.nodes.len(), 1);
+    assert_eq!(extraction.nodes[0].language, NodeLanguage::Java);
+    assert_eq!(
+        extraction.coverage,
+        FileCoverage::LexicalOnly {
+            detail: "grammar pack source-graph-wave-b not compiled in (java)".to_string()
+        }
+    );
+}
+
+#[test]
+fn every_dialect_of_a_compiled_pack_has_exactly_one_extractor() {
+    let extractors = registry();
+    for dialect in DIALECTS.iter().filter(|dialect| dialect.pack.compiled()) {
+        let registered = extractors
+            .iter()
+            .filter(|extractor| extractor.dialect().id == dialect.id)
+            .count();
+        assert_eq!(
+            registered, 1,
+            "dialect {} is not registered once",
+            dialect.id
         );
     }
 }
