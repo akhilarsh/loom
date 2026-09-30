@@ -1,65 +1,71 @@
-//! What each node in the graph answers to, and which nodes a written name
-//! could mean.
+//! Which nodes a written name could mean, within one resolution family.
 //!
 //! A node is indexed under its bare name and under every scope-qualified
 //! suffix of it, so a call written `Widget::new()` can be matched against the
 //! `new` inside `impl Widget` without the bare `new` — a name dozens of types
-//! share — deciding anything.
+//! share — deciding anything. Buckets are keyed by family first: a Python
+//! call never sees a Go definition.
+//!
+//! Every lookup inserts its key into the set the caller passes, which is how a
+//! resolution records what it consulted (see `record`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::context::graph_store::ResolvedGraph;
-use crate::context::source_graph::{SourceNode, SourceNodeKind};
+use crate::context::source_graph::SourceNodeKind;
 
-/// Order every bucket and drop repeats, so a candidate list is always sorted
-/// before its length or first element is read. Determinism depends on it.
-pub(super) fn settle(buckets: &mut BTreeMap<String, Vec<String>>) {
-    for ids in buckets.values_mut() {
-        ids.sort();
-        ids.dedup();
-    }
-}
+use super::record::{answers_to, name_key};
 
-/// Name -> ids of the nodes defining that name.
+/// Family -> spelling -> ids of the nodes answering to that spelling.
+type Buckets = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+
+/// `(family, spelling)` -> ids of the nodes defining that spelling.
 #[derive(Debug, Clone, Default)]
 pub struct SymbolIndex {
-    by_name: BTreeMap<String, Vec<String>>,
+    by_name: Buckets,
     /// Ids of [`SourceNodeKind::Implementation`] nodes, which are indexed by
-    /// name but do not define one. See [`SymbolIndex::definitions`].
+    /// name but do not define one. See [`SymbolIndex::definitions_in_family`].
     implementations: BTreeSet<String>,
 }
 
 impl SymbolIndex {
-    /// Index every node by its name: the last `scope` segment, or the file name
-    /// for a file node, plus every longer suffix of its scope.
+    /// Index every node under the spelling it answers to, in the family of its
+    /// file. Nodes of a file no dialect claims are not indexed.
     pub fn build(graph: &ResolvedGraph) -> Self {
         let mut index = SymbolIndex::default();
         for node in graph.nodes() {
-            for name in node_names(node).into_iter().chain(qualified_names(node)) {
-                index.by_name.entry(name).or_default().push(node.id.clone());
+            let Some((family, spellings)) = answers_to(node) else {
+                continue;
+            };
+            let bucket = index.by_name.entry(family.to_string()).or_default();
+            for spelling in spellings {
+                bucket.entry(spelling).or_default().push(node.id.clone());
             }
             if node.kind == SourceNodeKind::Implementation {
                 index.implementations.insert(node.id.clone());
             }
         }
-        settle(&mut index.by_name);
+        // Sorted and deduplicated, so a candidate list is always ordered before
+        // its length or first element is read. Determinism depends on it.
+        for ids in index.by_name.values_mut().flat_map(BTreeMap::values_mut) {
+            ids.sort();
+            ids.dedup();
+        }
         index
     }
 
-    /// Node ids defining `name`, sorted and deduplicated. Empty when unknown.
-    pub fn lookup(&self, name: &str) -> &[String] {
+    /// Ids of every node answering to `spelling` in `family`, `impl` blocks
+    /// included, sorted. Empty when unknown.
+    pub fn lookup(&self, family: &str, spelling: &str, keys: &mut BTreeSet<String>) -> &[String] {
         const UNKNOWN: &[String] = &[];
-        self.by_name.get(name).map_or(UNKNOWN, Vec::as_slice)
+        keys.insert(name_key(family, spelling));
+        self.by_name
+            .get(family)
+            .and_then(|bucket| bucket.get(spelling))
+            .map_or(UNKNOWN, Vec::as_slice)
     }
 
-    /// Whether two or more nodes answer to `name`, counted before `impl` blocks
-    /// are filtered out, so a name genuinely fought over still reports as
-    /// contested even when the filter leaves nothing behind.
-    pub(super) fn contested(&self, name: &str) -> bool {
-        self.lookup(name).len() >= 2
-    }
-
-    /// Ids defining `name`, with `impl`-block nodes removed.
+    /// Ids defining `name` in `family`, with `impl`-block nodes removed.
     ///
     /// An `impl` block is scoped under the bare type name, so it lands in the
     /// same bucket as the type — but it does not *define* that name, it attaches
@@ -69,22 +75,55 @@ impl SymbolIndex {
     /// [`SourceNodeKind::Implementation`] alone: two functions sharing a name are
     /// still genuinely contested, and a name whose only candidates are `impl`
     /// blocks resolves to nothing.
-    pub(super) fn definitions(&self, name: &str) -> Vec<String> {
-        self.lookup(name)
+    pub(super) fn definitions_in_family(
+        &self,
+        family: &str,
+        name: &str,
+        keys: &mut BTreeSet<String>,
+    ) -> Vec<String> {
+        self.lookup(family, name, keys)
             .iter()
             .filter(|id| !self.implementations.contains(id.as_str()))
             .cloned()
             .collect()
     }
 
-    /// Ids defining `name` inside one of `files`, for a call whose written path
-    /// already named the module the callee lives in. No files means no
-    /// candidates: a qualifier the graph cannot place is a call out of it.
-    pub(super) fn definitions_in(&self, name: &str, files: &[String]) -> Vec<String> {
-        self.definitions(name)
+    /// Definitions of `name` whose scope ends in `type_scope::name`: the members
+    /// of a type, wherever the type's parts are declared.
+    pub(super) fn members(
+        &self,
+        family: &str,
+        type_scope: &str,
+        name: &str,
+        keys: &mut BTreeSet<String>,
+    ) -> Vec<String> {
+        self.definitions_in_family(family, &format!("{type_scope}::{name}"), keys)
+    }
+
+    /// Ids defining `name` inside one of `files`, for a call whose path, import
+    /// or package already named the module the callee lives in. No files means
+    /// no candidates.
+    pub(super) fn definitions_in_files(
+        &self,
+        family: &str,
+        name: &str,
+        files: &[String],
+        keys: &mut BTreeSet<String>,
+    ) -> Vec<String> {
+        self.definitions_in_family(family, name, keys)
             .into_iter()
             .filter(|id| files.iter().any(|file| declared_in(id, file)))
             .collect()
+    }
+
+    /// Every `(family, spelling, ids)` bucket of the index.
+    #[cfg(test)]
+    pub(super) fn buckets(&self) -> impl Iterator<Item = (&str, &str, &[String])> {
+        self.by_name.iter().flat_map(|(family, bucket)| {
+            bucket
+                .iter()
+                .map(move |(spelling, ids)| (family.as_str(), spelling.as_str(), ids.as_slice()))
+        })
     }
 }
 
@@ -93,32 +132,4 @@ impl SymbolIndex {
 fn declared_in(id: &str, file: &str) -> bool {
     id.strip_prefix(file)
         .is_some_and(|rest| rest.starts_with('#'))
-}
-
-/// Every name a node is indexed under. A file claims both its file name and its
-/// extension-less stem, so `language` finds `src/language.rs`; a stem that also
-/// names a symbol shares a bucket precisely so resolution refuses to pick.
-pub(crate) fn node_names(node: &SourceNode) -> Vec<String> {
-    if node.kind == SourceNodeKind::File {
-        return [node.path.file_name(), node.path.file_stem()]
-            .into_iter()
-            .flatten()
-            .map(|name| name.to_string_lossy().into_owned())
-            .collect();
-    }
-    node.scope.last().cloned().into_iter().collect()
-}
-
-/// Every scope-qualified spelling a node also answers to: a `helper` in
-/// `impl Widget` inside `mod example` is `Widget::helper` and
-/// `example::Widget::helper`. The one-segment spelling is [`node_names`]'s job,
-/// and a file node has no scope to qualify.
-///
-/// This is the whole-graph twin of the same-file lookup the extractor builds in
-/// `extract::treesitter::build::spellings`; the two must agree on what a scope
-/// is spelled as, or one pass would resolve a call the other could not see.
-fn qualified_names(node: &SourceNode) -> Vec<String> {
-    (0..node.scope.len().saturating_sub(1))
-        .map(|start| node.scope[start..].join("::"))
-        .collect()
 }

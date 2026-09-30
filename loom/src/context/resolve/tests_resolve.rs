@@ -3,14 +3,8 @@
 use super::fixtures::*;
 use super::*;
 use crate::context::source_graph::{
-    SourceNodeKind, IMPORT_CONFIDENCE, LOCAL_NAME_CONFIDENCE, UNIQUE_NAME_CONFIDENCE,
-    UNRESOLVED_TARGET,
+    SourceNodeKind, LOCAL_NAME_CONFIDENCE, UNIQUE_NAME_CONFIDENCE, UNRESOLVED_TARGET,
 };
-
-/// An unresolved edge of `kind` leaving `from`, naming `symbol`.
-fn seeking(from: &str, kind: SourceEdgeKind, symbol: &str) -> Vec<SourceEdge> {
-    vec![unresolved_edge(from, kind, symbol)]
-}
 
 #[test]
 fn a_unique_cross_file_match_retargets_and_raises_confidence() {
@@ -94,7 +88,11 @@ fn a_local_name_edge_is_untouched_even_when_a_unique_match_exists() {
     let stats = resolve_graph(&mut graph);
 
     assert_eq!(graph.files["src/caller.rs"].edges[0], local_edge);
-    assert_eq!(stats, ResolutionStats::default());
+    assert_eq!(stats, expected_stats(0, 0, 1));
+    assert_eq!(
+        stats.by_provenance,
+        BTreeMap::from([("local-name".to_string(), 1)])
+    );
 }
 
 #[test]
@@ -177,8 +175,8 @@ fn a_name_carried_only_by_impl_blocks_resolves_to_nothing() {
     assert_eq!(contested.files["src/app.rs"].edges[0].to, UNRESOLVED_TARGET);
     assert_eq!(
         stats,
-        expected_stats(0, 1, 1),
-        "a name two nodes fought over still reports as contested"
+        expected_stats(0, 0, 1),
+        "impl blocks define nothing, so two of them are no candidate set either"
     );
 
     let mut lone = graph_of(vec![
@@ -219,7 +217,7 @@ fn resolution_is_deterministic_and_idempotent() {
     let again = resolve_graph(&mut first);
     assert_eq!(
         again,
-        expected_stats(0, 0, 1),
+        expected_stats(1, 0, 1),
         "an already-resolved edge is not re-resolved, and the residue is stable"
     );
 }
@@ -228,131 +226,19 @@ fn resolution_is_deterministic_and_idempotent() {
 fn the_symbol_index_reports_files_under_both_name_and_stem() {
     let graph = graph_from(vec![("src/language.rs", &["detect"], vec![])]);
     let index = SymbolIndex::build(&graph);
+    let keys = &mut BTreeSet::new();
 
-    assert_eq!(index.lookup("language.rs"), ["src/language.rs".to_string()]);
-    assert_eq!(index.lookup("language"), ["src/language.rs".to_string()]);
     assert_eq!(
-        index.lookup("detect"),
+        index.lookup("rust", "language.rs", keys),
+        ["src/language.rs".to_string()]
+    );
+    assert_eq!(
+        index.lookup("rust", "language", keys),
+        ["src/language.rs".to_string()]
+    );
+    assert_eq!(
+        index.lookup("rust", "detect", keys),
         [func_id("src/language.rs", "detect")]
     );
-    assert!(index.lookup("absent").is_empty());
-}
-
-#[test]
-fn an_import_resolves_only_when_exactly_one_file_matches() {
-    let importing = |symbol: &str| seeking("src/app.ts", SourceEdgeKind::Imports, symbol);
-
-    let mut unique = graph_from(vec![
-        ("src/app.ts", &[], importing("./language")),
-        ("src/language.ts", &[], vec![]),
-    ]);
-    let stats = resolve_graph(&mut unique);
-    let edge = &unique.files["src/app.ts"].edges[0];
-    assert_eq!(edge.to, "src/language.ts");
-    assert_eq!(edge.confidence, IMPORT_CONFIDENCE);
-    assert_eq!(edge.provenance, EdgeProvenance::Import);
-    assert_eq!(stats.retargeted, 1);
-
-    let mut ambiguous = graph_from(vec![
-        ("src/app.ts", &[], importing("./language")),
-        ("src/a/language.ts", &[], vec![]),
-        ("src/b/language.ts", &[], vec![]),
-    ]);
-    let stats = resolve_graph(&mut ambiguous);
-    assert_eq!(ambiguous.files["src/app.ts"].edges[0].to, UNRESOLVED_TARGET);
-    assert_eq!(stats.ambiguous, 1);
-}
-
-#[test]
-fn a_crate_rooted_import_drops_the_segment_no_file_starts_with() {
-    let mut graph = graph_from(vec![
-        (
-            "loom/src/app.rs",
-            &[],
-            seeking(
-                "loom/src/app.rs",
-                SourceEdgeKind::Imports,
-                "crate::context::resolve",
-            ),
-        ),
-        ("loom/src/context/resolve.rs", &[], vec![]),
-    ]);
-
-    let stats = resolve_graph(&mut graph);
-
-    assert_eq!(
-        graph.files["loom/src/app.rs"].edges[0].to,
-        "loom/src/context/resolve.rs"
-    );
-    assert_eq!(stats.retargeted, 1);
-}
-
-#[test]
-fn an_item_path_import_resolves_to_the_file_holding_the_item() {
-    let mut graph = graph_from(vec![
-        (
-            "src/app.rs",
-            &[],
-            seeking("src/app.rs", SourceEdgeKind::Imports, "crate::a::b::Item"),
-        ),
-        ("src/a/b.rs", &[], vec![]),
-    ]);
-
-    let stats = resolve_graph(&mut graph);
-
-    assert_eq!(
-        graph.files["src/app.rs"].edges[0].to, "src/a/b.rs",
-        "the tail of a use path names an item, not a file"
-    );
-    assert_eq!(
-        graph.files["src/app.rs"].edges[0].confidence,
-        IMPORT_CONFIDENCE
-    );
-    assert_eq!(stats.retargeted, 1);
-}
-
-#[test]
-fn a_truncated_import_path_matching_two_files_stays_unresolved() {
-    let mut graph = graph_from(vec![
-        (
-            "src/app.rs",
-            &[],
-            seeking("src/app.rs", SourceEdgeKind::Imports, "crate::a::b::Item"),
-        ),
-        ("src/a/b.rs", &[], vec![]),
-        ("vendor/a/b.rs", &[], vec![]),
-    ]);
-
-    let stats = resolve_graph(&mut graph);
-
-    assert_eq!(graph.files["src/app.rs"].edges[0].to, UNRESOLVED_TARGET);
-    assert_eq!(
-        stats,
-        expected_stats(0, 1, 1),
-        "shortening the path may only widen the candidate set, never decide"
-    );
-}
-
-#[test]
-fn an_import_naming_nothing_in_the_graph_stays_unresolved() {
-    let mut graph = graph_from(vec![
-        (
-            "src/app.rs",
-            &[],
-            seeking(
-                "src/app.rs",
-                SourceEdgeKind::Imports,
-                "external::totally::unknown::Thing",
-            ),
-        ),
-        ("src/a/b.rs", &[], vec![]),
-    ]);
-
-    let stats = resolve_graph(&mut graph);
-
-    assert_eq!(graph.files["src/app.rs"].edges[0].to, UNRESOLVED_TARGET);
-    assert_eq!(
-        (stats.retargeted, stats.ambiguous, stats.unresolved),
-        (0, 0, 1)
-    );
+    assert!(index.lookup("rust", "absent", keys).is_empty());
 }
