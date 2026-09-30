@@ -111,3 +111,66 @@ fn a_source_name_carrying_a_backtick_cannot_close_its_span() {
     assert!(!rendered.contains("foo`bar"), "{rendered}");
     assert!(rendered.contains("`fooˋbar`"), "{rendered}");
 }
+
+#[test]
+fn a_literal_text_hint_renders_the_search_line_after_the_source_section() {
+    let mut literal = pack(vec![rank_source_item(Some(1), Some(2))], 0);
+    literal.text_search = Some(crate::context::schema::TextSearchHint {
+        pattern: "source graph never built".to_string(),
+        command: "rg -n -F -- 'source graph never built'".to_string(),
+    });
+    let rendered = format_knowledge_brief(&literal, Some("stage-1"), "q");
+
+    let line = "Literal text: the graph does not index bodies; run `rg -n -F -- 'source graph never built'`\n";
+    assert!(
+        rendered.find("### Source") < rendered.find(line),
+        "{rendered}"
+    );
+    assert!(
+        !format_knowledge_brief(&pack(Vec::new(), 0), Some("s"), "q").contains("Literal text:")
+    );
+}
+
+#[test]
+fn a_source_item_renders_its_explanation_caveat_and_window_under_the_path_bullet() {
+    let mut neighbour = rank_source_item(Some(10), Some(12));
+    neighbour.explanation = Some("called by `seed` at loom/src/a.rs:L3".to_string());
+    neighbour.caveat = Some("partial coverage".to_string());
+    neighbour.window = Some("fn rank() {\n    1\n}".to_string());
+    let rendered = format_knowledge_brief(&pack(vec![neighbour], 0), Some("stage-1"), "q");
+
+    let expected = "- `loom/src/context/rank.rs` — `rank` function :10-12 (lexical, exact-path; \
+         called by ˋseedˋ at loom/src/a.rs:L3; partial coverage)\n  ```rust\n  fn rank() {\n      1\n  }\n  ```\n";
+    assert!(rendered.contains(expected), "{rendered}");
+}
+
+/// The brief with a literal-text hint for `pattern`, as a rendered string.
+fn brief_with_hint(pattern: &str) -> String {
+    let mut literal = pack(Vec::new(), 0);
+    literal.text_search = Some(crate::context::schema::TextSearchHint::for_pattern(pattern));
+    format_knowledge_brief(&literal, Some("stage-1"), "q")
+}
+
+#[test]
+fn a_hint_command_keeps_its_inner_whitespace() {
+    let rendered = brief_with_hint("a  b");
+
+    let line = "Literal text: the graph does not index bodies; run `rg -n -F -- 'a  b'`\n";
+    assert!(rendered.contains(line), "{rendered}");
+}
+
+#[test]
+fn a_hint_command_carrying_a_backtick_is_wrapped_in_a_longer_span() {
+    let rendered = brief_with_hint("a`b");
+
+    let line = "Literal text: the graph does not index bodies; run ``rg -n -F -- 'a`b'``\n";
+    assert!(rendered.contains(line), "{rendered}");
+}
+
+#[test]
+fn a_hint_command_never_spans_two_lines() {
+    let rendered = brief_with_hint("a\nb");
+
+    let line = "Literal text: the graph does not index bodies; run `rg -n -F -- 'a b'`\n";
+    assert!(rendered.contains(line), "{rendered}");
+}

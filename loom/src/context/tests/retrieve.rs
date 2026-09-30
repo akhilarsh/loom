@@ -79,6 +79,7 @@ fn pack_with_revisions(structural: &str, semantic: &str) -> ContextPack {
         omitted: OmissionSummary::default(),
         dropped_terms: Vec::new(),
         degraded: None,
+        text_search: None,
     }
 }
 

@@ -66,6 +66,7 @@ fn rule_29_knowledge_candidates_still_become_knowledge_chunk_items() {
         token_count: 4,
         matched_term_count: 0,
         confidence_ceiling: None,
+        via: None,
     };
     let packed = pack(&request_with_item_budget(200), &[ranked], &[source], None);
     let item = &packed.items[0];

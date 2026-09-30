@@ -112,6 +112,7 @@ fn apply_lifecycle_policy_keeps_explicitly_required_ineligible_chunks() {
         token_count: 3,
         matched_term_count: 0,
         confidence_ceiling: None,
+        via: None,
     };
 
     let kept = apply_lifecycle_policy(vec![candidate.clone()], &chunks, LifecyclePolicy::Current);

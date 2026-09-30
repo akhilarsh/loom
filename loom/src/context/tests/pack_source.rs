@@ -16,11 +16,15 @@ fn request(budget_tokens: usize) -> PackRequest {
         scope: vec![Channel::Source],
         budget_tokens: BRIEF_FRAME_TOKENS + budget_tokens,
         structural_freshness: Freshness::default(),
-        semantic_freshness: Freshness::default(),
+        semantic_freshness: Freshness {
+            revision: "test-rev".into(),
+            ..Freshness::default()
+        },
         dropped_terms: Vec::new(),
         surviving_terms: vec!["query".to_string()],
         required_representation: RequiredRepresentation::Full,
         degraded: None,
+        text_search: None,
     }
 }
 
@@ -69,6 +73,7 @@ fn test_source_item_carries_every_field() {
         token_count: 22,
         matched_term_count: 2,
         confidence_ceiling: None,
+        via: None,
     };
 
     let packed = pack(

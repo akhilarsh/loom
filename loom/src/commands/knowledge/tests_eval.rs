@@ -65,6 +65,9 @@ fn item(id: &str, token_count: usize) -> ContextItem {
         excerpt: Some(format!("## {id}\n\nfixture")),
         truncated: false,
         matched_term_count: 0,
+        explanation: None,
+        caveat: None,
+        window: None,
     }
 }
 
@@ -81,6 +84,7 @@ fn pack(items: Vec<ContextItem>, estimated_tokens: usize) -> ContextPack {
         omitted: OmissionSummary::default(),
         dropped_terms: Vec::new(),
         degraded: None,
+        text_search: None,
     }
 }
 

@@ -42,6 +42,9 @@ pub(in crate::orchestrator::signals::tests) fn sample_context_pack() -> ContextP
         excerpt: Some("## Overview\n\nThe system is organized into modules.".to_string()),
         truncated: false,
         matched_term_count: 0,
+        explanation: None,
+        caveat: None,
+        window: None,
     };
     ContextPack {
         query: "stage-1 query text".to_string(),
@@ -59,6 +62,7 @@ pub(in crate::orchestrator::signals::tests) fn sample_context_pack() -> ContextP
         },
         dropped_terms: Vec::new(),
         degraded: None,
+        text_search: None,
     }
 }
 

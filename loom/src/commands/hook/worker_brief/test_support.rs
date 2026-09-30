@@ -154,7 +154,10 @@ pub(super) fn pack(revision: &str, id: &str, hash: &str, path: &str) -> ContextP
             revision: revision.to_string(),
             ..Freshness::default()
         },
-        semantic_freshness: Freshness::default(),
+        semantic_freshness: Freshness {
+            revision: "test-rev".into(),
+            ..Freshness::default()
+        },
         items: vec![item(id, hash, path, "worker material")],
         unmet_required: Vec::new(),
         omitted: OmissionSummary {
@@ -163,6 +166,7 @@ pub(super) fn pack(revision: &str, id: &str, hash: &str, path: &str) -> ContextP
         },
         dropped_terms: Vec::new(),
         degraded: None,
+        text_search: None,
     }
 }
 
@@ -187,6 +191,9 @@ pub(super) fn item(id: &str, hash: &str, path: &str, excerpt: &str) -> ContextIt
         excerpt: Some(excerpt.to_string()),
         truncated: false,
         matched_term_count: 2,
+        explanation: None,
+        caveat: None,
+        window: None,
     }
 }
 

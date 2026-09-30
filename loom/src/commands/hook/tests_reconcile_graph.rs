@@ -248,6 +248,7 @@ pub(super) fn degraded_pack() -> ContextPack {
         omitted: OmissionSummary::default(),
         dropped_terms: Vec::new(),
         degraded: Some("source graph base deadbeef missing".to_string()),
+        text_search: None,
     }
 }
 

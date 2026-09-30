@@ -52,6 +52,9 @@ fn item(id: &str, content_hash: &str, excerpt: Option<&str>) -> ContextItem {
         excerpt: excerpt.map(str::to_string),
         truncated: false,
         matched_term_count: default_config().min_knowledge_terms,
+        explanation: None,
+        caveat: None,
+        window: None,
     }
 }
 
@@ -68,6 +71,7 @@ fn pack_of(items: Vec<ContextItem>) -> ContextPack {
         omitted: OmissionSummary::default(),
         dropped_terms: Vec::new(),
         degraded: None,
+        text_search: None,
     }
 }
 
