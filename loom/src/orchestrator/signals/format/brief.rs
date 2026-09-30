@@ -51,7 +51,7 @@ use crate::context::render::{
     render_source_group_prefix, render_source_window, render_unmet_line, source_groups,
     KNOWLEDGE_HEADING, SOURCE_HEADING,
 };
-use crate::context::schema::{ContextItem, ContextPack, Freshness, ItemKind};
+use crate::context::schema::{ContextItem, ContextPack, ItemKind};
 use crate::context::untrusted::inline_safe;
 
 /// The untrusted-data sentence that must precede every quoted excerpt.
@@ -127,8 +127,8 @@ fn render_status_line(pack: &ContextPack, query_inputs: &str) -> String {
     let epoch = crate::context::retrieve::context_epoch(pack);
     let mut revision = format!(
         "Revision: {epoch}  |  Structural: {}  |  Semantic: {}",
-        freshness_word(&pack.structural_freshness),
-        freshness_word(&pack.semantic_freshness),
+        pack.structural_freshness.state().as_str(),
+        pack.semantic_freshness.state().as_str(),
     );
     if let Some(message) = &pack.degraded {
         revision.push_str(&format!("  |  DEGRADED: {}", inline_safe(message)));
@@ -141,10 +141,6 @@ fn render_status_line(pack: &ContextPack, query_inputs: &str) -> String {
         // free-text query, which is a multi-line join of plan metadata.
         inline_safe(query_inputs),
     )
-}
-
-fn freshness_word(freshness: &Freshness) -> &'static str {
-    freshness.state().as_str()
 }
 
 /// The `### Knowledge` section: every knowledge-chunk item, in pack order.

@@ -132,8 +132,8 @@ pub fn rank_source_channel_cached(
         config,
         cache,
     );
-    let (ranked, routed_tokens) = routing::score_and_route(query, graph, &nodes, &corpus, config);
-    let ranked = expand_from_seeds(ranked, graph, config, routed_tokens);
+    let (ranked, routed) = routing::score_and_route(query, graph, &nodes, &corpus, config);
+    let ranked = expand_from_seeds(ranked, graph, config, routed);
     rank_order(ranked, graph, corpus.dropped_terms)
 }
 
@@ -374,5 +374,5 @@ pub(super) fn expand_from_seeds_for_test(
     graph: &ResolvedGraph,
     config: &RetrievalConfig,
 ) -> Vec<RankedCandidate> {
-    expand_from_seeds(ranked, graph, config, 0)
+    expand_from_seeds(ranked, graph, config, expand::ExpansionSpend::default())
 }

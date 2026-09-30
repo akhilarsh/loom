@@ -1,13 +1,14 @@
 //! Relationship routing: seed the node a query names and admit its direct
 //! neighbours in the asked direction.
 
-use super::{find_mut, named_nodes, scored_node, source_candidate, RouteInputs};
+use super::{find_mut, scored_node, source_candidate, unambiguous_nodes, RouteInputs};
 use crate::context::config::RetrievalConfig;
 use crate::context::graph_store::ResolvedGraph;
 use crate::context::rank::{EdgeDirection, NeighborVia, RankedCandidate, BOOST_EXACT_SYMBOL};
 use crate::context::rank_source::expand::{
-    max_neighbor_score, neighbour_tokens, MAX_EXAMINED_NEIGHBORS_PER_SEED, MAX_EXPANDED,
-    MAX_EXPANDED_TOKENS, MAX_EXPANSION_SEEDS, MIN_NEIGHBOR_EDGE_CONFIDENCE, NEIGHBOR_SCORE_FACTOR,
+    is_expandable, max_neighbor_score, neighbour_tokens, ExpansionSpend,
+    MAX_EXAMINED_NEIGHBORS_PER_SEED, MAX_EXPANDED, MAX_EXPANDED_TOKENS,
+    MIN_NEIGHBOR_EDGE_CONFIDENCE, NEIGHBOR_SCORE_FACTOR,
 };
 use crate::context::rank_source::intent::RelationDirection;
 use crate::context::rank_source::paths::apply_test_path_factor;
@@ -50,12 +51,14 @@ impl From<Neighbor> for RelationEdge {
 }
 
 /// Seed every fully extracted node `symbol` names as an exact symbol, then
-/// admit the seeds' direct neighbours in `direction` as graph neighbours.
-/// Returns the estimated rendered tokens of the neighbours admitted.
+/// admit the seeds' direct neighbours in `direction` as graph neighbours. A
+/// name too many nodes share seeds nothing. Returns the count and the estimated
+/// rendered tokens of the neighbours admitted.
 ///
 /// Neighbours stop at [`MAX_EXPANDED`] in count and [`MAX_EXPANDED_TOKENS`] in
-/// estimated tokens; expansion continues from the tokens returned here, so one
-/// budget covers the whole query.
+/// estimated tokens; expansion continues from the spend returned here, so one
+/// budget covers the whole query. A file node, like a partly extracted one, is
+/// never admitted as a neighbour (`is_expandable`).
 ///
 /// Partially extracted seeds are skipped for the reason
 /// `withhold_partial_coverage` gives: an exact rung claims high confidence, and
@@ -65,23 +68,23 @@ pub(super) fn admit_relationship<'a>(
     symbol: &str,
     scored: &mut Vec<ScoredNode<'a>>,
     inputs: &RouteInputs<'a, '_>,
-) -> usize {
+) -> ExpansionSpend {
     let seeds = admit_seeds(direction, symbol, scored, inputs);
     let wanted: BTreeSet<&str> = seeds
         .iter()
         .flat_map(|(_, _, edges)| edges.iter().map(|edge| edge.neighbour.as_str()))
         .collect();
     let by_id = index_nodes(inputs.nodes, &wanted);
-    let (mut added, mut tokens) = (0, 0);
+    let mut spend = ExpansionSpend::default();
     for (seed, seed_score, edges) in seeds {
         for edge in edges {
-            if added == MAX_EXPANDED {
-                return tokens;
+            if spend.neighbours == MAX_EXPANDED {
+                return spend;
             }
             let Some(node) = by_id.get(edge.neighbour.as_str()).copied() else {
                 continue;
             };
-            if node.id == seed.id || !matches!(node.coverage, FileCoverage::Full) {
+            if node.id == seed.id || !is_expandable(node) {
                 continue;
             }
             let via = NeighborVia {
@@ -95,30 +98,31 @@ pub(super) fn admit_relationship<'a>(
             // A neighbour already ranked only merges its edge: it adds no
             // rendered item, so it costs nothing.
             let is_new = find_mut(scored, &node.id).is_none();
-            if is_new && tokens + cost > MAX_EXPANDED_TOKENS {
-                return tokens;
+            if is_new && spend.tokens + cost > MAX_EXPANDED_TOKENS {
+                return spend;
             }
             if admit_neighbour(node, via, seed_score, scored, inputs.config) {
-                added += 1;
-                tokens += cost;
+                spend.neighbours += 1;
+                spend.tokens += cost;
             }
         }
     }
-    tokens
+    spend
 }
 
 /// Admit every fully extracted node `symbol` names as a seed, with the edges
-/// to its neighbours in `direction`.
+/// to its neighbours in `direction`. A symbol too many nodes share seeds
+/// nothing ([`unambiguous_nodes`]): an exact-symbol seed claims the node was
+/// meant, which a name like `new` cannot back.
 fn admit_seeds<'a>(
     direction: RelationDirection,
     symbol: &str,
     scored: &mut Vec<ScoredNode<'a>>,
     inputs: &RouteInputs<'a, '_>,
 ) -> Vec<Seed<'a>> {
-    named_nodes(symbol, inputs.nodes)
+    unambiguous_nodes(symbol, inputs.nodes)
         .into_iter()
         .filter(|(_, node)| matches!(node.coverage, FileCoverage::Full))
-        .take(MAX_EXPANSION_SEEDS)
         .map(|(index, seed)| {
             let seed_score = admit_seed(index, seed, scored, inputs);
             let edges = relation_edges(inputs.graph, &seed.id, direction);

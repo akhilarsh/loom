@@ -3,7 +3,7 @@
 use super::*;
 use crate::context::render::rendered_item_tokens;
 use crate::context::schema::{
-    estimate_tokens, Channel, ChunkId, Confidence, Coverage, ItemKind, LifecycleState,
+    estimate_tokens, Channel, ChunkId, Confidence, Coverage, Freshness, ItemKind, LifecycleState,
     OmissionSummary, SelectionReason, SourcePointer, UnmetRequirement, BRIEF_FRAME_TOKENS,
 };
 use crate::orchestrator::signals::retrieval::STAGE_QUERY_INPUTS;

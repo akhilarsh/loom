@@ -56,9 +56,14 @@ const MIN_LITERAL_CHARS: usize = 3;
 /// verbatim into a one-line search command, so a longer one is prose.
 const MAX_LITERAL_CHARS: usize = 120;
 
-/// Words that refer back to something said earlier. A query naming one of them
-/// as its symbol names nothing the graph can hold.
-const PRONOUNS: [&str; 7] = ["it", "this", "that", "they", "them", "these", "those"];
+/// Words that cannot name a symbol: pronouns, which refer back to something said
+/// earlier, and articles, which only open a noun phrase (`who calls the parser`
+/// captures `the`, and the graph holds nothing named `the`, so it classifies as
+/// [`QueryIntent::General`] rather than asking about `parser`). A query
+/// capturing one of them as its symbol names nothing the graph can hold.
+const NON_SYMBOL_WORDS: [&str; 10] = [
+    "it", "this", "that", "they", "them", "these", "those", "the", "a", "an",
+];
 
 /// What a query asks for, as far as its wording says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,16 +172,19 @@ fn literal_text(query: &str, literal: &Regex) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The symbol `regex` captures from `text`, unless it is a pronoun.
+/// The first symbol `regex` captures from `text` that is not a pronoun or an
+/// article. Every match is examined: a pronoun in an earlier one
+/// (`who calls it, and who calls parse_tokens`) must not hide the real symbol
+/// in a later one.
 fn captured_name(regex: &Regex, text: &str) -> Option<String> {
     regex
-        .captures(text)
-        .and_then(|captures| captures.get(1))
+        .captures_iter(text)
+        .filter_map(|captures| captures.get(1))
         .map(|name| name.as_str())
-        .filter(|name| {
-            !PRONOUNS
+        .find(|name| {
+            !NON_SYMBOL_WORDS
                 .iter()
-                .any(|pronoun| pronoun.eq_ignore_ascii_case(name))
+                .any(|word| word.eq_ignore_ascii_case(name))
         })
         .map(str::to_string)
 }

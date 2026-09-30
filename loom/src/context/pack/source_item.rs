@@ -3,45 +3,15 @@
 use super::excerpt::bounded_excerpt;
 use super::finalize_item;
 use crate::context::freshness::GraphState;
-use crate::context::rank::{EdgeDirection, NeighborVia, RankedCandidate};
+use crate::context::rank::{neighbor_explanation, RankedCandidate};
 use crate::context::render::rendered_item_tokens;
 use crate::context::schema::{
     Channel, ChunkId, ContextItem, FileCoverage, ItemKind, LifecycleState, RequiredRepresentation,
-    SourceEdgeKind, SourceNode, SourcePointer,
+    SourceNode, SourcePointer,
 };
 
 /// The caveat on a node extracted from a file that was only partly parsed.
 const PARTIAL_COVERAGE_CAVEAT: &str = "partial coverage";
-
-/// Why a graph neighbour is in the pack, e.g. ``called by `seed` at path:L12``.
-///
-/// The verb is read from the neighbour's side of the edge: `Outgoing` means the
-/// neighbour is the subject (``calls `seed` ``), `Incoming` means the seed is
-/// (``called by `seed` ``). Only the `Incoming` form names a site, because the
-/// site lives in the seed's file, which the neighbour's own pointer does not
-/// show. The seed is named by its scope and located by the path in its id
-/// (`<path>#<kind>:<scope>`); an id of any other shape is shown whole.
-pub(crate) fn neighbor_explanation(via: &NeighborVia) -> String {
-    let (verb, passive) = match via.edge_kind {
-        SourceEdgeKind::Calls => ("calls", "called by"),
-        SourceEdgeKind::Implements => ("implements", "implemented by"),
-        SourceEdgeKind::Extends => ("extends", "extended by"),
-        SourceEdgeKind::References | SourceEdgeKind::Contains | SourceEdgeKind::Imports => {
-            ("references", "referenced by")
-        }
-    };
-    let (path, name) = match via.seed.split_once('#') {
-        Some((path, suffix)) => (path, suffix.split_once(':').map_or(suffix, |(_, n)| n)),
-        None => ("", via.seed.as_str()),
-    };
-    match via.direction {
-        EdgeDirection::Outgoing => format!("{verb} `{name}`"),
-        EdgeDirection::Incoming => match via.site_line {
-            Some(line) if !path.is_empty() => format!("{passive} `{name}` at {path}:L{line}"),
-            _ => format!("{passive} `{name}`"),
-        },
-    }
-}
 
 /// Add the snapshot caveat to a source item when the graph it came from is not
 /// current, joining any caveat it already carries (`partial coverage; snapshot

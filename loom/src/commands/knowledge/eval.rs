@@ -25,7 +25,10 @@
 //! with synthetic packs; run this command by hand against a real index.
 
 use crate::context::config::RetrievalConfig;
+use crate::context::graph_store::GraphStore;
+use crate::context::refresh::{ensure_snapshot, SnapshotAction, SnapshotOutcome, SnapshotPolicy};
 use crate::context::retrieve::{retrieve_for_stage, StageQuery};
+use crate::context::store::ContextStore;
 use crate::fs::work_dir::WorkDir;
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
@@ -46,6 +49,7 @@ pub fn eval(cases: Option<PathBuf>, budget_tokens: Option<usize>, json: bool) ->
     let cases_file = load_cases_file(&cases_path)?;
     let config = RetrievalConfig::load(&main_root);
 
+    refresh_source_graph(work_dir_hint);
     let results = cases_file
         .cases
         .iter()
@@ -78,6 +82,42 @@ fn main_project_root(work_dir_hint: &Path) -> Result<PathBuf> {
     })
 }
 
+/// Bring the local source-graph snapshot up to date before any case runs, as
+/// `loom map` does (`commands/map.rs::load_graph`). Retrieval never refreshes
+/// the graph itself, so after a commit the local overlay is stale and the
+/// source channel answers nothing. Advisory: a snapshot that cannot be built is
+/// reported on stderr and the eval scores whatever retrieval returns.
+///
+/// Under a read-only cache the refresh's layers stay in memory, in the
+/// `GraphStore` built here, while retrieval builds its own and reads the disk
+/// (`retrieve/graph.rs`, `load_resolved_graph`). So the refresh helps only
+/// where the cache is writable.
+fn refresh_source_graph(work_dir_hint: &Path) {
+    match ensure_local_snapshot(work_dir_hint) {
+        Ok(outcome) if outcome.action != SnapshotAction::Reused => {
+            eprintln!("{}", outcome.describe());
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("source graph: unavailable ({error:#})"),
+    }
+}
+
+fn ensure_local_snapshot(work_dir_hint: &Path) -> Result<SnapshotOutcome> {
+    let work_dir = WorkDir::new(work_dir_hint)?;
+    let project_root = work_dir
+        .project_root()
+        .context("Could not determine project root")?;
+    let store = ContextStore::open(&work_dir)?;
+    store.ensure()?;
+    let graph_store = GraphStore::new(store.root(), work_dir.root());
+    Ok(ensure_snapshot(
+        &store,
+        &graph_store,
+        project_root,
+        SnapshotPolicy::LocalCurrent,
+    ))
+}
+
 fn run_case(
     case: &EvalCase,
     cli_budget: Option<usize>,
@@ -104,3 +144,7 @@ mod tests_abstention;
 #[cfg(test)]
 #[path = "eval/tests_prompt_mode.rs"]
 mod tests_prompt_mode;
+
+#[cfg(test)]
+#[path = "eval/tests_refresh.rs"]
+mod tests_refresh;
