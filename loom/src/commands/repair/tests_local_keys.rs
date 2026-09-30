@@ -60,6 +60,7 @@ fn plant_loom_written_keys(settings: &mut Value, root: &Path, work_dir: &str) {
 /// lists in the shapes the main-repo and knowledge-stage writers left them,
 /// plus a rule the operator approved.
 #[test]
+#[serial_test::serial]
 fn repair_strips_exactly_the_loom_written_keys_and_keeps_the_rest() {
     let root = tempfile::tempdir().unwrap();
     crate::fs::permissions::ensure_loom_hooks_local(root.path()).unwrap();
@@ -97,6 +98,7 @@ fn repair_strips_exactly_the_loom_written_keys_and_keeps_the_rest() {
 /// sandbox (a missing file, a loom-written `Read(...)` deny) now leave it
 /// without a sandbox block.
 #[test]
+#[serial_test::serial]
 fn no_settings_fix_writes_a_sandbox_block_into_the_main_settings_file() {
     let root = tempfile::tempdir().unwrap();
 

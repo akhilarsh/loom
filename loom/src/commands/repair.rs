@@ -291,6 +291,8 @@ pub mod workspace;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_hook_drift;
+#[cfg(test)]
 mod tests_local_keys;
 #[cfg(test)]
 mod tests_token_denies;
