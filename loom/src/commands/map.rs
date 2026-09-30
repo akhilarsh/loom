@@ -167,12 +167,10 @@ fn execute_graph_views(args: &MapArgs) -> Result<()> {
         .to_path_buf();
 
     let mut timings = Timings::default();
-    let loaded = load_graph(&project_root, &work_dir, &mut timings)?;
     let output = if args.census {
-        timed(&mut timings.query, || {
-            census_output(&loaded, &project_root, args)
-        })?
+        census_output(&work_dir, &project_root, args, &mut timings)?
     } else {
+        let loaded = load_graph(&project_root, &work_dir, &mut timings)?;
         view_output(&loaded, &project_root, args, &mut timings)?
     };
     match output {
@@ -221,11 +219,24 @@ fn requested_views(args: &MapArgs) -> usize {
     .count()
 }
 
-fn census_output(loaded: &Loaded, project_root: &Path, args: &MapArgs) -> Result<Output> {
+/// Census the requested roots. The snapshot is taken only when this project is
+/// one of them; a census of other checkouts alone leaves this project's `.loom/`
+/// untouched.
+fn census_output(
+    work_dir: &WorkDir,
+    project_root: &Path,
+    args: &MapArgs,
+    timings: &mut Timings,
+) -> Result<Output> {
     let options = CensusOptions {
         roots: args.root.clone(),
     };
-    let report = census::run(&options, Some((project_root, &loaded.graph)))?;
+    let loaded = options
+        .covers(project_root)
+        .then(|| load_graph(project_root, work_dir, timings))
+        .transpose()?;
+    let current = loaded.as_ref().map(|loaded| (project_root, &loaded.graph));
+    let report = timed(&mut timings.query, || census::run(&options, current))?;
     Ok(if args.json {
         Output::Json(serde_json::to_value(&report)?)
     } else {

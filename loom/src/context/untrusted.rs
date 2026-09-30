@@ -25,7 +25,11 @@
 //! renderers cannot stop it, because they bound columns by display width and
 //! every character that matters here has a width of zero.
 //!
-//! This is the ONE definition all three surfaces call. A second copy would
+//! Source-window lines are a fourth: tracked file text, printed to the same
+//! terminal by `loom map --window` and `loom knowledge context`, and quoted in
+//! the brief. [`terminal_safe`] keeps their layout and strips the controls.
+//!
+//! This is the ONE definition all these surfaces call. A second copy would
 //! duplicate a security rule that must never drift between them.
 
 /// Longest inline value either surface renders before eliding the rest.
@@ -44,11 +48,21 @@ pub(crate) const MAX_INLINE_CHARS: usize = 200;
 pub(crate) const BACKTICK_SUBSTITUTE: char = 'ˋ';
 
 /// The per-character rule shared by [`inline_safe`] and [`multiline_safe`]:
-/// a backtick becomes [`BACKTICK_SUBSTITUTE`], and every control, whitespace or
-/// Unicode Cf format character becomes a space. Everything else is kept.
+/// a backtick becomes [`BACKTICK_SUBSTITUTE`], and every other character goes
+/// through [`flatten_char`].
 fn neutralize(ch: char) -> char {
     match ch {
         '`' => BACKTICK_SUBSTITUTE,
+        _ => flatten_char(ch),
+    }
+}
+
+/// [`neutralize`] without its backtick rule, for a renderer that delimits the
+/// value itself (`render::inline_code` sizes its backtick run to the text): every
+/// control, whitespace or Unicode Cf format character becomes a space, and
+/// everything else, a backtick included, is kept.
+pub(crate) fn flatten_char(ch: char) -> char {
+    match ch {
         // `is_whitespace` covers U+2028/U+2029 as well as the ASCII set, so
         // no line-shaped character survives; `is_control` catches the rest,
         // including the ESC that would start an ANSI sequence.
@@ -65,21 +79,27 @@ fn neutralize(ch: char) -> char {
         // was actually written. No crate dependency is added for this —
         // the ranges below are the specific code points this codebase's
         // untrusted sources are known to carry unvalidated.
-        _ if matches!(
-            ch,
-            '\u{00AD}'
-                | '\u{061C}'
-                | '\u{200B}'..='\u{200F}'
-                | '\u{202A}'..='\u{202E}'
-                | '\u{2060}'..='\u{2064}'
-                | '\u{2066}'..='\u{2069}'
-                | '\u{FEFF}'
-        ) =>
+        _ if is_bidi_control(ch)
+            || matches!(
+                ch,
+                '\u{00AD}'
+                    | '\u{061C}'
+                    | '\u{200B}'..='\u{200F}'
+                    | '\u{2060}'..='\u{2064}'
+                    | '\u{FEFF}'
+            ) =>
         {
             ' '
         }
         _ => ch,
     }
+}
+
+/// The bidirectional embedding, override and isolate controls (U+202A..U+202E,
+/// U+2066..U+2069): each reorders the text rendered after it, which lets source
+/// read differently from what a compiler parses (Trojan Source).
+fn is_bidi_control(ch: char) -> bool {
+    matches!(ch, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Flatten a value that is rendered as part of a surface's own structure.
@@ -104,6 +124,33 @@ pub(crate) fn inline_safe(value: &str) -> String {
     let flattened: String = value.chars().map(neutralize).collect();
     let collapsed = flattened.split_whitespace().collect::<Vec<_>>().join(" ");
     crate::utils::truncate_for_display(&collapsed, MAX_INLINE_CHARS)
+}
+
+/// Neutralize repo-controlled text that is printed to a terminal as it is:
+/// source-window lines, which `loom map --window` and `loom knowledge context`
+/// both show.
+///
+/// Keeps every character a reader needs, tabs and newlines included, and
+/// replaces each other control character with U+FFFD, such as the ESC that starts
+/// an ANSI or OSC sequence (a hidden-text mode, a clipboard write). A bidi
+/// control becomes a space, as [`flatten_char`] makes it: a window line that
+/// reorders its own text would show code other than what the file holds. `\r\n`
+/// becomes `\n`, a lone `\r` is a control character like any other, and trailing
+/// newlines are dropped.
+pub(crate) fn terminal_safe(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .trim_end_matches('\n')
+        .chars()
+        .map(|ch| {
+            if ch.is_control() && ch != '\n' && ch != '\t' {
+                '\u{FFFD}'
+            } else if is_bidi_control(ch) {
+                flatten_char(ch)
+            } else {
+                ch
+            }
+        })
+        .collect()
 }
 
 /// Longest multi-line value [`multiline_safe`] renders before eliding the rest.
@@ -185,6 +232,41 @@ mod tests {
         assert_eq!(multiline_safe("a\n\n\n\n\nb\n \n\t\n\nc"), "a\n\nb\n\nc");
         let flood = format!("a{}b", "\n".repeat(MAX_MULTILINE_CHARS * 2));
         assert_eq!(multiline_safe(&flood), "a\n\nb");
+    }
+
+    #[test]
+    fn terminal_safe_replaces_escape_and_osc_bytes_and_keeps_layout() {
+        let text = "a\u{1b}[8mb\u{1b}]52;c;ZXZpbA==\u{7}\tc\r\nd\re\n\n";
+        assert_eq!(
+            terminal_safe(text),
+            "a\u{FFFD}[8mb\u{FFFD}]52;c;ZXZpbA==\u{FFFD}\tc\nd\u{FFFD}e"
+        );
+        assert_eq!(terminal_safe("fn f() {\n    1\n}\n"), "fn f() {\n    1\n}");
+    }
+
+    #[test]
+    fn terminal_safe_spaces_bidi_controls_and_keeps_right_to_left_text() {
+        for ch in ('\u{202A}'..='\u{202E}').chain('\u{2066}'..='\u{2069}') {
+            assert_eq!(terminal_safe(&format!("a{ch}b")), "a b", "{ch:?}");
+        }
+        let hostile = "if role != \"user\u{202E} \u{2066}// admin\u{2069} \u{2066}\" {";
+        assert_eq!(
+            terminal_safe(hostile),
+            "if role != \"user   // admin   \" {"
+        );
+        assert_eq!(terminal_safe("שלום\tx"), "שלום\tx");
+    }
+
+    #[test]
+    fn flatten_char_spaces_line_and_bidi_characters_but_keeps_backticks() {
+        for ch in [
+            '\u{2028}', '\u{2029}', '\u{202A}', '\u{202E}', '\u{2066}', '\u{2069}',
+        ] {
+            assert_eq!(flatten_char(ch), ' ', "{ch:?}");
+        }
+        assert_eq!(flatten_char('`'), '`');
+        assert_eq!(neutralize('`'), BACKTICK_SUBSTITUTE);
+        assert_eq!(flatten_char('x'), 'x');
     }
 
     #[test]

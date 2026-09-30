@@ -7,12 +7,19 @@ declarations:
   - {path: src/main.rs, kind: module, scope: [util], line: 3}
   - {path: src/main.rs, kind: module, scope: [tests], line: 6}
   - {path: src/main.rs, kind: function, scope: [main], line: 14}
+  - {path: src/main.rs, kind: module, scope: [holder], line: 26}
+  - {path: src/main.rs, kind: module, scope: [name], line: 27}
   - {path: src/util.rs, kind: module, scope: [legacy], line: 1}
   - {path: src/util.rs, kind: function, scope: [legacy, clean], line: 2}
   - {path: src/util.rs, kind: function, scope: [legacy, shout], line: 6}
   - {path: src/util.rs, kind: function, scope: [clean], line: 11}
   - {path: src/util.rs, kind: function, scope: [normalize], line: 15}
   - {path: src/util.rs, kind: function, scope: [parse_id], line: 20}
+  - {path: src/util.rs, kind: function, scope: [title], line: 25}
+  - {path: src/name.rs, kind: type, scope: [Name], line: 1}
+  - {path: src/name.rs, kind: implementation, scope: [String], line: 3}
+  - {path: src/name.rs, kind: function, scope: [String, from], line: 4}
+  - {path: src/name.rs, kind: function, scope: [greeting], line: 9}
   - {path: src/model.rs, kind: constant, scope: [MAX_ID], line: 1}
   - {path: src/model.rs, kind: type, scope: [Widget], line: 3}
   - {path: src/model.rs, kind: type, scope: [Count], line: 8}
@@ -35,6 +42,12 @@ declarations:
   - {path: src/store.rs, kind: implementation, scope: [DiskStore], line: 28}
   - {path: src/store.rs, kind: function, scope: [DiskStore, save], line: 29}
   - {path: src/store.rs, kind: function, scope: [persist], line: 34}
+  - {path: src/holder.rs, kind: type, scope: [Holder], line: 1}
+  - {path: src/holder.rs, kind: implementation, scope: [Holder], line: 5}
+  - {path: src/holder.rs, kind: function, scope: [Holder, new], line: 6}
+  - {path: src/holder.rs, kind: function, scope: [Holder, get], line: 10}
+  - {path: src/holder.rs, kind: function, scope: [Holder, check], line: 15}
+  - {path: src/holder.rs, kind: function, scope: [held], line: 18}
   - {path: src/tests.rs, kind: function, scope: [widget_label_contains_id], line: 5}
   - {path: src/tests.rs, kind: function, scope: [parse_id_rejects_text], line: 11}
 references:
@@ -45,15 +58,11 @@ references:
   - {path: src/main.rs, line: 17, symbol: canonical, expect: {target: "src/util.rs#function:normalize"}}
   - {path: src/main.rs, line: 18, symbol: "MemStore::new", expect: {target: "src/store.rs#function:MemStore::new"}}
   - {path: src/main.rs, line: 19, symbol: persist, expect: {target: "src/store.rs#function:persist"}}
-  - path: src/main.rs
-    line: 20
-    symbol: "Count::from"
-    expect:
-      ambiguous:
-        - "src/model.rs#function:Count::from@16bb7dca"
-        - "src/model.rs#function:Count::from@db2d9ab8"
+  # `3u8` is a u8, so rustc selects the `From<u8>` impl.
+  - {path: src/main.rs, line: 20, symbol: "Count::from", expect: {target: "src/model.rs#function:Count::from@16bb7dca"}}
   - {path: src/main.rs, line: 21, symbol: to_string, expect: {external: true}}
   - {path: src/main.rs, line: 21, symbol: label, expect: {target: "src/model.rs#function:Widget::label"}}
+  - {path: src/main.rs, line: 22, symbol: "holder::held", expect: {target: "src/holder.rs#function:held"}}
   # util.rs
   - {path: src/util.rs, line: 3, symbol: to_string, expect: {external: true}}
   - {path: src/util.rs, line: 7, symbol: clean, expect: {target: "src/util.rs#function:legacy::clean"}}
@@ -65,6 +74,11 @@ references:
   - {path: src/util.rs, line: 21, symbol: trim, expect: {external: true}}
   - {path: src/util.rs, line: 22, symbol: parse, expect: {external: true}}
   - {path: src/util.rs, line: 22, symbol: ok, expect: {external: true}}
+  # `raw` is a `&str`, so rustc selects std's `From<&str> for String`, never
+  # the `From<Name>` impl of name.rs.
+  - {path: src/util.rs, line: 26, symbol: "String::from", expect: {external: true}}
+  # name.rs
+  - {path: src/name.rs, line: 10, symbol: "String::from", expect: {external: true}}
   # model.rs
   - {path: src/model.rs, line: 15, symbol: clamp, expect: {target: "src/model.rs#function:Widget::clamp"}}
   - {path: src/model.rs, line: 16, symbol: "crate::util::normalize", expect: {target: "src/util.rs#function:normalize"}}
@@ -76,6 +90,11 @@ references:
   - {path: src/store.rs, line: 30, symbol: label, expect: {target: "src/model.rs#function:Widget::label"}}
   - {path: src/store.rs, line: 30, symbol: is_ok, expect: {external: true}}
   - {path: src/store.rs, line: 35, symbol: save, expect: {ambiguous: ["src/store.rs#function:MemStore::save", "src/store.rs#function:DiskStore::save"]}}
+  # holder.rs
+  - {path: src/holder.rs, line: 11, symbol: check, expect: {target: "src/holder.rs#function:Holder::check"}}
+  - {path: src/holder.rs, line: 12, symbol: clone, expect: {external: true}}
+  - {path: src/holder.rs, line: 19, symbol: "Holder::new", expect: {target: "src/holder.rs#function:Holder::new"}}
+  - {path: src/holder.rs, line: 20, symbol: get, expect: {target: "src/holder.rs#function:Holder::get"}}
 impact:
   - {start: "src/util.rs#function:clean", depth: 1, expect: ["src/util.rs#function:normalize"]}
   - {start: "src/util.rs#function:clean", depth: 2, expect: ["src/main.rs#function:main", "src/model.rs#function:Widget::new"]}

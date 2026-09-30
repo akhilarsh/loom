@@ -227,7 +227,8 @@ impl SourceEdge {
 
     /// An edge already bound to `to` at extraction time, with the confidence
     /// ceiling of `provenance`. Refused (debug-asserted) for `Structural` and
-    /// `Syntax`, which have their own constructors.
+    /// `Syntax`, which have their own constructors, and for the reserved
+    /// `Compiler`, whose ceiling of 1.0 only containment may reach.
     pub fn bound(
         from: impl Into<String>,
         to: impl Into<String>,
@@ -239,7 +240,7 @@ impl SourceEdge {
         debug_assert!(
             !matches!(
                 provenance,
-                EdgeProvenance::Structural | EdgeProvenance::Syntax
+                EdgeProvenance::Structural | EdgeProvenance::Compiler | EdgeProvenance::Syntax
             ),
             "SourceEdge::bound is not for {provenance}"
         );

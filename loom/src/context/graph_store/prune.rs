@@ -15,7 +15,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use super::GraphStore;
+use super::{GraphStore, VIEW_RELATIVE_DIR};
 use crate::context::config::RetrievalConfig;
 use crate::context::store::ContextStore;
 
@@ -206,7 +206,7 @@ impl GraphStore {
 
     /// Directory holding the resolved views of base revisions.
     pub(crate) fn view_dir(&self) -> PathBuf {
-        self.base_dir().with_file_name(VIEW_RELATIVE_DIR)
+        self.graph_root.join(VIEW_RELATIVE_DIR)
     }
 
     /// Every persisted view file of `revision`, whatever identity it carries.
@@ -227,8 +227,18 @@ impl GraphStore {
         files.into_iter().map(|file| file.path).collect()
     }
 
-    /// Delete every persisted view of `revision`. Best-effort.
+    /// Delete every persisted view of `revision`, and forget the ones this
+    /// process holds in memory: they describe the layer being replaced or
+    /// pruned. Best-effort.
     pub(crate) fn remove_views(&self, revision: &str) {
+        let view_dir = self.view_dir();
+        let of_revision = |path: &Path| {
+            path.parent() == Some(view_dir.as_path()) && view_revision(path) == Some(revision)
+        };
+        for held in [&self.view_cache, &self.view_fallback] {
+            held.borrow_mut()
+                .retain(|path, _| !of_revision(path.as_path()));
+        }
         for path in self.view_files(revision) {
             if let Err(error) = fs::remove_file(&path) {
                 tracing::debug!(path = %path.display(), %error, "failed to remove resolved view");
@@ -236,9 +246,6 @@ impl GraphStore {
         }
     }
 }
-
-/// Directory of base views, relative to the graph root.
-pub(crate) const VIEW_RELATIVE_DIR: &str = "view";
 
 /// One `*.json` file of a cache directory.
 struct JsonFile {

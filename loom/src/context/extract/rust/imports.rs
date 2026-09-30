@@ -81,6 +81,7 @@ fn leaf(tree: &str, prefix: &str, site: Span) -> ImportBinding {
             name: None,
             alias: None,
             glob: true,
+            exported_as: None,
             site,
         };
     }
@@ -96,6 +97,7 @@ fn leaf(tree: &str, prefix: &str, site: Span) -> ImportBinding {
         name,
         alias,
         glob: false,
+        exported_as: None,
         site,
     }
 }

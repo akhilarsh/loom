@@ -192,3 +192,15 @@ fn a_syntax_error_yields_a_parse_error_and_no_symbols() {
     );
     assert_eq!(node_ids(&broken), vec!["src/syntax_error.c"]);
 }
+
+/// A prototype is a `References` edge, and the capability says so.
+#[test]
+fn the_references_capability_matches_the_edges_emitted() {
+    let unit = extraction("src/a.c", "int area(int side);\n");
+
+    assert!(unit
+        .edges
+        .iter()
+        .any(|edge| edge.kind == SourceEdgeKind::References));
+    assert!(CExtractor::new().capabilities().references);
+}

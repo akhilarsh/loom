@@ -1,5 +1,6 @@
-//! Two path conventions that need more than the module path as written: a Rust
-//! integration test naming its own crate by Cargo package name, and a Java glob
+//! Path conventions that need more than the module path as written: a Rust
+//! integration test naming its own crate by Cargo package name, a Rust path
+//! read from the citing file's own crate in a workspace, and a Java glob
 //! import recorded as the bare package.
 
 use std::collections::BTreeSet;
@@ -55,6 +56,22 @@ fn package_name_path_needs_the_package_directory_to_hold_the_citing_file() {
     assert_eq!(
         resolve(&index, "demo::add", "pkg/tests/y.rs"),
         ["pkg/src/lib.rs"]
+    );
+}
+
+#[test]
+fn an_unanchored_path_reads_only_the_citing_files_own_crate() {
+    let index = index_of(&[
+        "crates/a/src/lib.rs",
+        "crates/a/src/log.rs",
+        "crates/b/src/lib.rs",
+        "crates/b/src/x.rs",
+    ]);
+
+    assert!(resolve(&index, "log::info", "crates/b/src/x.rs").is_empty());
+    assert_eq!(
+        resolve(&index, "log::info", "crates/a/src/lib.rs"),
+        ["crates/a/src/log.rs"]
     );
 }
 

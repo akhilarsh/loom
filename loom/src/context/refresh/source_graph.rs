@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::context::extract;
-use crate::context::graph_store::{GraphLayer, GraphStore};
+use crate::context::graph_store::{is_write_denied, GraphLayer, GraphStore};
 use crate::context::local_overlay::local_overlay_key;
 use crate::context::schema::Freshness;
 use crate::context::store::ContextStore;
@@ -19,8 +19,8 @@ mod layer;
 use enumerate::enumerate;
 pub(crate) use enumerate::Enumeration;
 pub(crate) use generation::{clean_generation, working_tree, WorkingTree};
-pub(crate) use layer::parser_version_matches;
 use layer::{build_layer, persist_layer, BaseWrite};
+pub(crate) use layer::{entries_are_current, parser_version_matches};
 
 /// Which source-graph snapshot to build.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +72,9 @@ pub struct SourceGraphOutcome {
     pub edges: usize,
     pub freshness: Freshness,
     pub counters: SourceGraphCounters,
+    /// False when a read-only cache refused the `state.json` write that
+    /// stamps `freshness`: the layer still serves this process.
+    pub state_persisted: bool,
 }
 
 pub(crate) const EXCLUDED_ROOTS: &[&str] = &[
@@ -214,13 +217,14 @@ fn persist_and_stamp(
     built.counters.bytes_serialized =
         persist_layer(graph_store, scope, &built.layer, previous, base, write)?;
     built.counters.persist_ms = elapsed_ms(persist_started);
-    let freshness = persist_semantic_freshness(store, revision)?;
+    let (freshness, state_persisted) = persist_semantic_freshness(store, revision)?;
 
     Ok(SourceGraphOutcome {
         nodes,
         edges,
         freshness,
         counters: built.counters,
+        state_persisted,
     })
 }
 
@@ -255,12 +259,13 @@ fn resolve_scope_layers(
 }
 
 fn degraded_outcome(store: &ContextStore, detail: String) -> SourceGraphOutcome {
-    let _ = mark_semantic_stale(store, &detail);
+    try_mark_semantic_stale(store, &detail);
     SourceGraphOutcome {
         nodes: 0,
         edges: 0,
         freshness: Freshness::never_built(detail),
         counters: SourceGraphCounters::default(),
+        state_persisted: true,
     }
 }
 
@@ -268,14 +273,28 @@ pub(crate) fn head_revision(project_root: &Path) -> Option<String> {
     working_tree(project_root).ok().map(|tree| tree.head)
 }
 
-fn persist_semantic_freshness(store: &ContextStore, revision: String) -> Result<Freshness> {
+/// Stamp `revision` as the semantic freshness in `state.json`, and say whether
+/// the stamp reached the disk. A write the cache denies does not fail the
+/// layer just built or reused: the freshness is returned with `false`, and
+/// `state.json` keeps what it held. Any other write failure propagates.
+fn persist_semantic_freshness(store: &ContextStore, revision: String) -> Result<(Freshness, bool)> {
     let freshness = Freshness {
         revision,
         computed_at: Some(Utc::now()),
         ..Default::default()
     };
-    store.update_state(|state| state.semantic = freshness.clone())?;
-    Ok(freshness)
+    match store.update_state(|state| state.semantic = freshness.clone()) {
+        Ok(()) => Ok((freshness, true)),
+        Err(error) if is_write_denied(&error) => {
+            tracing::warn!(
+                error = %format!("{error:#}"),
+                "context cache is not writable; the source graph freshness is kept \
+                 for this process only"
+            );
+            Ok((freshness, false))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn mark_semantic_stale(store: &ContextStore, reason: &str) -> Result<()> {
@@ -283,6 +302,17 @@ pub fn mark_semantic_stale(store: &ContextStore, reason: &str) -> Result<()> {
         state.semantic.stale = true;
         state.semantic.detail = Some(reason.to_string());
     })
+}
+
+/// [`mark_semantic_stale`] for a caller already reporting `reason` another
+/// way: a failed write is logged, never returned.
+pub(super) fn try_mark_semantic_stale(store: &ContextStore, reason: &str) {
+    if let Err(error) = mark_semantic_stale(store, reason) {
+        tracing::warn!(
+            error = %format!("{error:#}"),
+            "failed to mark the source graph stale in the context state"
+        );
+    }
 }
 
 pub(super) fn elapsed_ms(started: Instant) -> u64 {

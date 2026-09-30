@@ -1,0 +1,83 @@
+//! A self receiver no type encloses: unbound everywhere but Ruby, whose
+//! top-level `self` is the `main` object owning the file's top-level methods.
+
+use std::path::Path;
+
+use super::tests::{function, rust};
+use crate::context::extract::javascript::JavaScriptExtractor;
+use crate::context::extract::python::PythonExtractor;
+use crate::context::extract::{FileExtraction, SourceGraphExtractor};
+use crate::context::source_graph::{EdgeProvenance, SourceEdge, SourceEdgeKind};
+
+/// The single `Calls` edge for `symbol`.
+fn call<'a>(extraction: &'a FileExtraction, symbol: &str) -> &'a SourceEdge {
+    let calls: Vec<_> = extraction
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == SourceEdgeKind::Calls && edge.symbol == symbol)
+        .collect();
+    assert_eq!(calls.len(), 1, "calls to {symbol}: {:#?}", extraction.edges);
+    calls[0]
+}
+
+/// Unbound, with no candidates and the receiver kept.
+fn assert_unbound_on(edge: &SourceEdge, receiver: &str) {
+    assert_eq!(edge.provenance, EdgeProvenance::Syntax, "edge: {edge:#?}");
+    assert!(edge.is_unresolved(), "edge: {edge:#?}");
+    assert!(edge.candidates.is_empty(), "edge: {edge:#?}");
+    assert_eq!(edge.receiver.as_deref(), Some(receiver), "edge: {edge:#?}");
+}
+
+#[test]
+fn a_self_call_outside_a_type_never_binds_a_free_function() {
+    let extraction = rust("fn run() {}\nfn attach() { self.run(); }\n");
+
+    let edge = call(&extraction, "run");
+    assert_eq!(edge.from, function("attach"));
+    assert_unbound_on(edge, "self");
+}
+
+#[test]
+fn a_python_self_call_in_a_module_function_stays_unbound() {
+    let extraction = PythonExtractor::new()
+        .extract(
+            Path::new("pkg/m.py"),
+            b"def run():\n    pass\n\ndef attach(self):\n    self.run()\n",
+        )
+        .unwrap();
+
+    assert_unbound_on(call(&extraction, "run"), "self");
+}
+
+#[test]
+fn a_this_call_in_a_javascript_function_stays_unbound() {
+    let extraction = JavaScriptExtractor::new()
+        .extract(
+            Path::new("src/w.js"),
+            b"function render() {}\nfunction Widget() {\n  this.render();\n}\n",
+        )
+        .unwrap();
+
+    assert_unbound_on(call(&extraction, "render"), "this");
+}
+
+#[cfg(feature = "source-graph-wave-b")]
+#[test]
+fn a_ruby_top_level_self_call_binds_the_top_level_method() {
+    let extraction = crate::context::extract::ruby::RubyExtractor::new()
+        .extract(
+            Path::new("lib/main.rb"),
+            b"def run\nend\n\ndef attach\n  self.run\nend\n",
+        )
+        .unwrap();
+
+    let edge = call(&extraction, "run");
+    assert_eq!(edge.from, "lib/main.rb#function:attach");
+    assert_eq!(edge.to, "lib/main.rb#function:run", "edge: {edge:#?}");
+    assert_eq!(
+        edge.provenance,
+        EdgeProvenance::LocalName,
+        "edge: {edge:#?}"
+    );
+    assert_eq!(edge.receiver.as_deref(), Some("self"), "edge: {edge:#?}");
+}

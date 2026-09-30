@@ -256,3 +256,24 @@ fn an_unchanged_oversized_file_returns_its_window() {
 
     assert!(result.text.starts_with("head\n"));
 }
+
+#[test]
+fn error_text_never_carries_a_control_character_from_the_id_or_path() {
+    let hostile = "a\u{1b}]0;x\u{7}.rs";
+    let errors = [
+        WindowError::UnknownId(format!("{hostile}@0-5")),
+        WindowError::ChangedSinceSnapshot {
+            path: hostile.to_string(),
+        },
+        WindowError::Unreadable {
+            path: hostile.to_string(),
+            detail: format!("refused {hostile}"),
+        },
+    ];
+
+    for error in errors {
+        let text = error.to_string();
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+        assert!(text.contains("a ]0;x .rs"), "{text:?}");
+    }
+}

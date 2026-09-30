@@ -206,6 +206,7 @@ fn import(path: &str, name: Option<&str>, alias: Option<&str>, glob: bool) -> Im
         name: name.map(str::to_string),
         alias: alias.map(str::to_string),
         glob,
+        exported_as: None,
         site: Span::default(),
     }
 }

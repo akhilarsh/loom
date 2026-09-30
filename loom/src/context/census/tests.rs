@@ -10,7 +10,7 @@ use super::*;
 use crate::context::graph_store::FileEntry;
 use crate::context::source_graph::Span;
 
-fn git(root: &Path, args: &[&str]) {
+pub(super) fn git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
         .current_dir(root)
@@ -27,7 +27,7 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 /// A committed repo holding `files`. Nothing is created under `.loom/`.
-fn repo(files: &[(&str, &str)]) -> TempDir {
+pub(super) fn repo(files: &[(&str, &str)]) -> TempDir {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     git(root, &["init", "-q"]);
@@ -43,14 +43,14 @@ fn repo(files: &[(&str, &str)]) -> TempDir {
     temp
 }
 
-fn census(root: &Path) -> CensusReport {
+pub(super) fn census(root: &Path) -> CensusReport {
     let options = CensusOptions {
         roots: vec![root.to_path_buf()],
     };
     run(&options, None).expect("census")
 }
 
-fn counts(count: Count) -> (u64, u64) {
+pub(super) fn counts(count: Count) -> (u64, u64) {
     (count.files, count.bytes)
 }
 

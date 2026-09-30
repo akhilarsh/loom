@@ -16,15 +16,29 @@ use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
 
-use super::{read_layer, GraphLayer, GraphStore};
+use super::{read_layer, write_layer, GraphLayer, GraphStore};
 use crate::context::view::ResolvedView;
 
 impl GraphStore {
+    /// Write `layer` to `path`, or keep it in memory when the cache denies the
+    /// write. `Ok(true)` when the layer reached the disk, which also drops a
+    /// layer an earlier denied write of this process kept for `path`: the file
+    /// is newer, and [`Self::read_layer_or_memory`] would otherwise shadow it.
+    pub(super) fn write_or_fall_back(&self, path: &Path, layer: &GraphLayer) -> Result<bool> {
+        match write_layer(path, layer) {
+            Ok(()) => {
+                self.memory_fallback.borrow_mut().remove(path);
+                Ok(true)
+            }
+            Err(error) => self.fall_back_to_memory(path, layer, error).map(|()| false),
+        }
+    }
+
     /// A denied cache write is not this call's failure: keep `layer` in
     /// memory for the rest of this process's reads instead of failing the
     /// caller. A genuine bug — a malformed path, a serialization failure —
     /// still propagates.
-    pub(super) fn fall_back_to_memory(
+    fn fall_back_to_memory(
         &self,
         path: &Path,
         layer: &GraphLayer,
@@ -100,8 +114,9 @@ impl GraphStore {
 /// permission failure rather than a genuine bug — mirrors
 /// `commands/memory/handlers/record.rs::is_write_denied` and
 /// `telemetry/spool.rs::is_write_denied`, which cannot be reused here
-/// directly (module-private to unrelated subsystems).
-fn is_write_denied(error: &anyhow::Error) -> bool {
+/// directly (module-private to unrelated subsystems). `refresh` classifies a
+/// denied `state.json` write with it too.
+pub(crate) fn is_write_denied(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<std::io::Error>()

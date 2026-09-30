@@ -15,8 +15,8 @@ use crate::context::view::{build_cold, ViewIdentity};
 
 /// Extract every file of `dir` that has a dialect, then resolve the graph.
 ///
-/// The walk ignores git. `labels.yaml` and `EXCLUDED_ROOTS` are skipped, and a
-/// listed syntax-error file stored as `<path>.txt` loads as `<path>`.
+/// The walk ignores git and skips `EXCLUDED_ROOTS`. `labels.yaml` is skipped,
+/// and a listed syntax-error file stored as `<path>.txt` loads as `<path>`.
 pub(super) fn build_graph(dir: &Path, labels: &Labels) -> Result<ResolvedGraph> {
     let extractors = registry();
     let syntax_errors: BTreeSet<&str> = labels
@@ -26,7 +26,7 @@ pub(super) fn build_graph(dir: &Path, labels: &Labels) -> Result<ResolvedGraph> 
         .collect();
     let mut files = BTreeMap::new();
     for stored in walk(dir)? {
-        if stored == LABELS_FILE || excluded(&stored) {
+        if stored == LABELS_FILE {
             continue;
         }
         let logical = logical_path(&stored, &syntax_errors);

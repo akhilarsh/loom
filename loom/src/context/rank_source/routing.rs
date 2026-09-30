@@ -4,13 +4,17 @@
 //!   which the ordinary candidacy rule refuses for a one-word name. A name that
 //!   many nodes share is too ambiguous to name one, so it admits nothing.
 //! - `Relationship` seeds the named node and admits its direct neighbours in
-//!   the asked direction, each carrying the edge that admitted it (see
-//!   `relation`).
+//!   the asked direction first, each carrying the edge that admitted it (see
+//!   `relation`). A name that many nodes share seeds nothing, as for a symbol
+//!   question. The seed is an exact-symbol candidate like any other, so
+//!   expansion then reaches its neighbours in every direction, with what the
+//!   routed ones left of the shared neighbour budget.
 //! - `Literal` halves every source lexical contribution. Only the scorer can
 //!   tell a node's lexical score from its rungs, so it reads
 //!   [`lexical_weight`] rather than being routed after the fact.
 //! - `General` changes nothing.
 
+use super::expand::ExpansionSpend;
 use super::intent::{classify, QueryIntent};
 use super::paths::apply_test_path_factor;
 use super::{estimate_node_tokens, score_nodes, sorted_candidates, ScoredNode};
@@ -30,8 +34,9 @@ const LITERAL_LEXICAL_FACTOR: f32 = 0.5;
 /// lexical score of its own.
 const SYMBOL_QUESTION_BOOST_FACTOR: f32 = 0.25;
 
-/// Most nodes one symbol question may admit. A name more nodes than this carry
-/// (`new`, `len`) says nothing about which one was meant.
+/// Most nodes one symbol question or relationship query may seed from a name.
+/// A name more nodes than this carry (`new`, `len`) says nothing about which
+/// one was meant.
 const MAX_SYMBOL_QUESTION_MATCHES: usize = 3;
 
 /// What routing reads besides the candidate list.
@@ -53,36 +58,36 @@ pub(super) fn lexical_weight(intent: &QueryIntent) -> f32 {
 }
 
 /// Add the candidates `intent` asks for to `scored`, merging into a candidate
-/// already present rather than duplicating it. Returns the estimated rendered
-/// tokens of the neighbours admitted, which count against
+/// already present rather than duplicating it. Returns the neighbours admitted
+/// and their estimated rendered tokens, which count against `MAX_EXPANDED` and
 /// `MAX_EXPANDED_TOKENS` together with the ones expansion admits afterwards.
 pub(super) fn route<'a>(
     intent: &QueryIntent,
     scored: &mut Vec<ScoredNode<'a>>,
     inputs: &RouteInputs<'a, '_>,
-) -> usize {
+) -> ExpansionSpend {
     match intent {
         QueryIntent::SymbolQuestion { symbol } => {
             admit_symbol_question(symbol, scored, inputs);
-            0
+            ExpansionSpend::default()
         }
         QueryIntent::Relationship { direction, symbol } => {
             relation::admit_relationship(*direction, symbol, scored, inputs)
         }
-        QueryIntent::Literal { .. } | QueryIntent::General => 0,
+        QueryIntent::Literal { .. } | QueryIntent::General => ExpansionSpend::default(),
     }
 }
 
 /// Score every node, let the query's intent admit or reweight candidates, and
-/// put the result in seed-strength order. Also returns the tokens routing spent
-/// on neighbours.
+/// put the result in seed-strength order. Also returns what routing spent on
+/// neighbours.
 pub(super) fn score_and_route<'a>(
     query: &RankQuery,
     graph: &'a ResolvedGraph,
     nodes: &[&'a SourceNode],
     corpus: &LexicalCorpus,
     config: &RetrievalConfig,
-) -> (Vec<RankedCandidate>, usize) {
+) -> (Vec<RankedCandidate>, ExpansionSpend) {
     let gate = ExactGate::new(
         &query.text,
         &corpus.document_frequencies,
@@ -97,8 +102,8 @@ pub(super) fn score_and_route<'a>(
         corpus,
         config,
     };
-    let routed_tokens = route(&intent, &mut scored, &inputs);
-    (sorted_candidates(scored), routed_tokens)
+    let routed = route(&intent, &mut scored, &inputs);
+    (sorted_candidates(scored), routed)
 }
 
 /// Admit every node `symbol` names that is not a candidate already, unless
@@ -109,11 +114,7 @@ fn admit_symbol_question<'a>(
     scored: &mut Vec<ScoredNode<'a>>,
     inputs: &RouteInputs<'a, '_>,
 ) {
-    let named = named_nodes(symbol, inputs.nodes);
-    if named.len() > MAX_SYMBOL_QUESTION_MATCHES {
-        return;
-    }
-    for (index, node) in named {
+    for (index, node) in unambiguous_nodes(symbol, inputs.nodes) {
         if find_mut(scored, &node.id).is_some() {
             continue;
         }
@@ -131,6 +132,17 @@ fn admit_symbol_question<'a>(
         };
         scored.push(scored_node(node, candidate));
     }
+}
+
+/// The nodes `symbol` names ([`named_nodes`]), or none when more than
+/// [`MAX_SYMBOL_QUESTION_MATCHES`] carry the name, whatever their coverage: the
+/// name then says nothing about which one was meant.
+fn unambiguous_nodes<'a>(symbol: &str, nodes: &[&'a SourceNode]) -> Vec<(usize, &'a SourceNode)> {
+    let named = named_nodes(symbol, nodes);
+    if named.len() > MAX_SYMBOL_QUESTION_MATCHES {
+        return Vec::new();
+    }
+    named
 }
 
 /// Nodes `symbol` names, beside their corpus index. The symbol's `::` or `.`

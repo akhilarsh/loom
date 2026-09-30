@@ -279,11 +279,15 @@ impl Fixture {
             .write_all(payload.as_bytes())
             .expect("write hook stdin");
         input.flush().expect("flush hook stdin");
-        let stdin = File::open(input.path()).expect("reopen hook stdin");
-        let mut command = Command::new(self.commands.get(&event).expect("generated hook command"));
-        command.current_dir(&self.root).stdin(Stdio::from(stdin));
-        self.configure(&mut command, stage, session, now);
-        command.output().expect("run generated hook command")
+        let program = self.commands.get(&event).expect("generated hook command");
+        retry_past_etxtbsy(|| {
+            let stdin = File::open(input.path())?;
+            let mut command = Command::new(program);
+            command.current_dir(&self.root).stdin(Stdio::from(stdin));
+            self.configure(&mut command, stage, session, now);
+            command.output()
+        })
+        .expect("run generated hook command")
     }
 
     fn cli_command(&self) -> Command {
@@ -331,4 +335,24 @@ pub fn assert_watch_rejected(output: &Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// Execs of a just-written hook script transiently fail with `ETXTBSY` when a
+/// sibling test thread forks between the write and the spawn: the child holds
+/// a duplicate of the write fd until its own exec closes it. Retry until that
+/// window passes, as `orchestrator/terminal/native/wrapper/tests.rs` does.
+fn retry_past_etxtbsy<T>(mut attempt: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    const ETXTBSY: i32 = 26; // "Text file busy"
+    const MAX_ATTEMPTS: u32 = 50;
+
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match attempt() {
+            Err(error) if error.raw_os_error() == Some(ETXTBSY) && attempts < MAX_ATTEMPTS => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
 }

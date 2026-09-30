@@ -28,6 +28,7 @@ pub(super) fn statement_bindings(statement: &str, path: &str, site: Span) -> Vec
                 name: None,
                 alias: alias.or_else(|| dotted(path)),
                 glob: false,
+                exported_as: None,
                 site,
             })
         })
@@ -54,6 +55,7 @@ fn from_bindings(text: &str, path: &str, site: Span) -> Vec<ImportBinding> {
                 name: (!glob).then(|| name.to_string()),
                 alias: if glob { None } else { alias },
                 glob,
+                exported_as: None,
                 site,
             }
         })

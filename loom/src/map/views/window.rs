@@ -6,6 +6,7 @@
 
 use serde_json::{json, Value};
 
+use crate::context::untrusted::terminal_safe;
 use crate::context::window::SourceWindow;
 
 use super::json::safe;
@@ -42,21 +43,4 @@ pub fn window_json(window: &SourceWindow, snapshot: &SnapshotIdentity) -> Value 
         "truncated": window.truncated,
         "text": window.text,
     })
-}
-
-/// Source text is repo-controlled: keep every character a reader needs (tabs
-/// and newlines included) but replace the control characters that would drive
-/// the terminal, such as the ESC that starts an ANSI sequence.
-fn terminal_safe(text: &str) -> String {
-    text.replace("\r\n", "\n")
-        .trim_end_matches('\n')
-        .chars()
-        .map(|ch| {
-            if ch.is_control() && ch != '\n' && ch != '\t' {
-                '\u{FFFD}'
-            } else {
-                ch
-            }
-        })
-        .collect()
 }

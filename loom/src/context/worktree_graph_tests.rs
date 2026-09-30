@@ -3,7 +3,9 @@
 
 use super::*;
 use crate::context::refresh::{reconcile_source_graph, SourceGraphScope};
-use crate::context::source_graph::{SourceEdgeKind, SourceNode, SourceNodeKind};
+use crate::context::source_graph::{
+    SourceEdgeKind, SourceNode, SourceNodeKind, MAX_EXTRACTED_FILE_BYTES,
+};
 use crate::context::store::ContextStore;
 use std::fs;
 use tempfile::TempDir;
@@ -189,6 +191,35 @@ fn oversized_base_entry_is_kept_not_reextracted() {
         "the oversized entry was re-extracted: {coverage:?}"
     );
     assert!(!built.graph.overlaid.contains("big.rs"));
+}
+
+#[test]
+fn a_changed_oversized_file_keeps_its_file_node_as_the_refresh_path_does() {
+    let temp = repo_with_published_base();
+    let root = temp.path();
+    fs::write(
+        root.join("big.rs"),
+        "\n".repeat(MAX_EXTRACTED_FILE_BYTES + 1),
+    )
+    .unwrap();
+
+    let built = build_for_worktree(root).unwrap();
+
+    assert_eq!(built.changed, vec![PathBuf::from("big.rs")]);
+    let entry = &built.graph.files["big.rs"];
+    assert!(
+        matches!(entry.coverage, FileCoverage::Oversized { .. }),
+        "a changed oversized file became {:?}",
+        entry.coverage
+    );
+    assert!(
+        entry
+            .nodes
+            .iter()
+            .any(|node| node.kind == SourceNodeKind::File),
+        "the oversized file lost its file node"
+    );
+    assert!(!entry.content_hash.is_empty());
 }
 
 /// Materialize the base view for `HEAD` in `root`'s own cache; returns the

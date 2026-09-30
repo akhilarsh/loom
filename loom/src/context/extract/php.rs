@@ -161,7 +161,7 @@ impl QueryHarness for PhpExtractor {
             dialect: "php",
             grammar_version: "0.24.2",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 2,
+            extractor_version: 3,
         }
     }
 
@@ -210,6 +210,7 @@ impl QueryHarness for PhpExtractor {
             name: None,
             alias,
             glob: !is_use,
+            exported_as: None,
             site,
         }]
     }
@@ -227,7 +228,7 @@ impl SourceGraphExtractor for PhpExtractor {
             import_bindings: true,
             calls: true,
             receivers: true,
-            references: false,
+            references: true,
         }
     }
 

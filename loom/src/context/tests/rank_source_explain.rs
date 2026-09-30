@@ -3,8 +3,9 @@
 use super::source_fixtures::{full_node, graph, local_edge};
 use crate::context::config::RetrievalConfig;
 use crate::context::graph_store::ResolvedGraph;
-use crate::context::pack::neighbor_explanation;
-use crate::context::rank::{EdgeDirection, NeighborVia, RankQuery, RankedCandidate};
+use crate::context::rank::{
+    neighbor_explanation, EdgeDirection, NeighborVia, RankQuery, RankedCandidate,
+};
 use crate::context::rank_source::{rank_source, MAX_EXPANDED_TOKENS};
 use crate::context::schema::{estimate_tokens, SelectionReason, Span};
 use crate::context::source_graph::{EdgeProvenance, SourceEdge, SourceEdgeKind};

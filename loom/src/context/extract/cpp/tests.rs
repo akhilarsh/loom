@@ -169,6 +169,26 @@ fn a_free_prototype_is_a_reference_and_a_member_declaration_is_not() {
     );
 }
 
+/// In a function body `Foo w(x);` is a variable initialised from `x`, which
+/// the grammar also reads as a function declarator: it is no prototype. A
+/// template or friend prototype still is.
+#[test]
+fn a_local_direct_initialisation_is_not_a_prototype() {
+    let source = "int total(int v);\ntemplate <typename T> T twice(T v);\n\
+                  class W {\n    friend int peek(W &w);\n};\n\
+                  void run(int x) {\n    Foo w(x);\n}\n";
+    let unit = extraction("src/run.cpp", source);
+
+    let mut references: Vec<&str> = unit
+        .edges
+        .iter()
+        .filter(|e| e.kind == SourceEdgeKind::References)
+        .map(|e| e.symbol.as_str())
+        .collect();
+    references.sort_unstable();
+    assert_eq!(references, vec!["peek", "total", "twice"]);
+}
+
 #[test]
 fn includes_are_glob_bindings() {
     let widget = extraction("src/this_call.cpp", THIS_CALL);
@@ -270,4 +290,16 @@ fn a_syntax_error_yields_a_parse_error_and_no_symbols() {
         broken.coverage
     );
     assert_eq!(node_ids(&broken), vec!["src/syntax_error.cpp"]);
+}
+
+/// A prototype is a `References` edge, and the capability says so.
+#[test]
+fn the_references_capability_matches_the_edges_emitted() {
+    let unit = extraction("src/a.cpp", "int area(int side);\n");
+
+    assert!(unit
+        .edges
+        .iter()
+        .any(|edge| edge.kind == SourceEdgeKind::References));
+    assert!(CppExtractor::new().capabilities().references);
 }

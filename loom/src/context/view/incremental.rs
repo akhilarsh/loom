@@ -16,9 +16,9 @@
 
 use std::collections::BTreeSet;
 
-use crate::context::graph_store::ResolvedGraph;
+use crate::context::graph_store::{FileEntry, ResolvedGraph};
 use crate::context::resolve::{eligible, resolution_stats, resolve_edges, touched_keys, EdgeRef};
-use crate::context::source_graph::SourceEdge;
+use crate::context::source_graph::{SourceEdge, SourceNodeKind};
 
 use super::build::{build_cold, count_resolution_run};
 use super::{ResolvedView, ViewIdentity, ViewOrigin};
@@ -97,22 +97,35 @@ impl FileDiff {
 
     /// Every key the change can invalidate: the old and new entries of a
     /// changed file, the new entry of an added file and the old entry of a
-    /// removed one, with the `pathset:` keys only for the last two.
+    /// removed one. The `pathset:` keys come with an added or removed file,
+    /// and with a changed file that gains or loses its file node (an
+    /// unreadable entry has none), which enters or leaves the path index.
     fn touched(&self, previous: &ResolvedGraph, next: &ResolvedGraph) -> BTreeSet<String> {
-        let sources = [
-            (&self.changed, previous, false),
-            (&self.changed, next, false),
-            (&self.added, next, true),
-            (&self.removed, previous, true),
-        ];
         let mut keys = BTreeSet::new();
-        for (paths, graph, added_or_removed) in sources {
+        for path in &self.changed {
+            let (old, new) = (previous.files.get(path), next.files.get(path));
+            let path_set_changed = has_file_node(old) != has_file_node(new);
+            for entry in old.into_iter().chain(new) {
+                keys.extend(touched_keys(entry, path_set_changed));
+            }
+        }
+        for (paths, graph) in [(&self.added, next), (&self.removed, previous)] {
             for entry in paths.iter().filter_map(|path| graph.files.get(path)) {
-                keys.extend(touched_keys(entry, added_or_removed));
+                keys.extend(touched_keys(entry, true));
             }
         }
         keys
     }
+}
+
+/// Whether `entry` holds the file node the path index is built from.
+fn has_file_node(entry: Option<&FileEntry>) -> bool {
+    entry.is_some_and(|entry| {
+        entry
+            .nodes
+            .iter()
+            .any(|node| node.kind == SourceNodeKind::File)
+    })
 }
 
 /// The edges of unchanged files to unbind and re-resolve (rules 2 and 3 of

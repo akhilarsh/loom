@@ -56,6 +56,7 @@ impl QueryHarness for TestHarness {
             name: None,
             alias: Some(statement.to_string()),
             glob: false,
+            exported_as: None,
             site,
         }]
     }
@@ -220,14 +221,15 @@ fn a_bare_call_never_reaches_a_member_in_rust() {
     let bare = rust("impl W { fn parse(&self) {} fn load(&self) { parse(); } }\n");
     assert_unbound(call(&bare, &function("W::load"), "parse"), &[]);
 
-    let qualified = rust("impl W { fn parse(&self) {} fn load(&self) { W::parse(); } }\n");
+    let qualified =
+        rust("struct W;\nimpl W { fn parse(&self) {} fn load(&self) { W::parse(); } }\n");
     let edge = call(&qualified, &function("W::load"), "W::parse");
     assert_bound(edge, &function("W::parse"), EdgeProvenance::LocalName, 0.8);
 }
 
 #[test]
 fn a_qualified_call_from_a_free_function_binds_the_member() {
-    let extraction = rust("impl W { fn parse(&self) {} }\nfn run() { W::parse(); }\n");
+    let extraction = rust("struct W;\nimpl W { fn parse(&self) {} }\nfn run() { W::parse(); }\n");
 
     let edge = call(&extraction, &function("run"), "W::parse");
 
@@ -316,4 +318,30 @@ fn self_receivers_default_to_the_dialect_table() {
         RustExtractor::new().self_receivers(),
         rust_dialect.self_receivers
     );
+}
+
+/// A query compiles once and every later run shares it; a query that fails
+/// to compile is never cached, so every run reports it.
+#[test]
+fn a_compiled_query_is_shared_and_a_bad_one_errors_on_every_run() {
+    let harness = TestHarness {
+        query: RECEIVER_QUERY,
+        receivers: &[],
+    };
+    let language = harness.node_language();
+    let first = super::compiled_query(&harness, &language).unwrap();
+    let second = super::compiled_query(&harness, &language).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+
+    let bad = TestHarness {
+        query: "(no_such_node) @name",
+        receivers: &[],
+    };
+    for _ in 0..2 {
+        let error = run_query(&bad, Path::new("src/lib.rs"), b"fn f() {}\n").unwrap_err();
+        assert!(
+            error.to_string().contains("invalid tree-sitter query"),
+            "{error:#}"
+        );
+    }
 }

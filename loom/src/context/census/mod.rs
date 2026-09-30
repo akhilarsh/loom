@@ -18,7 +18,7 @@ use crate::context::graph_store::ResolvedGraph;
 use crate::context::refresh::excluded;
 use crate::context::source_graph::{FileCoverage, MAX_EXTRACTED_FILE_BYTES};
 use crate::fs::safe_read::read_bounded;
-use crate::git::runner::run_git_checked;
+use crate::git::runner::run_git_pinned_checked;
 
 mod classify;
 mod report;
@@ -35,6 +35,14 @@ use subprojects::SubprojectIndex;
 pub struct CensusOptions {
     /// Checkouts to census. Empty means the current project.
     pub roots: Vec<PathBuf>,
+}
+
+impl CensusOptions {
+    /// Whether `project`, the checkout `loom map` runs in, is one of the
+    /// censused roots. Only then does the census read its resolved graph.
+    pub fn covers(&self, project: &Path) -> bool {
+        self.roots.is_empty() || self.roots.iter().any(|root| same_directory(project, root))
+    }
 }
 
 /// Census every root in `options`. `current` is the project root and resolved
@@ -83,7 +91,7 @@ fn census_root(
     graph: Option<&ResolvedGraph>,
     extractors: &[BoxedExtractor],
 ) -> Result<RootCensus> {
-    let inside = run_git_checked(&["rev-parse", "--is-inside-work-tree"], root)
+    let inside = run_git_pinned_checked(&["rev-parse", "--is-inside-work-tree"], root)
         .with_context(|| format!("{} is not a git work tree", root.display()))?;
     if inside != "true" {
         bail!("{} is not a git work tree", root.display());
@@ -96,16 +104,20 @@ fn census_root(
         .filter(|path| !excluded(path))
         .collect();
     let attributes = classify::attributes(root, &candidates)?;
+    // Per-file probes refuse a symlink at every component, the root included.
+    let physical = root
+        .canonicalize()
+        .with_context(|| format!("cannot resolve {}", root.display()))?;
 
     let mut tally = Tally {
         index: SubprojectIndex::new(tracked.iter().map(|entry| entry.path.as_str())),
-        coverage: Coverage::new(root, graph, extractors),
+        coverage: Coverage::new(&physical, graph, extractors),
         extractors,
         totals: ClassTotals::default(),
         subprojects: BTreeMap::new(),
     };
     for entry in &tracked {
-        if let Some(classified) = classify::classify(root, entry, &attributes) {
+        if let Some(classified) = classify::classify(&physical, entry, &attributes) {
             tally.add(&entry.path, classified);
         }
     }
@@ -289,3 +301,5 @@ impl<'a> Coverage<'a> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_hardening;

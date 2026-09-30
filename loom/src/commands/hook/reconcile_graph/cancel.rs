@@ -10,8 +10,13 @@
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use super::lock::{read_lock, release_lease};
+
+/// The longest one `ps` query may take. `ps` reads the process table and
+/// never blocks for long; a hung one must not hang `--cancel` with it.
+const PS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Whole seconds of slack between a process's start (`ps` reports elapsed time
 /// in whole seconds) and the epoch its reconciler stamped.
@@ -68,14 +73,18 @@ fn process_argv(pid: u32) -> Option<Vec<String>> {
 }
 
 /// One `ps -p <pid> -o <field>` value, trimmed; `None` when `ps` is missing,
-/// fails, or prints nothing (no such process).
+/// fails, prints nothing (no such process), or outlives [`PS_TIMEOUT`].
 fn ps_field(pid: u32, field: &str) -> Option<String> {
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", field])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    let mut command = Command::new("ps");
+    command.args(["-p", &pid.to_string(), "-o", field]);
+    bounded_stdout(&mut command, PS_TIMEOUT)
+}
+
+/// The trimmed stdout of `command` when it succeeds with output within
+/// `timeout`; a command still running at the deadline is killed.
+fn bounded_stdout(command: &mut Command, timeout: Duration) -> Option<String> {
+    command.stdin(Stdio::null());
+    let output = crate::process::run_bounded_output(command, timeout, "ps").ok()?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (output.status.success() && !text.is_empty()).then_some(text)
 }
@@ -99,7 +108,29 @@ fn parse_etime(text: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_etime;
+    use super::{bounded_stdout, parse_etime};
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_query_that_outlives_its_deadline_is_killed_and_yields_nothing() {
+        let started = Instant::now();
+
+        let text = bounded_stdout(Command::new("sleep").arg("30"), Duration::from_millis(200));
+
+        assert_eq!(text, None);
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_query_inside_its_deadline_returns_its_trimmed_output() {
+        let text = bounded_stdout(
+            Command::new("echo").arg("  12:34  "),
+            Duration::from_secs(10),
+        );
+
+        assert_eq!(text.as_deref(), Some("12:34"));
+    }
 
     #[test]
     fn etime_parses_every_ps_shape() {

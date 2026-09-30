@@ -76,7 +76,7 @@ cases:
     budget_tokens: 800
     max_rendered_tokens: 1600
     forbid:
-      - "loom/src/daemon/server/admission.rs#function:remaining"
+      - "loom/src/daemon/server/admission.rs#function:DeadlineReader::remaining"
 
   # --- Failure shape 2: a filesystem path extracts prose-collision terms --
   - name: filesystem-path-write-home-collision
@@ -144,9 +144,9 @@ cases:
   - name: genuine-win-delivery-epoch-suppression
     query: "Delivery Records and Epoch Suppression"
     expect:
-      - "architecture/context-retrieval.md#delivery-records-and-epoch-suppression#0"
+      - "architecture/context-retrieval-state.md#delivery-records-and-epoch-suppression#0"
     relevant:
-      - "architecture/context-retrieval.md#delivery-records-and-epoch-suppression#0"
+      - "architecture/context-retrieval-state.md#delivery-records-and-epoch-suppression#0"
 
   # The topic spilled into a tier-2 file that repeats the tier-1 heading, so the
   # packer returns the detail and drops the summary (see the tier-twin case
@@ -245,8 +245,9 @@ cases:
     query: "who calls reconcile_source_graph"
     expect:
       - "loom/src/context/refresh/source_graph.rs#function:reconcile_source_graph"
+      - "loom/src/orchestrator/merge_lifecycle.rs#function:MergeLifecycle::reconcile"
     relevant:
-      - "loom/src/orchestrator/merge_lifecycle.rs#function:reconcile"
+      - "loom/src/orchestrator/merge_lifecycle.rs#function:MergeLifecycle::reconcile"
       - "loom/src/context/refresh/source_graph.rs#function:reconcile_source_graph"
 
   # A quoted message is text in a body, which the graph does not index: the

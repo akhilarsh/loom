@@ -12,7 +12,10 @@
 //! A denied write keeps the view in memory for the rest of the process, as
 //! layers do. A revision whose base layer does not load, missing or
 //! unparseable, gets a view built in memory and never persisted, so the base
-//! published or rebuilt later cannot be shadowed by an empty view.
+//! published or rebuilt later cannot be shadowed by an empty view. So does a
+//! graph holding an entry an extractor other than the registered one stamped,
+//! or drawn from a layer written under another graph schema: its identity
+//! would claim the current extractors and schema.
 
 use anyhow::{Context, Result};
 use std::fs;
@@ -20,7 +23,9 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use super::{build_cold, relink, ResolvedView, ViewIdentity};
+use crate::context::extract::registry;
 use crate::context::graph_store::GraphStore;
+use crate::context::refresh::snapshot::entries_are_current;
 use crate::context::store::canonical_json;
 
 /// File name of an overlay view inside the overlay directory.
@@ -84,19 +89,27 @@ impl GraphStore {
         Some(view)
     }
 
-    /// Whether a current view of `revision` and `overlay` is held in memory or
-    /// persisted, told without parsing the view file (see [`Self::has_view`]).
-    pub(crate) fn has_current_view(&self, revision: &str, overlay: Overlay<'_>) -> Result<bool> {
+    /// Build the view of `revision` and `overlay` and keep it for the next
+    /// [`Self::view`] call of this process, unless a current one is held or
+    /// persisted (told without parsing the view file, see [`Self::has_view`]).
+    /// The view is keyed by the request it resolves to: one whose overlay
+    /// layer is gone is the base view's. An overlay view with no generation
+    /// cannot be told from its predecessors, so it is never kept, as it is
+    /// never persisted.
+    pub(crate) fn materialize_view(&self, revision: &str, overlay: Overlay<'_>) -> Result<()> {
         let (identity, overlay) = self.view_identity(revision, overlay)?;
-        Ok(self.has_view(&identity, overlay))
+        if !is_identifiable(&identity, overlay) || self.has_view(&identity, overlay) {
+            return Ok(());
+        }
+        let view = self.build_view(identity, overlay)?;
+        self.keep_view(view, overlay);
+        Ok(())
     }
 
-    /// Keep `view`, built for a request with `overlay`, for this process: the
-    /// next [`Self::view`] call of its identity takes it instead of parsing the
-    /// persisted file. A request whose overlay layer is gone (an empty overlay
-    /// generation) resolved to the base view, so it is keyed as one.
-    pub(crate) fn cache_view(&self, view: ResolvedView, overlay: Overlay<'_>) {
-        let overlay = overlay.filter(|_| !view.identity.overlay_generation.is_empty());
+    /// Hold `view`, the view of a request with `overlay`, for the next
+    /// [`Self::view`] call of its identity, which takes it instead of parsing
+    /// the persisted file.
+    fn keep_view(&self, view: ResolvedView, overlay: Overlay<'_>) {
         let path = self.view_path(&view.identity, overlay);
         self.view_cache.borrow_mut().insert(path, view);
     }
@@ -175,21 +188,39 @@ impl GraphStore {
     /// Resolve the view, relinking from a previous view when one is usable,
     /// and persist it when the base layer of its revision loaded: the view of
     /// a missing or unparseable base stays in memory.
+    ///
+    /// `identity` names the schema and extractors registered now, whatever
+    /// wrote the layers, and a relink copies an unchanged file's previous
+    /// entry. So a graph holding an entry another extractor stamped, or drawn
+    /// from a layer written under another schema (an older layer served
+    /// stale), is built cold and never persisted, which keeps it from seeding
+    /// a later relink, and a seed holding one is never used.
     fn build_view(&self, identity: ViewIdentity, overlay: Overlay<'_>) -> Result<ResolvedView> {
         let revision = identity.base_revision.clone();
-        let next = self.resolved(&revision, overlay)?;
+        let (next, schema_current) = self.resolved_with_schema(&revision, overlay)?;
         // `resolved` takes its revision from the layer `load_base` returned,
         // and leaves it empty for `None`.
         let base_loaded = next.base_revision == revision;
-        let previous = match overlay {
+        let extractors = registry();
+        let current = schema_current && entries_are_current(&next.files, &extractors);
+        let seed = match overlay {
+            _ if !current => None,
             Some(_) => Some(self.view(&revision, None)?),
             None => self.newest_older_base_view(&identity),
         };
-        let view = match previous {
-            Some(previous) => relink(&previous, next, identity),
+        let usable = seed
+            .as_ref()
+            .filter(|seed| entries_are_current(&seed.graph.files, &extractors));
+        let view = match usable {
+            Some(previous) => relink(previous, next, identity),
             None => build_cold(next, identity),
         };
-        if base_loaded && is_identifiable(&view.identity, overlay) {
+        if let (Some(base_view), Some(_)) = (seed, overlay) {
+            // Taken from the in-process cache when this process materialized
+            // it: hand it back for the next base view request.
+            self.keep_view(base_view, None);
+        }
+        if current && base_loaded && is_identifiable(&view.identity, overlay) {
             self.persist_view(&view, overlay)?;
         }
         Ok(view)
@@ -208,6 +239,9 @@ impl GraphStore {
         let path = self.view_path(&view.identity, overlay);
         match write_view(&path, view) {
             Ok(()) => {
+                // The file is newer than a view an earlier denied write of this
+                // process kept for `path`, which `load_view` would prefer.
+                self.view_fallback.borrow_mut().remove(&path);
                 if overlay.is_none() {
                     self.remove_other_identities(&view.identity.base_revision, &path);
                 }

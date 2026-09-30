@@ -117,3 +117,37 @@ pub enum EdgeDirection {
     /// The seed calls or references the neighbour.
     Incoming,
 }
+
+/// Why a graph neighbour is in the pack, e.g. ``called by `seed` at path:L12``.
+///
+/// The verb is read from the neighbour's side of the edge: `Outgoing` means the
+/// neighbour is the subject (``calls `seed` ``), `Incoming` means the seed is
+/// (``called by `seed` ``). Only the `Incoming` form names a site, because the
+/// site lives in the seed's file, which the neighbour's own pointer does not
+/// show. The seed is named by its scope and located by the path in its id
+/// (`<path>#<kind>:<scope>`); an id of any other shape is shown whole.
+///
+/// Lives beside [`NeighborVia`] rather than in the packer because the ranker
+/// prices it (`rank_source::expand::neighbour_tokens`) and the packer renders
+/// it, and the ranker must not depend on the packer.
+pub fn neighbor_explanation(via: &NeighborVia) -> String {
+    let (verb, passive) = match via.edge_kind {
+        SourceEdgeKind::Calls => ("calls", "called by"),
+        SourceEdgeKind::Implements => ("implements", "implemented by"),
+        SourceEdgeKind::Extends => ("extends", "extended by"),
+        SourceEdgeKind::References | SourceEdgeKind::Contains | SourceEdgeKind::Imports => {
+            ("references", "referenced by")
+        }
+    };
+    let (path, name) = match via.seed.split_once('#') {
+        Some((path, suffix)) => (path, suffix.split_once(':').map_or(suffix, |(_, n)| n)),
+        None => ("", via.seed.as_str()),
+    };
+    match via.direction {
+        EdgeDirection::Outgoing => format!("{verb} `{name}`"),
+        EdgeDirection::Incoming => match via.site_line {
+            Some(line) if !path.is_empty() => format!("{passive} `{name}` at {path}:L{line}"),
+            _ => format!("{passive} `{name}`"),
+        },
+    }
+}

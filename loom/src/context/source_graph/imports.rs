@@ -24,6 +24,12 @@ pub struct ImportBinding {
     /// `require`.
     #[serde(default)]
     pub glob: bool,
+    /// The name a re-export makes the module export (`b` in TS
+    /// `export { a as b } from "x"`, `ns` in `export * as ns from "x"`). A
+    /// re-export binds no local name, so this is the only name another file
+    /// can import it under. `None` for every other statement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exported_as: Option<String>,
     /// Where the statement sits in the file.
     pub site: Span,
 }

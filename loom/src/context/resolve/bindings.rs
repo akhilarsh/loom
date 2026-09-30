@@ -17,7 +17,9 @@
 //! A name looked up in a module's files that none of them defines may be
 //! re-exported: one of those files binds it with an import of its own (Python
 //! `from .pricing import total as compute_total` in a package `__init__.py`),
-//! and the lookup follows that import.
+//! or exports it from another module under that name (TS
+//! `export { largest as biggest } from "./shapes"`), and the lookup follows
+//! that import.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -35,6 +37,10 @@ const MAX_REEXPORT_HOPS: usize = 4;
 /// The family whose `References` edges are prototypes: the C and C++
 /// extractors emit one for every function declared without a body.
 const PROTOTYPE_FAMILY: &str = "c";
+
+/// The family whose named import may bind a module rather than an item: Rust
+/// `use a::b;` imports module `b` when `b.rs` or `b/mod.rs` exists.
+const MODULE_IMPORT_FAMILY: &str = "rust";
 
 /// What a binding rule did with an edge.
 pub(super) enum Step {
@@ -59,22 +65,38 @@ pub(super) enum Step {
 pub(super) fn member_call(site: &Site, receiver: &str, keys: &mut BTreeSet<String>) -> Outcome {
     let member = site.edge.symbol.as_str();
     if let Some(binding) = bound_as(site, receiver) {
-        return through(site, binding, member, keys);
+        // Nothing found, or an external module, stays a gap: the receiver
+        // said where the callee lives.
+        let files = module_files(site, binding, site.file, keys);
+        if files.is_empty() {
+            return Outcome::Unresolved;
+        }
+        return inside(site, binding, &files, member, keys).unwrap_or(Outcome::Unresolved);
     }
     glob_member(site, receiver, member, keys).unwrap_or_else(|| site.name_candidates(member, keys))
 }
 
 /// Rule 4 for a qualified spelling whose first segment is an import's local
 /// name: the rest of the spelling is looked up in the files the import names.
-/// `None` when no import binds that segment.
+/// An import of a module outside the graph refuses (`use std::io::Error;`
+/// makes `Error::new()` a call into `std`); `Next` when no import binds the
+/// segment or its files do not define the rest.
 pub(super) fn qualified_import(
     site: &Site,
     segments: &[&str],
     keys: &mut BTreeSet<String>,
-) -> Option<Outcome> {
-    let (first, rest) = segments.split_first()?;
-    let binding = bound_as(site, first)?;
-    Some(through(site, binding, &rest.join("::"), keys))
+) -> Step {
+    let Some((first, rest)) = segments.split_first() else {
+        return Step::Next;
+    };
+    let Some(binding) = bound_as(site, first) else {
+        return Step::Next;
+    };
+    let files = match bound_files(site, binding, keys) {
+        Ok(files) => files,
+        Err(step) => return step,
+    };
+    inside(site, binding, &files, &rest.join("::"), keys).map_or(Step::Next, Step::Decided)
 }
 
 /// Rule 4 for a bare name an import binds: the imported name (`parse` for
@@ -83,15 +105,10 @@ pub(super) fn named_import(site: &Site, name: &str, keys: &mut BTreeSet<String>)
     let Some(binding) = bound_as(site, name) else {
         return Step::Next;
     };
-    let files = module_files(site, binding, site.file, keys);
-    if files.is_empty() {
-        // A Rust anchor the conventions cannot place is still this project's.
-        return if relative_spec(&binding.path) {
-            Step::Next
-        } else {
-            Step::Refused
-        };
-    }
+    let files = match bound_files(site, binding, keys) {
+        Ok(files) => files,
+        Err(step) => return step,
+    };
     let target = binding.name.as_deref().unwrap_or(name);
     let ids = exported(site, &files, target, MAX_REEXPORT_HOPS, keys);
     if ids.is_empty() {
@@ -100,9 +117,10 @@ pub(super) fn named_import(site: &Site, name: &str, keys: &mut BTreeSet<String>)
     Step::Decided(site.decide(ids, EdgeProvenance::Import))
 }
 
-/// Rule 6: `name` in the files of every glob import that resolves. One hit
-/// binds with `Import`; a glob import naming an external module refuses rule
-/// 7 when nothing was found, unless a prototype declares the name here.
+/// Rule 6: `name` in the files of every glob import that resolves, among the
+/// definitions a bare name can reach. One hit binds with `Import`; a glob
+/// import naming an external module refuses rule 7 when nothing was found,
+/// unless a prototype declares the name here.
 pub(super) fn globs(site: &Site, name: &str, keys: &mut BTreeSet<String>) -> Step {
     let mut hits = BTreeSet::new();
     let mut placed = Vec::new();
@@ -115,7 +133,8 @@ pub(super) fn globs(site: &Site, name: &str, keys: &mut BTreeSet<String>) -> Ste
             continue;
         }
         let symbols = site.symbols();
-        hits.extend(symbols.definitions_in_files(site.family(), name, &files, keys));
+        let found = symbols.definitions_in_files(site.family(), name, &files, keys);
+        hits.extend(site.bare_reachable(found, keys));
         placed.extend(files);
     }
     if !hits.is_empty() {
@@ -168,40 +187,74 @@ fn prototyped(site: &Site, name: &str, headers: &[String], keys: &mut BTreeSet<S
             .any(|header| site.indexes.entry(header, keys).is_some_and(declares))
 }
 
-/// `member` in the files `binding` names. An imported item's members are
-/// spelled `item::member`; a binding may also name a module (Rust's
-/// `use a::b;`), whose members are its own definitions or its re-exports, so
-/// the bare member is tried second. Nothing found, or an external module,
-/// stays a gap: the receiver or qualifier said where the callee lives.
-fn through(
+/// The files `binding` names from the edge's file, or the step its rule takes
+/// when they are none: a Rust anchor the conventions cannot place is still
+/// this project's (`Next`); any other spec is external (`Refused`).
+fn bound_files(
     site: &Site,
     binding: &ImportBinding,
+    keys: &mut BTreeSet<String>,
+) -> Result<Vec<String>, Step> {
+    let files = module_files(site, binding, site.file, keys);
+    if !files.is_empty() {
+        return Ok(files);
+    }
+    Err(if relative_spec(&binding.path) {
+        Step::Next
+    } else {
+        Step::Refused
+    })
+}
+
+/// `member` in the `files` `binding` names; `None` when none of them defines
+/// it. A whole-module binding's members are its definitions or re-exports; an
+/// imported item's members are spelled `item::member`. A Rust `use a::b;` may
+/// also name module `b` itself, so when `files` are `b`'s own module files the
+/// bare member is tried second. No other binding of an item reaches a bare
+/// definition: `import { Logger } from "./log"` then `Logger.info()` is never
+/// a top-level `info` of `log.ts`.
+fn inside(
+    site: &Site,
+    binding: &ImportBinding,
+    files: &[String],
     member: &str,
     keys: &mut BTreeSet<String>,
-) -> Outcome {
-    let files = module_files(site, binding, site.file, keys);
-    if files.is_empty() {
-        return Outcome::Unresolved;
-    }
-    if let Some(item) = binding.name.as_deref() {
-        let spelling = format!("{item}::{member}");
-        let symbols = site.symbols();
-        let ids = symbols.definitions_in_files(site.family(), &spelling, &files, keys);
-        if !ids.is_empty() {
-            return site.decide(ids, EdgeProvenance::Import);
+) -> Option<Outcome> {
+    let ids = match binding.name.as_deref() {
+        Some(item) => {
+            let spelling = format!("{item}::{member}");
+            let symbols = site.symbols();
+            let ids = symbols.definitions_in_files(site.family(), &spelling, files, keys);
+            if ids.is_empty() && names_module(site, item, files) {
+                exported(site, files, member, MAX_REEXPORT_HOPS, keys)
+            } else {
+                ids
+            }
         }
+        None => exported(site, files, member, MAX_REEXPORT_HOPS, keys),
+    };
+    (!ids.is_empty()).then(|| site.decide(ids, EdgeProvenance::Import))
+}
+
+/// Whether a binding of `item` that resolved to `files` names module `item`
+/// itself: a Rust binding whose every file is `item.rs` or `item/mod.rs`.
+fn names_module(site: &Site, item: &str, files: &[String]) -> bool {
+    site.family() == MODULE_IMPORT_FAMILY && files.iter().all(|file| module_of(file) == Some(item))
+}
+
+/// The module a Rust file is: `b` for `a/b.rs` and for `a/b/mod.rs`.
+fn module_of(file: &str) -> Option<&str> {
+    let (dir, name) = file.rsplit_once('/').unwrap_or(("", file));
+    match name {
+        "mod.rs" => dir.rsplit('/').next(),
+        _ => name.strip_suffix(".rs"),
     }
-    let ids = exported(site, &files, member, MAX_REEXPORT_HOPS, keys);
-    if ids.is_empty() {
-        return Outcome::Unresolved;
-    }
-    site.decide(ids, EdgeProvenance::Import)
 }
 
 /// Definitions of `name` in `files`. When none of them defines it, the
-/// non-glob imports those files bind `name` with are followed, up to `hops`
-/// deep: what such an import names, in the files it names from the file that
-/// wrote it, is what the module exports under `name`.
+/// non-glob imports those files bind or re-export `name` with are followed, up
+/// to `hops` deep: what such an import names, in the files it names from the
+/// file that wrote it, is what the module exports under `name`.
 fn exported(
     site: &Site,
     files: &[String],
@@ -221,13 +274,21 @@ fn exported(
             continue;
         };
         let reexports = entry.imports.iter();
-        for binding in reexports.filter(|binding| binding.local_name() == Some(name)) {
+        for binding in reexports.filter(|binding| exports(binding, name)) {
             let next = module_files(site, binding, file, keys);
             let target = binding.name.as_deref().unwrap_or(name);
             found.extend(exported(site, &next, target, hops - 1, keys));
         }
     }
     found.into_iter().collect()
+}
+
+/// Whether a module whose file holds `binding` exports `name` through it:
+/// the name it binds (`from .pricing import total`), or the name a re-export
+/// exports under (`export { largest as biggest } from "./shapes"`), which
+/// binds no local name.
+fn exports(binding: &ImportBinding, name: &str) -> bool {
+    binding.local_name() == Some(name) || binding.exported_as.as_deref() == Some(name)
 }
 
 /// The non-glob import of the edge's file that binds `local`.
@@ -282,7 +343,7 @@ fn item_module(binding: &ImportBinding) -> Option<&str> {
 /// (`use super::*` in a `#[path]` test module). Path-style specs (`./x`,
 /// `../x`, Python's `.x`) are placed exactly by the conventions, so one that
 /// matches no file is external.
-fn relative_spec(spec: &str) -> bool {
+pub(super) fn relative_spec(spec: &str) -> bool {
     let root = spec.split("::").next().unwrap_or(spec);
     matches!(root, "crate" | "self" | "super")
 }

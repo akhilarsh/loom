@@ -188,6 +188,7 @@ pub(crate) fn binding(path: &str, name: Option<&str>, alias: Option<&str>) -> Im
         name: name.map(str::to_string),
         alias: alias.map(str::to_string),
         glob: false,
+        exported_as: None,
         site: Span::default(),
     }
 }

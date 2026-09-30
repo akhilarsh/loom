@@ -1,6 +1,8 @@
 //! The shared walk's node identity: signature and ordinal suffixes that keep
 //! duplicate declarations apart, driven through the Rust grammar.
 
+use std::collections::BTreeMap;
+
 use super::ids::disambiguate;
 use super::tests::{function, rust};
 use crate::context::extract::FileExtraction;
@@ -54,6 +56,38 @@ fn duplicate_impl_blocks_get_suffixed_ids_and_suffixed_parents() {
             .map(|e| e.from.as_str())
             .collect();
         assert_eq!(parents, [owner.id.as_str()], "method: {method:#?}");
+    }
+}
+
+/// A duplicate's suffix comes from its own signature: neither the order of
+/// the declarations nor their line positions enter it.
+#[test]
+fn a_duplicate_keeps_its_id_across_declaration_order_and_line_position() {
+    let from_u8 = "impl From<u8> for W { fn from(v: u8) -> Self { W } }\n";
+    let from_u16 = "impl From<u16> for W { fn from(v: u16) -> Self { W } }\n";
+    let variants = [
+        format!("struct W;\n{from_u8}{from_u16}"),
+        format!("struct W;\n{from_u16}{from_u8}"),
+        format!("struct W;\n\n\n{from_u8}\n\n{from_u16}"),
+        format!("\n\nstruct W;\n{from_u16}\n\n\n\n{from_u8}"),
+    ];
+    let ids_by_signature = |source: &str| -> BTreeMap<(String, String), String> {
+        rust(source)
+            .nodes
+            .into_iter()
+            .filter(|node| !node.symbol_key.is_empty())
+            .map(|node| ((node.kind.to_string(), node.signature), node.id))
+            .collect()
+    };
+
+    let expected = ids_by_signature(variants[0].as_str());
+    assert_eq!(expected.len(), 4, "{expected:#?}");
+    for source in &variants[1..] {
+        assert_eq!(
+            ids_by_signature(source.as_str()),
+            expected,
+            "source:\n{source}"
+        );
     }
 }
 

@@ -134,3 +134,37 @@ fn help_describes_direct_one_hop_neighbours_and_lists_the_new_flags() {
         assert!(help.contains(flag), "help lacks {flag}: {help}");
     }
 }
+
+#[test]
+fn eval_edges_alone_is_a_view_flag() {
+    let parsed = MapHarness::try_parse_from(["map", "--eval-edges", "corpora"]).unwrap();
+
+    assert!(require_view(&parsed.args).is_ok());
+    assert_eq!(requested_views(&parsed.args), 1);
+    assert_eq!(
+        parsed.args.eval_edges.as_deref(),
+        Some(Path::new("corpora"))
+    );
+}
+
+#[test]
+fn thresholds_need_eval_edges() {
+    assert!(
+        MapHarness::try_parse_from(["map", "--find-all", "x", "--thresholds", "t.yaml"]).is_err()
+    );
+
+    let parsed =
+        MapHarness::try_parse_from(["map", "--eval-edges", "d", "--thresholds", "t.yaml"]).unwrap();
+    assert_eq!(parsed.args.thresholds.as_deref(), Some(Path::new("t.yaml")));
+}
+
+#[test]
+fn eval_edges_conflicts_with_census_and_takes_no_root() {
+    assert!(MapHarness::try_parse_from(["map", "--census", "--eval-edges", "d"]).is_err());
+
+    let stray = MapHarness::try_parse_from(["map", "--eval-edges", "d", "--root", "r"]).unwrap();
+    assert_eq!(
+        require_view(&stray.args).unwrap_err().to_string(),
+        "--root only applies to --census"
+    );
+}

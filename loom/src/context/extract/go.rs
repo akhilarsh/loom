@@ -29,14 +29,44 @@ const QUERY: &str = r#"
 (function_declaration
   name: (identifier) @name) @definition.function
 
+; A method is qualified by its receiver's type, `T`, `*T`, `T[P]` or `*T[P]`,
+; so `func (w *Widget) run()` scopes as `[Widget, run]` with no parent: Go
+; cannot call it by its bare name.
 (method_declaration
+  receiver: (parameter_list
+    (parameter_declaration
+      type: [
+        (type_identifier) @definition.qualifier
+        (pointer_type (type_identifier) @definition.qualifier)
+        (generic_type type: (type_identifier) @definition.qualifier)
+        (pointer_type (generic_type type: (type_identifier) @definition.qualifier))
+      ]))
   name: (field_identifier) @name) @definition.function
+
+; Every type spec or alias declares a type, a struct no more than a named
+; slice, map, func or basic type: `type stack []int` owns the methods declared
+; on it. Only an interface literal declares an interface.
+(type_spec
+  name: (type_identifier) @name
+  type: [
+    (array_type) (channel_type) (function_type) (generic_type) (map_type)
+    (negated_type) (parenthesized_type) (pointer_type) (qualified_type)
+    (slice_type) (struct_type) (type_identifier)
+  ]) @definition.type
+
+(type_alias
+  name: (type_identifier) @name
+  type: [
+    (array_type) (channel_type) (function_type) (generic_type) (map_type)
+    (negated_type) (parenthesized_type) (pointer_type) (qualified_type)
+    (slice_type) (struct_type) (type_identifier)
+  ]) @definition.type
 
 (type_spec
   name: (type_identifier) @name
-  type: (struct_type)) @definition.type
+  type: (interface_type)) @definition.interface
 
-(type_spec
+(type_alias
   name: (type_identifier) @name
   type: (interface_type)) @definition.interface
 
@@ -82,7 +112,7 @@ impl QueryHarness for GoExtractor {
             dialect: "go",
             grammar_version: "0.25.0",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 2,
+            extractor_version: 3,
         }
     }
 
@@ -118,6 +148,7 @@ impl QueryHarness for GoExtractor {
             name: None,
             alias,
             glob,
+            exported_as: None,
             site,
         }]
     }
@@ -134,7 +165,7 @@ impl SourceGraphExtractor for GoExtractor {
             imports: true,
             import_bindings: true,
             calls: true,
-            receivers: false,
+            receivers: true,
             references: false,
         }
     }
@@ -151,6 +182,10 @@ impl SourceGraphExtractor for GoExtractor {
 #[cfg(test)]
 #[path = "go/tests_imports.rs"]
 mod tests_imports;
+
+#[cfg(test)]
+#[path = "go/tests_methods.rs"]
+mod tests_methods;
 
 #[cfg(test)]
 mod tests {
@@ -202,9 +237,9 @@ func Use() {
                 "src/fixture.go",
                 "src/fixture.go#constant:Count",
                 "src/fixture.go#constant:Value",
-                "src/fixture.go#function:First",
-                "src/fixture.go#function:Second",
                 "src/fixture.go#function:Use",
+                "src/fixture.go#function:Widget::First",
+                "src/fixture.go#function:Widget::Second",
                 "src/fixture.go#interface:Runner",
                 "src/fixture.go#module:fixture",
                 "src/fixture.go#type:Widget",
@@ -232,19 +267,19 @@ func Use() {
         ),
         (
             "src/fixture.go",
-            "src/fixture.go#function:First",
-            "contains",
-            "structural",
-        ),
-        (
-            "src/fixture.go",
-            "src/fixture.go#function:Second",
-            "contains",
-            "structural",
-        ),
-        (
-            "src/fixture.go",
             "src/fixture.go#function:Use",
+            "contains",
+            "structural",
+        ),
+        (
+            "src/fixture.go",
+            "src/fixture.go#function:Widget::First",
+            "contains",
+            "structural",
+        ),
+        (
+            "src/fixture.go",
+            "src/fixture.go#function:Widget::Second",
             "contains",
             "structural",
         ),
@@ -267,13 +302,13 @@ func Use() {
             "structural",
         ),
         (
-            "src/fixture.go#function:Second",
+            "src/fixture.go#function:Use",
             "<unresolved>",
             "calls",
             "syntax",
         ),
         (
-            "src/fixture.go#function:Use",
+            "src/fixture.go#function:Widget::Second",
             "<unresolved>",
             "calls",
             "syntax",

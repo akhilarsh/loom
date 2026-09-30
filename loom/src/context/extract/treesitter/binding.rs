@@ -21,6 +21,9 @@ pub(super) struct BindingRules {
     pub(super) self_receivers: &'static [&'static str],
     /// Whether an unqualified call may name a member of the enclosing type.
     pub(super) bare_calls_reach_members: bool,
+    /// Whether a self receiver outside every type names the file's top level,
+    /// so its call binds like a plain one (Ruby's `main` object).
+    pub(super) top_level_self: bool,
 }
 
 /// What binding needs to know about one definition, keyed by its final id.
@@ -62,8 +65,9 @@ enum Binding {
 }
 
 /// Call edges. A call on a self receiver binds to a member of the enclosing
-/// type; a call on any other receiver is left to the resolver; a plain or
-/// qualified call binds by lexical scope.
+/// type; a call on any other receiver, or on a self receiver no type
+/// encloses, is left to the resolver; a plain or qualified call binds by
+/// lexical scope.
 pub(super) fn call_edges(calls: &[Reference], binder: &Binder, edges: &mut Vec<SourceEdge>) {
     for call in calls {
         let caller = binder.caller(call.site);
@@ -71,7 +75,7 @@ pub(super) fn call_edges(calls: &[Reference], binder: &Binder, edges: &mut Vec<S
         let binding = match call.receiver.as_deref() {
             Some(receiver) if binder.rules.self_receivers.contains(&receiver) => binder
                 .receiver(caller, &call.symbol)
-                .unwrap_or_else(|| binder.plain(caller, &call.symbol)),
+                .unwrap_or_else(|| binder.top_level_self(caller, &call.symbol)),
             Some(_) => Binding::Unbound(Vec::new()),
             None => binder.plain(caller, &call.symbol),
         };
@@ -105,7 +109,7 @@ impl Binder<'_> {
 
     /// A call on a self receiver: `T::name` for the type `T` around the
     /// caller, bound when exactly one id has that scope. `None` when no `T`
-    /// can be named, so the call binds like a plain one.
+    /// can be named.
     fn receiver(&self, caller: Option<&str>, symbol: &str) -> Option<Binding> {
         let mut target = self.receiver_type(caller?)?;
         target.extend(symbol.split("::").map(str::to_string));
@@ -145,12 +149,24 @@ impl Binder<'_> {
         Some(owner.to_vec())
     }
 
-    /// A plain or qualified spelling. A name an import binds is left to the
-    /// resolver. Otherwise the spelling binds when exactly one of its ids is
-    /// in lexical scope with the longest anchor, and keeps every id as a
-    /// candidate when not.
+    /// A call on a self receiver no type encloses: a plain call where the
+    /// dialect's top-level `self` is the file's own scope, else unbound with
+    /// no candidates, like a call on any other receiver.
+    fn top_level_self(&self, caller: Option<&str>, symbol: &str) -> Binding {
+        if self.rules.top_level_self {
+            self.plain(caller, symbol)
+        } else {
+            Binding::Unbound(Vec::new())
+        }
+    }
+
+    /// A plain or qualified spelling. A name an import binds, and a qualified
+    /// spelling whose owner this file carries only by `impl` blocks, are left
+    /// to the resolver. Otherwise the spelling binds when exactly one of its
+    /// ids is in lexical scope with the longest anchor, and keeps every id as
+    /// a candidate when not.
     fn plain(&self, caller: Option<&str>, symbol: &str) -> Binding {
-        if self.imported(symbol) {
+        if self.imported(symbol) || self.owner_only_implemented(symbol) {
             return Binding::Unbound(Vec::new());
         }
         let Some(ids) = self.scopes.by_spelling.get(symbol) else {
@@ -186,13 +202,36 @@ impl Binder<'_> {
             .any(|binding| binding.local_name() == Some(first))
     }
 
-    /// Whether `id`'s innermost enclosing definition is a type,
-    /// implementation or interface.
+    /// Whether a qualified spelling's owner, the segment before its name, is
+    /// carried in this file by `impl` blocks alone. An `impl` does not define
+    /// its type: `String::from` beside `impl From<Name> for String` may be
+    /// std's, and only the whole graph can show a `struct String` here.
+    fn owner_only_implemented(&self, symbol: &str) -> bool {
+        let owner = symbol.rsplit("::").nth(1);
+        let Some(ids) = owner.and_then(|owner| self.scopes.by_spelling.get(owner)) else {
+            return false;
+        };
+        !ids.is_empty()
+            && ids.iter().all(|id| {
+                self.info(id)
+                    .is_some_and(|info| info.kind == SourceNodeKind::Implementation)
+            })
+    }
+
+    /// Whether `id` is a member of a type: its innermost enclosing definition
+    /// is a type, implementation or interface, or it is a function qualified
+    /// by its owner (Go `func (w *Widget) run()`). Only a dialect whose bare
+    /// calls cannot reach members asks, so a C++ `void ns::f()` never does.
     fn is_member(&self, id: &str) -> bool {
-        self.info(id)
-            .and_then(|info| info.parent.as_deref())
+        let Some(info) = self.info(id) else {
+            return false;
+        };
+        let enclosed = info
+            .parent
+            .as_deref()
             .and_then(|parent| self.info(parent))
-            .is_some_and(|parent| is_type_like(parent.kind))
+            .is_some_and(|parent| is_type_like(parent.kind));
+        enclosed || (info.kind == SourceNodeKind::Function && info.qualified)
     }
 
     /// Length of `id`'s anchor — its scope minus the spelling's `segments` —

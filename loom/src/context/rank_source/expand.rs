@@ -3,8 +3,9 @@
 use super::{estimate_node_tokens, paths::apply_test_path_factor};
 use crate::context::config::RetrievalConfig;
 use crate::context::graph_store::ResolvedGraph;
-use crate::context::pack::neighbor_explanation;
-use crate::context::rank::{EdgeDirection, NeighborVia, RankedCandidate, BOOST_EXACT_SYMBOL};
+use crate::context::rank::{
+    neighbor_explanation, EdgeDirection, NeighborVia, RankedCandidate, BOOST_EXACT_SYMBOL,
+};
 use crate::context::schema::{
     estimate_tokens, Channel, ChunkId, Confidence, FileCoverage, SelectionReason, SourceNode,
     SourceNodeKind,
@@ -54,6 +55,24 @@ pub(super) fn neighbour_tokens(node: &SourceNode, via: &NeighborVia) -> usize {
     estimate_node_tokens(node) + estimate_tokens(&neighbor_explanation(via))
 }
 
+/// Whether a node may be admitted as a graph neighbour: a file node is the
+/// container of the symbols a reader wants, and a partly extracted node cannot
+/// back a claim about what it is. Shared by expansion and relationship routing
+/// so the two admit the same kinds of node.
+pub(super) fn is_expandable(node: &SourceNode) -> bool {
+    !matches!(node.kind, SourceNodeKind::File) && matches!(node.coverage, FileCoverage::Full)
+}
+
+/// What intent routing spent of the expansion budget: the neighbours it
+/// admitted and their estimated rendered tokens. Expansion continues from both,
+/// so [`MAX_EXPANDED`] and [`MAX_EXPANDED_TOKENS`] each cover the whole query,
+/// routed and expanded neighbours together.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ExpansionSpend {
+    pub(super) neighbours: usize,
+    pub(super) tokens: usize,
+}
+
 type Adjacency<'a> = BTreeMap<&'a str, Vec<&'a SourceEdge>>;
 
 /// One neighbour a seed reached: its id, the confidence of the edge that
@@ -70,9 +89,9 @@ struct SeedReach<'a> {
 
 /// Mutable state threaded through one expansion pass: the growing candidate
 /// list, the id set it already carries, how many neighbours have been
-/// accepted overall, the estimated rendered tokens of those neighbours, and an
-/// id index over the graph so accepting a neighbour costs a map probe rather
-/// than a scan of every node.
+/// accepted overall (routed ones included), the estimated rendered tokens of
+/// those neighbours, and an id index over the graph so accepting a neighbour
+/// costs a map probe rather than a scan of every node.
 struct Expansion<'a> {
     ranked: Vec<RankedCandidate>,
     existing: BTreeSet<String>,
@@ -92,14 +111,14 @@ impl Expansion<'_> {
 
 /// Add graph neighbours of the strongest exact-rung candidates as tier-2 candidates.
 /// `ranked` is the channel's scored list BEFORE truncation to `MAX_SOURCE_CANDIDATES`,
-/// sorted strongest first. `routed_tokens` is what intent routing already spent
-/// of [`MAX_EXPANDED_TOKENS`]. Returns the list with neighbours appended
-/// (unsorted).
+/// sorted strongest first. `routed` is what intent routing already spent of
+/// [`MAX_EXPANDED`] and [`MAX_EXPANDED_TOKENS`]. Returns the list with
+/// neighbours appended (unsorted).
 pub(super) fn expand_from_seeds(
     ranked: Vec<RankedCandidate>,
     graph: &ResolvedGraph,
     config: &RetrievalConfig,
-    routed_tokens: usize,
+    routed: ExpansionSpend,
 ) -> Vec<RankedCandidate> {
     let seeds: Vec<(String, f32)> = ranked
         .iter()
@@ -124,8 +143,8 @@ pub(super) fn expand_from_seeds(
     let mut state = Expansion {
         ranked,
         existing,
-        expanded: 0,
-        tokens: routed_tokens,
+        expanded: routed.neighbours,
+        tokens: routed.tokens,
         token_capped: false,
         nodes_by_id,
     };
@@ -295,8 +314,7 @@ fn append_neighbours(reach: SeedReach<'_>, config: &RetrievalConfig, state: &mut
         let Some(node) = state.nodes_by_id.get(id).copied() else {
             continue;
         };
-        if matches!(node.kind, SourceNodeKind::File) || !matches!(node.coverage, FileCoverage::Full)
-        {
+        if !is_expandable(node) {
             continue;
         }
         let via = neighbor_via(&reach.id, edge, direction);

@@ -269,3 +269,58 @@ fn a_pronoun_names_no_symbol() {
         assert_eq!(classify(text), QueryIntent::General, "{text:?}");
     }
 }
+
+#[test]
+fn a_pronoun_first_match_does_not_hide_a_later_symbol() {
+    assert_eq!(
+        classify("who calls it, and who calls parse_tokens"),
+        QueryIntent::Relationship {
+            direction: RelationDirection::Callers,
+            symbol: "parse_tokens".to_string(),
+        }
+    );
+    assert_eq!(
+        classify("who uses this or who uses `Lexer::next`?"),
+        QueryIntent::Relationship {
+            direction: RelationDirection::References,
+            symbol: "Lexer::next".to_string(),
+        }
+    );
+}
+
+#[test]
+fn an_article_names_no_symbol() {
+    for text in [
+        "who calls the parser",
+        "what uses a cache",
+        "who references an entry",
+        "What invokes THE lexer",
+        "explain the",
+        "what is a",
+    ] {
+        assert_eq!(classify(text), QueryIntent::General, "{text:?}");
+    }
+}
+
+#[test]
+fn an_article_admits_no_node_named_like_it() {
+    let path = "src/letters.rs";
+    let node = |name: &str| {
+        full_node(
+            &format!("{path}#function:{name}"),
+            path,
+            &[name],
+            &format!("fn {name}()"),
+        )
+    };
+    let fixture = graph(vec![(path, vec![node("a"), node("the"), node("an")])]);
+
+    for text in ["what uses a cache", "who calls the parser"] {
+        let query = RankQuery {
+            text: text.to_string(),
+            ..RankQuery::default()
+        };
+        let ranked = rank_source(&query, &fixture, &RetrievalConfig::default());
+        assert!(ranked.is_empty(), "{text:?} admitted {ranked:#?}");
+    }
+}

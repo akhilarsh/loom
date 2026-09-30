@@ -21,7 +21,6 @@ use crate::context::schema::{
 };
 use excerpt::bounded_excerpt;
 use required::reserve_within_budget;
-pub(crate) use source_item::neighbor_explanation;
 use source_item::{build_source_item, stamp_snapshot_caveat};
 use twins::{details_before_summaries, explicitly_required, knowledge_twin};
 

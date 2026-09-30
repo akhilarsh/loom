@@ -31,6 +31,7 @@ pub(super) fn bindings(statement: &str, path: &str, site: Span) -> Vec<ImportBin
         name: name.map(str::to_string),
         alias: Some(alias.to_string()),
         glob: false,
+        exported_as: None,
         site,
     };
     let Some(split) = find_top_level(statement, '=') else {

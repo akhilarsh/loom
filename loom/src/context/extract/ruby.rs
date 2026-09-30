@@ -115,6 +115,12 @@ impl QueryHarness for RubyExtractor {
         }
     }
 
+    /// A top-level `self` is the `main` object, whose methods are the file's
+    /// top-level `def`s, so `self.run` there binds like a bare `run`.
+    fn top_level_self(&self) -> bool {
+        true
+    }
+
     /// A require makes everything the required file defines visible, so it
     /// binds no local name: one glob binding.
     fn import_bindings(&self, _statement: &str, path: &str, site: Span) -> Vec<ImportBinding> {
@@ -123,6 +129,7 @@ impl QueryHarness for RubyExtractor {
             name: None,
             alias: None,
             glob: true,
+            exported_as: None,
             site,
         }]
     }

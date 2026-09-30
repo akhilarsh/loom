@@ -14,7 +14,7 @@ mod corpus;
 mod ladder;
 mod rungs;
 
-pub use candidate::{EdgeDirection, NeighborVia, RankQuery, RankedCandidate};
+pub use candidate::{neighbor_explanation, EdgeDirection, NeighborVia, RankQuery, RankedCandidate};
 pub(crate) use corpus::{prepare_lexical_cached, LexicalCorpus};
 pub(crate) use rungs::RungScore;
 

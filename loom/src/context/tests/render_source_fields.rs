@@ -1,9 +1,11 @@
 //! Rendering of the optional per-item fields of a source entry.
 
-use crate::context::render::{render_source_entry, render_source_window, rendered_item_tokens};
+use crate::context::render::{
+    render_literal_text_line, render_source_entry, render_source_window, rendered_item_tokens,
+};
 use crate::context::schema::{
     estimate_tokens, Channel, ChunkId, Confidence, ContextItem, ItemKind, LifecycleState,
-    SelectionReason, SourcePointer,
+    SelectionReason, SourcePointer, TextSearchHint,
 };
 use std::path::PathBuf;
 
@@ -109,4 +111,56 @@ fn every_rendered_field_is_charged_to_the_item() {
     let rendered = render_source_entry(&item) + &render_source_window(&item);
     assert_eq!(charged, estimate_tokens(&rendered));
     assert!(charged > plain + 40, "charged {charged}, plain {plain}");
+}
+
+#[test]
+fn a_window_renders_without_terminal_control_bytes() {
+    let mut item = source_item();
+    item.window = Some(
+        [
+            "fn widget() {",
+            "\tlet s = \"\u{1b}[8mhidden\u{1b}[0m\";",
+            "    // \u{1b}]52;c;ZXZpbA==\u{7}",
+            "}",
+            "",
+        ]
+        .join("\n"),
+    );
+
+    let block = render_source_window(&item);
+
+    assert!(!block.contains('\u{1b}'), "{block:?}");
+    assert!(!block.contains('\u{7}'), "{block:?}");
+    assert!(block.contains("\u{FFFD}[8mhidden\u{FFFD}[0m"), "{block:?}");
+    assert!(block.contains("\u{FFFD}]52;c;ZXZpbA=="), "{block:?}");
+    assert!(block.contains("  \tlet s"), "tabs stay: {block:?}");
+    assert!(block.starts_with("  ```rust\n"), "{block:?}");
+    assert!(block.ends_with("\n  ```\n"), "{block:?}");
+}
+
+#[test]
+fn a_window_is_charged_as_rendered_after_sanitizing() {
+    let mut item = source_item();
+    item.window = Some("let a = 1;\u{1b}[8m\r\nlet b = 2;\n".to_string());
+
+    let rendered = render_source_entry(&item) + &render_source_window(&item);
+
+    assert!(
+        !rendered.contains('\u{1b}') && !rendered.contains('\r'),
+        "{rendered:?}"
+    );
+    assert_eq!(rendered_item_tokens(&item), estimate_tokens(&rendered));
+}
+
+#[test]
+fn the_literal_text_line_neutralizes_line_and_bidi_controls() {
+    let hint =
+        TextSearchHint::for_pattern("a\u{2028}b\u{2029}c\u{202A}d\u{202E}e\u{2066}f\u{2069}g\nh");
+
+    let line = render_literal_text_line(&hint);
+
+    assert_eq!(
+        line,
+        "Literal text: the graph does not index bodies; run `rg -n -F -- 'a b c d e f g h'`"
+    );
 }

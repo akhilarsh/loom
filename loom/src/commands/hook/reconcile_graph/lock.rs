@@ -40,15 +40,19 @@
 //! | `pid == 0`, younger than [`backoff_secs`]           | Skip     | throttled, doubling per failed run |
 //! | `pid == 0`, [`backoff_secs`] or older               | Spawn    | throttle window elapsed |
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::context::store::ContextStore;
 use crate::fs::locking::{atomic_write_locked, locked_dir_update};
+use crate::fs::safe_read::read_to_string_bounded;
 
 /// File name of the lease, inside the context cache directory.
 const LOCK_FILE: &str = "reconcile.lock";
+
+/// The most bytes `read_lock` reads: the line is four small integers, and the
+/// directory it lives in is writable by a sandboxed session.
+const MAX_LOCK_BYTES: usize = 256;
 
 /// Failures beyond this many stop doubling the debounce.
 const MAX_BACKOFF_DOUBLINGS: u32 = 5;
@@ -167,12 +171,16 @@ pub(super) fn decide(
 }
 
 /// Parse the lock line from `lock_path`. `None` for a missing, unreadable, or
-/// malformed file - all of which [`decide`] treats as "no lock".
+/// malformed file - all of which [`decide`] treats as "no lock" - and for one
+/// that is not a plain small file: a symlink, a FIFO or an oversized file is
+/// refused rather than followed or waited on.
 ///
 /// Readers need no lock: every write is an atomic rename, so the file they
 /// open is always a complete line.
 pub(super) fn read_lock(lock_path: &Path) -> Option<LockState> {
-    LockState::parse(&fs::read_to_string(lock_path).ok()?)
+    let dir = lock_path.parent()?;
+    let name = lock_path.file_name()?;
+    LockState::parse(&read_to_string_bounded(dir, Path::new(name), MAX_LOCK_BYTES).ok()?)
 }
 
 /// Read-modify-write the lock line under the cache directory's exclusive lock.
@@ -322,6 +330,10 @@ pub(super) fn unix_now() -> u64 {
 #[cfg(test)]
 #[path = "tests_lock.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests_read_lock.rs"]
+mod tests_read_lock;
 
 #[cfg(test)]
 #[path = "tests_rebind.rs"]

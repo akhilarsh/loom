@@ -20,27 +20,37 @@
 //!
 //! **Rules**, in order, for a call or reference (the first that decides wins):
 //!
-//! 1. *Qualified spelling* (`a::b::n`, `A.B.n`): matched against node scopes,
-//!    longest first; failing that, the qualifier is mapped onto module files by
-//!    the dialect's path conventions and `n` is looked up inside them. A
-//!    qualifier naming nothing here is a call into a dependency and stays a gap
-//!    unless an import binds its first segment (rule 4).
+//! 1. *Qualified spelling* (`a::b::n`, `A.B.n`): when an import binds the
+//!    first segment, rule 4 decides first, and an import of a module outside
+//!    the graph (`use std::io::Error;`) leaves the call a gap. Otherwise the
+//!    spelling is matched against node scopes, longest first, dropping only
+//!    leading segments that name something here (`crate::a::` does,
+//!    `std::io::` does not); failing that, the qualifier is mapped onto module
+//!    files by the dialect's path conventions and `n` is looked up inside them.
+//!    A qualifier naming nothing here is a call into a dependency and stays a
+//!    gap.
 //! 2. *Other receiver* (`obj.m()`, `ns.m()`): when the receiver is an import's
 //!    local name, `m` is looked up in the files the import names; when it names
 //!    a type a glob import brings into scope (`Strings.clean()` under
 //!    `import app.util.*;`), `Strings::clean` is looked up in the glob's files.
 //!    Any other receiver is a value of unknown type and is never bound.
 //! 3. *Self receiver* (`self.m()`, `this.m()`): the members named `m` of the
-//!    enclosing type, wherever its parts are declared, else of the traits it
-//!    uses (PHP `use Loggable;`).
+//!    enclosing type, else of the traits it uses (PHP `use Loggable;`). Only a
+//!    dialect declaring one type across files looks beyond the edge's file:
+//!    Rust `impl` blocks (same crate), C# `partial` classes (same namespace),
+//!    Ruby reopened classes and C++ out-of-line definitions.
 //! 4. *Named or aliased import*: the imported name in the files the import
 //!    names, following a re-export (`from .pricing import total as
-//!    compute_total` in a package `__init__.py`) when those files only import
-//!    it.
+//!    compute_total` in a package `__init__.py`, `export { largest as biggest }
+//!    from "./shapes"`) when those files only import it.
 //! 5. *Package scope*: the other files of the edge's Go or Java package
 //!    directory, or of its C# or PHP namespace.
 //! 6. *Glob imports*: the files of every glob import that resolves.
 //! 7. *Unique name*: the only definition of the name in the family.
+//!
+//! Rules 5 to 7 skip every member of a type when the edge's dialect has
+//! `bare_calls_reach_members == false`, as extraction does: a bare `run()` in
+//! Go or Rust is never the method `Widget::run`.
 //!
 //! A call never lands on a file node, and a type listed beside its own
 //! constructor yields to it: `new Widget(..)` runs `Widget::Widget`.
@@ -155,8 +165,12 @@ pub fn resolve_graph_recording(graph: &mut ResolvedGraph) -> (ResolutionStats, E
 /// trait uses), never on another edge's outcome, so resolving a subset gives
 /// those edges exactly what a full resolution would.
 pub fn resolve_edges(graph: &mut ResolvedGraph, edges: &BTreeSet<EdgeRef>) -> EdgeKeys {
-    let resolutions = resolve_selected(graph, edges);
     let mut consulted = EdgeKeys::new();
+    if edges.is_empty() {
+        // Nothing to decide: skip building the whole-graph indexes.
+        return consulted;
+    }
+    let resolutions = resolve_selected(graph, edges);
     for (edge_ref, Resolution { outcome, keys }) in resolutions {
         let entry = graph.files.get_mut(&edge_ref.path);
         if let Some(edge) = entry.and_then(|entry| entry.edges.get_mut(edge_ref.index)) {
@@ -256,3 +270,15 @@ mod tests_candidates;
 #[cfg(test)]
 #[path = "resolve/tests_scope.rs"]
 mod tests_scope;
+
+#[cfg(test)]
+#[path = "resolve/tests_members.rs"]
+mod tests_members;
+
+#[cfg(test)]
+#[path = "resolve/tests_qualifiers.rs"]
+mod tests_qualifiers;
+
+#[cfg(test)]
+#[path = "resolve/tests_reexports.rs"]
+mod tests_reexports;

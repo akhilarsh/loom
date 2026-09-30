@@ -169,6 +169,7 @@ pub struct ImportBinding {
     pub path: String,            // module spec as written, quotes stripped
     pub name: Option<String>,    // imported member (`parse` in `import { parse as p }`); None = whole module/namespace
     pub alias: Option<String>,   // local alias (`p`); None = bound under `name` (or the module's last segment)
+    pub exported_as: Option<String>, // name a re-export exports under: `b` in `export { a as b } from "x"`, `ns` in `export * as ns from "x"`; None otherwise
     pub glob: bool,              // `use x::*`, `from x import *`, `import a.b.*`, `using A.B;`, `#include`, `require`
     pub site: Span,
 }
@@ -182,6 +183,7 @@ impl ImportBinding { pub fn local_name(&self) -> Option<&str> } // alias, else n
   in `a.b.f()` matches the binding (resolver rule 2).
 - A side-effect import binds no local name and gives alias `Some("")`: TS `import "x"`,
   a statement-level `require("x")`, Go `import _ "p"`.
+- A re-export binds no local name (alias `Some("")`) and records the name it exports in `exported_as` (`#[serde(default, skip_serializing_if = "Option::is_none")]`).
 - Go `import . "p"` is a glob.
 - `path` is a lossless module spec: two statements that resolve differently never
   share a spec. C/C++ `#include <x>` keeps its leading `<` (path `<x>`, external).
@@ -213,6 +215,7 @@ impl ImportBinding { pub fn local_name(&self) -> Option<&str> } // alias, else n
   ambiguous (section 6).
 - `@` is the delimiter because `render.rs::parse_source_identity` and
   `pack/twins.rs::tier1_twin` split ids on `#` and `:`. Line numbers never enter an id.
+- A Go method `func (w *Widget) run()` (receiver `T`, `*T`, `T[P]` or `*T[P]`) has scope `[Widget, run]` and id `<file>#function:Widget::run`, with no parent node; the receiver type is captured as `@definition.qualifier`, as for a C++ out-of-line `void W::run()`. Every Go `type_spec` and `type_alias` declares a `Type` node — `type stack []int`, `type celsius float64` and `type Widget struct{}` alike — except one whose type is an interface literal, which declares an `Interface`; so every method's receiver type has a node.
 
 ## 5. Dialect registry and grammar packs
 
@@ -364,15 +367,16 @@ These are handled in `extract/treesitter/collect.rs`.
 | --- | --- |
 | `@import.statement` | the whole import statement. Its text and the `@import.path` text go to `QueryHarness::import_bindings(statement, path, site) -> Vec<ImportBinding>` (default: one binding `{path, name: None, alias: None, glob: false}`) |
 | `@call.receiver` | in the same match as `@call.name`: the receiver expression of a member call |
-| `@reference.name` | a non-call use that becomes a `References` edge (JSX element names; nothing else in this plan) |
+| `@reference.name` | a non-call use that becomes a `References` edge (JSX element names, PHP trait `use` names, and C/C++ function prototypes that sit directly under the translation unit, a declaration list, a linkage specification or a preprocessor block (C++ also a template or friend declaration)) |
 | `@definition.qualifier` | in the same match as a `@definition.*`: a qualifier written on the definition itself (`W` in C++ `void W::run() {}`, `A` in Ruby `class A::B`). Its text, split on `::` and `.` after `normalize_call`-style cleanup, is inserted into the scope before the definition's own name |
 
-`QueryHarness` gains two methods:
+`QueryHarness` gains three methods:
 
 - `fn import_bindings(&self, statement: &str, path: &str, site: Span) -> Vec<ImportBinding>`,
   with the default above;
 - `fn self_receivers(&self) -> &'static [&'static str]`, defaulting to the dialect's
-  `self_receivers` column (section 5.1).
+  `self_receivers` column (section 5.1);
+- `fn top_level_self(&self) -> bool`, default `false`, overridden to `true` by Ruby alone (a top-level `self` is the `main` object).
 
 ### 6.2 Local binding rules
 
@@ -387,7 +391,7 @@ deduplicated, in source order.
    minus its last segment (C++ `void W::run() { this->m(); }` gives `W`). If `T::name`
    has exactly one id in the file, bind it with `Receiver`. Otherwise emit `Syntax`
    with the receiver kept, and with candidates when two or more ids exist. When
-   neither yields a `T`, apply rule 3.
+   neither yields a `T`, emit `Syntax` with the receiver kept and no candidates, as for any other receiver (rule 2): Python module-level `def attach(self): self.run()` and JS `function Widget() { this.render(); }` bind nothing. The one exception is a harness whose `top_level_self()` is true, which is Ruby alone: a top-level `self` is the `main` object, whose methods are the file's top-level `def`s, so there the call follows rule 3.
 2. **Other member call** (`obj.m()`, `ns.m()`). Never bound at extraction. Emit
    `Syntax` with `receiver` kept; the resolver decides.
 3. **Plain or qualified call** (`f()`, `Widget::new()`).
@@ -395,6 +399,12 @@ deduplicated, in source order.
      non-glob `ImportBinding` of the file, emit `Syntax` unresolved with no
      candidates. The resolver's rule 4 decides; it never revisits an edge that has
      candidates.
+   - Owner carried only by impls: when a qualified spelling's owner (the segment
+     before the name) answers in the file only to `Implementation` ids, emit `Syntax`
+     unresolved with no candidates; the resolver's rule 1 decides with the whole
+     graph. An `impl` does not define its type: `String::from("hi")` beside `impl
+     From<Name> for String` is not bound, while `struct Widget` + `impl Widget { fn
+     new() }` + `Widget::new()` binds `LocalName`.
    - Look up the spelling. None: emit `Syntax` unresolved.
    - Scope eligibility applies before counting, also for a single id: the spelling
      map answers a bare `helper` for a nested `hidden::helper`, so a hit alone proves
@@ -408,7 +418,7 @@ deduplicated, in source order.
 
    Rules 3 and 4 for a spelling with no qualifier: when the file's dialect has
    `bare_calls_reach_members == false`, drop every id whose innermost enclosing
-   definition is a `Type`, `Implementation` or `Interface` before counting. In Rust,
+   definition is a `Type`, `Implementation` or `Interface`, or that is a function carrying a `@definition.qualifier` (a Go method), before counting. In Rust,
    `impl W { fn parse(&self) {} fn load(&self) { parse(); } }` gives a `Syntax` edge
    to `UNRESOLVED_TARGET` with no candidates. Qualified spellings (`W::parse()`) keep
    members.
@@ -451,31 +461,39 @@ Indexes are keyed by `(family, name)`:
 Rules run in order for each unresolved `Calls`/`References` edge in file `F`, with
 family `fam`:
 
-1. **Qualified spelling** (`a::b::n`, `A.B.n` after normalisation). Match the spelling
-   against node scopes, longest first. Failing that, map the qualifier to module files
-   through the dialect's path conventions and look up `n` inside them. Exactly one hit
-   binds with `Import`. A qualifier naming nothing in the graph stays a gap, as today.
+1. **Qualified spelling** (`a::b::n`, `A.B.n` after normalisation). When the first segment is the `local_name()` of a non-glob binding in `F.imports`, rule 4 decides first. If the module resolves to no file (external), the edge stays unresolved with no candidates. If the files do not define the rest, the edge is handed on. Then match the spelling against node scopes, longest first. A leading segment may be dropped only when the dropped part names something in the graph: a Rust root (`crate`, `self`, `super`), the empty global segment, or a module path the dialect conventions map to files. Failing that, map the qualifier to module files through the dialect's path conventions and look up `n` inside them. Exactly one hit binds with `Import`, unless the matched spelling's owner (the segment before `n`) is carried in `fam` only by `Implementation` nodes: then the hits become candidates and nothing binds, and the edge records `name:{fam}:{owner}`. An `impl` block does not define its type, so `String::from` never binds the `from` of a local `impl From<Name> for String`. A qualifier naming nothing in the graph stays a gap: `std::io::Error::new()` never binds a local `Error::new`.
 2. **Receiver not in `self_receivers`.**
    - If it is the local name of a whole-module binding (`name == None`, not glob) in
      `F.imports`, resolve the module to files and look up the member. Exactly one hit
      binds with `Import`.
    - Otherwise it is a dynamic receiver: never bind. Record same-family candidates
      named like the member (at most 8, else none).
-3. **Self receiver** (`self.m()` where the enclosing type `T` is defined across files:
-   Rust `impl` blocks, C# `partial`, Ruby reopened classes). Take the definitions
-   whose scope ends in `T::m` within the family. Exactly one binds with `Receiver`;
-   two or more become candidates.
+3. **Self receiver** (`self.m()`). Take the definitions whose scope ends in `T::m`
+   within the family, in the files that may hold part of `T`:
+   - Rust `impl` blocks: within one crate, meaning the same deepest crate-root
+     directory.
+   - C# `partial` classes: within one namespace, meaning files sharing a declared
+     namespace, or both declaring none.
+   - Ruby reopened classes and C++ out-of-line definitions: anywhere.
+   - Every other dialect: only `F` itself, and only definitions whose scope is exactly `T`'s whole scope plus `m`, so an inherited member stays unbound and a nested namesake (`A.Meta` beside `B.Meta`) is never `T`.
+
+   Exactly one binds with `Receiver`; two or more become candidates. Failing that,
+   the traits a PHP type uses (`References` edges from the type node) are searched
+   across files. No other dialect reads those edges as trait uses. With no member
+   found, same-family definitions named `m` become candidates.
    - The self receivers come from the from-node's dialect
      (`dialect_for_path(path).self_receivers`).
    - `T` is the innermost proper prefix of the from-node's scope that names a `Type`,
-     `Implementation` or `Interface` node in the same file. Candidates match on that
-     node's own last name segment, so `impl Widget` at top level in one file matches
-     `example::Widget` in an inline module of another.
+     `Implementation` or `Interface` node in the same file. In a dialect that splits
+     types across files, candidates match on that node's own last name segment, so
+     `impl Widget` at top level in one file matches `example::Widget` in an inline
+     module of another file of the same crate; every other dialect matches `T`'s whole
+     scope.
 4. **Named or aliased import.** `F.imports` has a binding whose `local_name()` equals
    the called name. Resolve `binding.path` to module files and look up
    `binding.name.unwrap_or(called name)`. Exactly one binds with `Import`. If the
    module does not resolve to any file, it is external: leave the edge unresolved and
-   **refuse** rules 6 and 7.
+   **refuse** rules 6 and 7. When the module files define nothing named `n`, a non-glob binding in those files whose `local_name()` or `exported_as` equals `n` is followed (at most 4 hops). A member looked up through an imported item matches `item::m` only; the bare `m` is tried only for a Rust binding whose files are `item.rs` or `item/mod.rs`.
 5. **Package or namespace scope.** Look up the name among the files of `F`'s package:
    the same directory for Go and Java, the same declared namespace for C# and PHP.
    Exactly one binds with `Import`.
@@ -484,6 +502,8 @@ family `fam`:
    resolve (external), refuse rule 7.
 7. **Unique name.** Exactly one definition of the name in `fam`, and no refusal fired:
    bind with `UniqueName`. Two to eight definitions become `candidates`.
+
+Rules 5, 6 and 7, and the candidates a refusal records, drop every member definition when the edge's dialect has `bare_calls_reach_members == false`, as extraction does (6.2 rule 3). A definition is a member when its owner scope (its scope minus its last segment) is the scope of a same-family `Type`, `Implementation` or `Interface` node in any file, or when such a node contains it, or when it is a Go function scoped under an owner (a method, whether or not the graph holds its receiver type's node). So a bare Go `run()` never binds the method `Widget::run`, and a Rust bare `parse()` never binds `W::parse` by unique name. The edge records `name:{family}:{owner}` for each owner consulted.
 
 A refused edge (rule 4 or 6 refusing rule 7) still records one to eight same-family
 candidates named like the call, as rule 2 does, so impact recall survives an external
@@ -549,9 +569,9 @@ matches.
 
 | Dialect | Module spec to candidate files |
 | --- | --- |
-| rust | `crate::`, `self::`, `super::` anchored as today. A non-anchored path (`x::y`) is internal only when its first segment names a module file (`<seg>.rs`, `<seg>/mod.rs`) or directory under a crate root (a directory holding `lib.rs` or `main.rs`) or under the citing module's directory; otherwise `module_files` returns empty and the import is external (`use serde::de::*` never matches a local `de.rs`) |
+| rust | `crate::`, `self::`, `super::` anchored as today. A non-anchored path (`x::y`) is internal only when its first segment names a module file (`<seg>.rs`, `<seg>/mod.rs`) or directory under the citing file's own crate root (the deepest directory holding `lib.rs` or `main.rs` that contains the file) or under the citing module's directory; otherwise `module_files` returns empty and the import is external (`use serde::de::*` never matches a local `de.rs`). In a workspace `use log::info;` in one crate never matches another crate's `log.rs`. |
 | typescript, tsx, javascript | Relative `./x`, `../x` are resolved against the importing file's directory, then `x`, `x.ts`, `x.tsx`, `x.js`, `x.jsx`, `x.mjs`, `x.cjs`, `x/index.{ts,tsx,js,jsx}`. Bare specifiers (`react`) are external |
-| python | Dotted `a.b` becomes `a/b.py` or `a/b/__init__.py` (suffix match). Relative `.x`/`..x` resolve against the importing package |
+| python | Dotted `a.b` becomes `a/b.py` or `a/b/__init__.py` (suffix match). Relative `.x`/`..x` resolve against the importing package. A one-segment spec is suffix-matched anywhere, so a stdlib or third-party module sharing a project file's name is taken for that file. |
 | go | Import path suffix matched against directories; candidates are every `.go` file in the matched directory |
 | java | `a.b.C` becomes `a/b/C.java` (suffix match); `a.b.*` becomes every `.java` in `a/b/` |
 | csharp | `using A.B;` becomes the files declaring namespace `A.B` (namespace index); `using X = A.B.C;` is an alias binding |

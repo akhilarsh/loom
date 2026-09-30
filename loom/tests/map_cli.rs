@@ -218,3 +218,63 @@ fn unknown_language_is_rejected_before_any_work() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("valid languages"));
 }
+
+#[test]
+fn window_refuses_ids_the_graph_does_not_name() {
+    let repo = repo(&[("src/lib.rs", LIB_RS)]);
+    // The local overlay indexes untracked files, so the file inside the root is
+    // git-ignored to keep it out of the graph.
+    fs::write(repo.path().join(".gitignore"), "notes.txt\n").expect("write .gitignore");
+    fs::write(repo.path().join("notes.txt"), "private\n").expect("write ignored file");
+
+    // An absolute path outside the root, and a file inside the root that the
+    // graph never indexed.
+    for id in ["/etc/hostname@0-5", "notes.txt@0-5"] {
+        let output = run_map(repo.path(), &["--window", id]);
+
+        assert_eq!(output.status.code(), Some(2), "{id}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unknown id"),
+            "{id}: {output:?}"
+        );
+        assert!(output.stdout.is_empty(), "{id}: {output:?}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn timings_report_a_positive_peak_rss() {
+    let repo = repo(&[("src/lib.rs", LIB_RS)]);
+    let args = ["--find-all", "target", "--json", "--timings"];
+
+    let json = map_json(repo.path(), &args);
+
+    let peak = json["timings"]["peak_rss_kb"].as_u64();
+    assert!(peak.is_some_and(|kb| kb > 0), "{json:#}");
+}
+
+#[test]
+fn census_of_another_root_takes_no_snapshot_of_this_project() {
+    let project = repo(&[("src/lib.rs", LIB_RS)]);
+    let other = repo(&[("b.rs", "pub fn b() {}\n")]);
+    let other_root = other.path().to_str().expect("utf-8 temp path");
+    let cache = project.path().join(".loom/cache/context-v1");
+
+    let alone = map_json(
+        project.path(),
+        &["--census", "--root", other_root, "--json"],
+    );
+
+    let roots = alone["roots"].as_array().expect("roots array");
+    assert_eq!(roots.len(), 1, "{alone:#}");
+    assert_eq!(roots[0]["coverage_source"], "in-memory", "{alone:#}");
+    assert!(
+        !cache.exists(),
+        "a snapshot of the current project was taken"
+    );
+
+    // Control: a census that includes this project reads its graph.
+    let own = map_json(project.path(), &["--census", "--json"]);
+    assert_eq!(own["roots"][0]["coverage_source"], "graph", "{own:#}");
+    assert!(cache.exists());
+}

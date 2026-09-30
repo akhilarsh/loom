@@ -32,7 +32,8 @@ pub(super) struct Removed {
 
 impl ViewFilters {
     /// `path` is normalized to forward slashes without a leading `./` or a
-    /// trailing `/`; an empty prefix filters nothing.
+    /// trailing `/`; an empty prefix, or a bare `.` (the project root), filters
+    /// nothing.
     pub fn new(path: Option<String>, lang: Option<String>) -> Self {
         let path = path
             .map(|raw| {
@@ -40,7 +41,7 @@ impl ViewFilters {
                 let trimmed = slashed.strip_prefix("./").unwrap_or(&slashed);
                 trimmed.trim_end_matches('/').to_string()
             })
-            .filter(|prefix| !prefix.is_empty());
+            .filter(|prefix| !prefix.is_empty() && prefix != ".");
         Self {
             path,
             lang: lang.map(|name| name.to_ascii_lowercase()),
@@ -145,4 +146,28 @@ pub fn parse_provenance(value: &str) -> Result<EdgeProvenance, String> {
                 valid.join(", ")
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_dot_is_the_project_root_and_filters_nothing() {
+        for raw in [".", "./", "./.", "", "/"] {
+            let filters = ViewFilters::new(Some(raw.to_string()), None);
+            let mut removed = Removed::default();
+
+            assert_eq!(filters.path_prefix(), None, "{raw:?}");
+            assert!(filters.admit("src/a.rs", "rust", &mut removed), "{raw:?}");
+            assert_eq!(removed, Removed::default(), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn a_dotted_directory_name_is_still_a_prefix() {
+        let filters = ViewFilters::new(Some("./.github/".to_string()), None);
+
+        assert_eq!(filters.path_prefix(), Some(".github"));
+    }
 }

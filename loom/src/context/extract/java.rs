@@ -89,7 +89,7 @@ impl QueryHarness for JavaExtractor {
             dialect: "java",
             grammar_version: "0.23.5",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 1,
+            extractor_version: 2,
         }
     }
 
@@ -117,6 +117,7 @@ impl QueryHarness for JavaExtractor {
             name,
             alias: None,
             glob,
+            exported_as: None,
             site,
         }]
     }

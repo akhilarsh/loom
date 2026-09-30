@@ -2,6 +2,7 @@
 //! and `replace_base` overwrites them in place.
 
 use super::*;
+use crate::context::source_graph::GRAPH_SCHEMA_VERSION;
 use tempfile::TempDir;
 
 fn store(temp: &TempDir) -> GraphStore {

@@ -7,8 +7,8 @@ use std::{
 };
 
 use super::source_graph::{
-    clean_generation, reconcile_with_working_tree, replace_base_with_working_tree, working_tree,
-    WorkingTree,
+    clean_generation, reconcile_with_working_tree, replace_base_with_working_tree,
+    try_mark_semantic_stale, working_tree, WorkingTree,
 };
 use super::{SourceGraphCounters, SourceGraphOutcome, SourceGraphScope};
 use crate::context::extract;
@@ -51,26 +51,31 @@ pub struct SnapshotOutcome {
     pub overlay: Option<(String, String)>,
     pub counters: SourceGraphCounters,
     pub elapsed: Duration,
-    /// False when a read-only cache made `GraphStore` serve the layer from
-    /// memory for this process only.
+    /// False when a read-only cache kept part of the refresh off the disk: the
+    /// `state.json` write was refused, or `GraphStore` serves a layer or a
+    /// resolved view from memory for this process only.
     pub persisted: bool,
     /// The older base a failed build fell back to; `revision` then names it.
     pub serving: Option<String>,
 }
 
 mod describe;
+mod materialize;
 mod state;
 
-/// Whether a layer entry was stamped by the extractor now registered for its
-/// path; `worktree_graph` reaches the check through here.
-pub(crate) use super::source_graph::parser_version_matches;
+/// Whether a layer entry, or every entry of a layer, was stamped by the
+/// extractor now registered for its path; `worktree_graph` and the resolved
+/// view reach the checks through here.
+pub(crate) use super::source_graph::{entries_are_current, parser_version_matches};
 
 /// Ensure the policy-selected graph layer without making callers repeat its decision tree.
 ///
 /// Every failure - inspecting the working tree, building a layer, or
 /// persisting it - is reported as `SnapshotAction::Unavailable` with the
 /// full cause chain in `reason`. A failed build over a known HEAD serves the
-/// newest older base instead (`SnapshotOutcome::serving`).
+/// newest older base instead (`SnapshotOutcome::serving`). A write the cache
+/// denies is no failure: the layer serves this process from memory, and the
+/// outcome keeps its action with `persisted` false.
 pub fn ensure_snapshot(
     store: &ContextStore,
     graph_store: &GraphStore,
@@ -82,7 +87,7 @@ pub fn ensure_snapshot(
         Ok(tree) => tree,
         Err(error) => {
             let reason = format!("failed to inspect the working tree: {error:#}");
-            let _ = super::mark_semantic_stale(store, &reason);
+            try_mark_semantic_stale(store, &reason);
             return unavailable(reason, started.elapsed());
         }
     };
@@ -101,53 +106,15 @@ pub fn ensure_snapshot(
         Ok(outcome) => outcome,
         Err(error) => {
             let reason = format!("{error:#}");
-            let _ = super::mark_semantic_stale(store, &reason);
+            try_mark_semantic_stale(store, &reason);
             unavailable_with_tree(&tree, reason)
         }
     };
     let mut outcome = state::serve_stale_base(graph_store, outcome);
-    materialize_views(graph_store, &mut outcome);
-    outcome.persisted = !graph_store.fell_back();
+    materialize::materialize_views(graph_store, &mut outcome);
+    outcome.persisted &= !graph_store.fell_back();
     outcome.elapsed = started.elapsed();
     outcome
-}
-
-/// Persist the resolved views readers of `outcome` will ask for, and keep the
-/// one they ask for in `graph_store`, so a `loom map` process parses at most
-/// one view file. A current view on disk is left unread. Advisory: a failure
-/// is added to the reason, never turned into an unavailable snapshot.
-fn materialize_views(graph_store: &GraphStore, outcome: &mut SnapshotOutcome) {
-    let servable = outcome.action != SnapshotAction::Unavailable || outcome.serving.is_some();
-    if outcome.revision.is_empty() || !servable {
-        return;
-    }
-    if let Err(error) = try_materialize(graph_store, outcome) {
-        outcome.reason = format!(
-            "{}; resolved view not materialized: {error:#}",
-            outcome.reason
-        );
-    }
-}
-
-fn try_materialize(graph_store: &GraphStore, outcome: &SnapshotOutcome) -> Result<()> {
-    let revision = outcome.revision.as_str();
-    materialize(graph_store, revision, None)?;
-    let Some((plan, stage)) = &outcome.overlay else {
-        return Ok(());
-    };
-    if outcome.action != SnapshotAction::Reused {
-        // The overlay view was resolved over the layers this snapshot rewrote.
-        graph_store.discard_overlay_view(plan, stage);
-    }
-    materialize(graph_store, revision, Some((plan.as_str(), stage.as_str())))
-}
-
-/// Build, persist and keep the view for the next reader unless one is current.
-fn materialize(graph_store: &GraphStore, rev: &str, overlay: Option<(&str, &str)>) -> Result<()> {
-    if !graph_store.has_current_view(rev, overlay)? {
-        graph_store.cache_view(graph_store.view(rev, overlay)?, overlay);
-    }
-    Ok(())
 }
 
 fn ensure_base_only(
@@ -269,6 +236,7 @@ fn ensure_local_overlay(
     let mut outcome = reconcile_overlay(store, graph_store, project_root, tree, &plan, &stage)?;
     if let Some(base) = base {
         outcome.counters.accumulate(base.counters);
+        outcome.state_persisted &= base.state_persisted;
     }
     from_reconcile(tree, overlay, outcome, "local overlay refreshed")
 }
@@ -310,14 +278,7 @@ fn overlay_is_current(
 /// and every entry's parser version matches the extractor that would parse it
 /// now ([`parser_version_matches`]).
 fn layer_is_current(layer: &GraphLayer) -> bool {
-    if !layer.has_current_schema() {
-        return false;
-    }
-    let extractors = extract::registry();
-    layer
-        .files
-        .iter()
-        .all(|(path, entry)| parser_version_matches(entry, &extractors, Path::new(path)))
+    layer.has_current_schema() && entries_are_current(&layer.files, &extract::registry())
 }
 
 fn from_reconcile(
@@ -346,7 +307,7 @@ fn from_reconcile(
         overlay,
         counters: outcome.counters,
         elapsed: Duration::ZERO,
-        persisted: true,
+        persisted: outcome.state_persisted,
         serving: None,
     })
 }

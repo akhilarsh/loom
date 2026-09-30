@@ -21,3 +21,7 @@ pub fn parse_id(raw: &str) -> Option<u32> {
     let trimmed = raw.trim();
     trimmed.parse().ok()
 }
+
+pub fn title(raw: &str) -> String {
+    String::from(raw)
+}
