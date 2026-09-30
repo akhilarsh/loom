@@ -16,11 +16,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use crate::context::extract::{self, extract_file};
-use crate::context::graph_store::{FileEntry, GraphStore, ResolvedGraph};
+use crate::context::extract::{self, extract_file, extractor_for, Lookup};
+use crate::context::graph_store::{FileEntry, GraphLayer, GraphStore, ResolvedGraph};
+use crate::context::refresh::snapshot::parser_version_matches;
 use crate::context::refresh::BoxedExtractor;
 use crate::context::resolve_graph;
-use crate::context::source_graph::{body_hash, FileCoverage, MAX_EXTRACTED_FILE_BYTES};
+use crate::context::source_graph::{FileCoverage, MAX_EXTRACTED_FILE_BYTES};
 use crate::context::store::CACHE_RELATIVE_DIR;
 use crate::fs::safe_read::read_bounded;
 use crate::fs::work_dir::WorkDir;
@@ -88,20 +89,12 @@ pub fn build_worktree_graph(
     changed: &[PathBuf],
 ) -> Result<WorktreeGraph> {
     let extractors = extract::registry();
-    let (mut graph, degraded) = match read_only_store(project_root)?.load_base(base_revision)? {
-        Some(layer) => {
-            let mut graph = ResolvedGraph {
-                base_revision: layer.revision,
-                overlaid: BTreeSet::new(),
-                files: layer.files,
-            };
-            for path in changed {
-                if let Some(key) = apply_file(&mut graph.files, worktree, path, &extractors) {
-                    graph.overlaid.insert(key);
-                }
-            }
-            (graph, None)
-        }
+    // A base written under another schema counts as missing.
+    let base = read_only_store(project_root)?
+        .load_base(base_revision)?
+        .filter(GraphLayer::has_current_schema);
+    let (mut graph, degraded) = match base {
+        Some(layer) => (layered_graph(layer, worktree, changed, &extractors), None),
         None => {
             let graph = from_scratch(worktree, working_dir, &extractors)?;
             let reason = format!(
@@ -119,6 +112,37 @@ pub fn build_worktree_graph(
         degraded,
         changed: changed.to_vec(),
     })
+}
+
+/// `layer` with every path in `changed` re-extracted from `worktree`, each
+/// path that was re-extracted recorded as overlaid.
+fn layered_graph(
+    layer: GraphLayer,
+    worktree: &Path,
+    changed: &[PathBuf],
+    extractors: &[BoxedExtractor],
+) -> ResolvedGraph {
+    let mut graph = ResolvedGraph {
+        base_revision: layer.revision,
+        overlaid: BTreeSet::new(),
+        files: layer.files,
+    };
+    // An entry stamped by an extractor other than the current one is stale
+    // even when its file did not change: re-extract it.
+    let mut to_extract: BTreeSet<PathBuf> = changed.iter().cloned().collect();
+    to_extract.extend(
+        graph
+            .files
+            .iter()
+            .filter(|(path, entry)| !parser_version_matches(entry, extractors, Path::new(path)))
+            .map(|(path, _)| PathBuf::from(path)),
+    );
+    for path in &to_extract {
+        if let Some(key) = apply_file(&mut graph.files, worktree, path, extractors) {
+            graph.overlaid.insert(key);
+        }
+    }
+    graph
 }
 
 /// A store over `project_root`'s shared cache. Constructing one touches
@@ -213,7 +237,7 @@ fn from_scratch(
     for path in nul_separated(&listing)
         .filter(|path| !is_worktree_scaffold_path(path))
         .map(Path::new)
-        .filter(|path| extractors.iter().any(|extractor| extractor.supports(path)))
+        .filter(|path| matches!(extractor_for(extractors, path), Lookup::Extractor(_)))
     {
         apply_file(&mut graph.files, worktree, path, extractors);
     }
@@ -259,13 +283,7 @@ fn read_source(worktree: &Path, path: &Path) -> Result<Option<Vec<u8>>> {
 }
 
 fn extracted_entry(extractors: &[BoxedExtractor], path: &Path, bytes: &[u8]) -> FileEntry {
-    let extraction = extract_file(extractors, path, bytes);
-    FileEntry {
-        content_hash: body_hash(bytes),
-        nodes: extraction.nodes,
-        edges: extraction.edges,
-        coverage: extraction.coverage,
-    }
+    FileEntry::from_extraction(bytes, extract_file(extractors, path, bytes))
 }
 
 /// A file that could not be read keeps an entry naming why, the shape the

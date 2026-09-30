@@ -3,8 +3,10 @@
 //! parser-version staleness.
 
 use super::*;
-use crate::context::refresh::BoxedExtractor;
+use crate::context::extract::dialect::GrammarPack;
+use crate::context::refresh::{ensure_snapshot, BoxedExtractor, SnapshotAction, SnapshotPolicy};
 use crate::context::source_graph::body_hash;
+use serial_test::serial;
 
 #[test]
 fn an_unchanged_overlay_rerun_writes_no_bytes() {
@@ -230,16 +232,19 @@ fn a_node_from_a_now_missing_extractor_is_still_treated_as_stale() {
     );
 }
 
+/// The parser version the registered extractor claiming `path` stamps today.
+fn current_version(extractors: &[BoxedExtractor], path: &Path) -> String {
+    match extract::extractor_for(extractors, path) {
+        extract::Lookup::Extractor(extractor) => extractor.cache_identity().to_parser_version(),
+        _ => panic!("the rust extractor must claim a .rs path"),
+    }
+}
+
 #[test]
 fn a_matching_version_from_a_present_extractor_is_current() {
     let path = Path::new("src.rs");
     let extractors = extract::registry();
-    let current_version = extractors
-        .iter()
-        .find(|extractor| extractor.supports(path))
-        .expect("the rust extractor must claim a .rs path")
-        .cache_identity()
-        .to_parser_version();
+    let current_version = current_version(&extractors, path);
     let entry = entry_with_parser_version(path, &current_version);
 
     assert!(parser_version_matches(&entry, &extractors, path));
@@ -249,12 +254,7 @@ fn a_matching_version_from_a_present_extractor_is_current() {
 fn a_mismatched_version_from_a_present_extractor_is_stale() {
     let path = Path::new("src.rs");
     let extractors = extract::registry();
-    let current_version = extractors
-        .iter()
-        .find(|extractor| extractor.supports(path))
-        .expect("the rust extractor must claim a .rs path")
-        .cache_identity()
-        .to_parser_version();
+    let current_version = current_version(&extractors, path);
     let entry = entry_with_parser_version(path, &format!("{current_version}-stale"));
 
     assert!(!parser_version_matches(&entry, &extractors, path));
@@ -269,5 +269,76 @@ fn an_entry_with_no_nodes_is_always_current() {
         &entry,
         &extractors,
         Path::new("whatever.rs")
+    ));
+}
+
+#[test]
+#[serial]
+fn a_base_holding_a_gap_dialect_file_is_reused() {
+    // Java is a known dialect whose grammar pack is not compiled in yet: its
+    // file node is lexical, stamped like an unknown file, and never stale.
+    if GrammarPack::WaveB.compiled() {
+        return;
+    }
+    let temp = init_repo();
+    let root = temp.path();
+    std::fs::write(root.join("Main.java"), "class Main {}\n").unwrap();
+    git_ok(root, &["add", "Main.java"]);
+    git_ok(root, &["commit", "-m", "add java"]);
+    let (store, graph_store) = stores(&temp);
+
+    let first = ensure_snapshot(&store, &graph_store, root, SnapshotPolicy::BaseOnly);
+    let second = ensure_snapshot(&store, &graph_store, root, SnapshotPolicy::BaseOnly);
+
+    assert_eq!(first.action, SnapshotAction::Rebuilt);
+    assert_eq!(second.action, SnapshotAction::Reused);
+    let base = graph_store.load_base(&first.revision).unwrap().unwrap();
+    let node = &base.files["Main.java"].nodes[0];
+    assert_eq!(
+        node.parser_version,
+        extract::lexical::LEXICAL_PARSER_VERSION
+    );
+}
+
+#[test]
+fn an_oversized_entry_stamped_lexical_stays_current_on_a_claimed_path() {
+    use crate::context::source_graph::MAX_EXTRACTED_FILE_BYTES;
+
+    // `extract_file` stamps an oversized file lexical whatever extractor
+    // claims its path, so the claiming extractor's identity must not judge it.
+    let path = Path::new("big.rs");
+    let entry = FileEntry {
+        coverage: FileCoverage::Oversized {
+            bytes: MAX_EXTRACTED_FILE_BYTES + 1,
+            limit: MAX_EXTRACTED_FILE_BYTES,
+        },
+        ..entry_with_parser_version(path, extract::lexical::LEXICAL_PARSER_VERSION)
+    };
+
+    assert!(parser_version_matches(&entry, &extract::registry(), path));
+}
+
+#[test]
+#[serial]
+fn a_base_holding_an_oversized_file_is_reused() {
+    use crate::context::source_graph::MAX_EXTRACTED_FILE_BYTES;
+
+    let temp = init_repo();
+    let root = temp.path();
+    let oversized = "\n".repeat(MAX_EXTRACTED_FILE_BYTES + 1);
+    std::fs::write(root.join("big.rs"), oversized).unwrap();
+    git_ok(root, &["add", "big.rs"]);
+    git_ok(root, &["commit", "-m", "add oversized"]);
+    let (store, graph_store) = stores(&temp);
+
+    let first = ensure_snapshot(&store, &graph_store, root, SnapshotPolicy::BaseOnly);
+    let second = ensure_snapshot(&store, &graph_store, root, SnapshotPolicy::BaseOnly);
+
+    assert_eq!(first.action, SnapshotAction::Rebuilt, "{first:#?}");
+    assert_eq!(second.action, SnapshotAction::Reused, "{second:#?}");
+    let base = graph_store.load_base(&first.revision).unwrap().unwrap();
+    assert!(matches!(
+        base.files["big.rs"].coverage,
+        FileCoverage::Oversized { .. }
     ));
 }

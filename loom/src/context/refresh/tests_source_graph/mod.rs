@@ -29,6 +29,7 @@ fn entry_with_parser_version(path: &Path, parser_version: &str) -> FileEntry {
         nodes: vec![node],
         edges: Vec::new(),
         coverage: FileCoverage::Full,
+        imports: Vec::new(),
     }
 }
 

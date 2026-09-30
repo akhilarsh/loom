@@ -5,10 +5,10 @@ use std::path::Path;
 use std::time::Instant;
 
 use super::{elapsed_ms, Enumeration, SourceGraphCounters, SourceGraphScope, WorkingTree};
-use crate::context::extract::{self, extract_file};
+use crate::context::extract::{self, extract_file, extractor_for, Lookup};
 use crate::context::graph_store::{FileEntry, GraphLayer, GraphStore};
 use crate::context::refresh::BoxedExtractor;
-use crate::context::source_graph::{body_hash, FileCoverage};
+use crate::context::source_graph::{body_hash, FileCoverage, GRAPH_SCHEMA_VERSION};
 use crate::context::store::canonical_json;
 use crate::fs::safe_read::read_bounded;
 use crate::git::runner::run_git_checked;
@@ -93,6 +93,7 @@ fn assemble_layer(
         built_at: Some(Utc::now()),
         files,
         blob_index: enumeration.known.clone(),
+        schema_version: GRAPH_SCHEMA_VERSION,
     }
 }
 
@@ -139,12 +140,7 @@ fn resolve_file_entry(
     let extraction = extract_file(ctx.extractors, Path::new(path), &bytes);
     counters.parse_ms = counters.parse_ms.saturating_add(elapsed_ms(parse_started));
     counters.files_parsed += 1;
-    FileEntry {
-        content_hash: hash,
-        nodes: extraction.nodes,
-        edges: extraction.edges,
-        coverage: extraction.coverage,
-    }
+    FileEntry::from_extraction(&bytes, extraction)
 }
 
 fn active_paths(
@@ -261,10 +257,11 @@ fn unreadable_entry(error: String) -> FileEntry {
         coverage: FileCoverage::LexicalOnly {
             detail: format!("unreadable: {error}"),
         },
+        imports: Vec::new(),
     }
 }
 
-pub(in super::super) fn parser_version_matches(
+pub(crate) fn parser_version_matches(
     entry: &FileEntry,
     extractors: &[BoxedExtractor],
     path: &Path,
@@ -272,10 +269,27 @@ pub(in super::super) fn parser_version_matches(
     let Some(node) = entry.nodes.first() else {
         return true;
     };
-    match extractors.iter().find(|extractor| extractor.supports(path)) {
-        Some(extractor) => extractor.cache_identity().to_parser_version() == node.parser_version,
-        None => node.parser_version == extract::lexical::LEXICAL_PARSER_VERSION,
+    let oversized = matches!(entry.coverage, FileCoverage::Oversized { .. });
+    match extractor_for(extractors, path) {
+        Lookup::Extractor(extractor) if !oversized => {
+            extractor.cache_identity().to_parser_version() == node.parser_version
+        }
+        // An oversized file, a named gap and an unknown file are all stamped
+        // lexical, never re-parsed.
+        Lookup::Extractor(_) | Lookup::Gap { .. } | Lookup::Unknown => {
+            node.parser_version == extract::lexical::LEXICAL_PARSER_VERSION
+        }
     }
+}
+
+/// How a base reconcile writes its layer; an overlay write ignores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BaseWrite {
+    /// [`GraphStore::publish_base`]: a no-op when the revision has a base file.
+    Publish,
+    /// [`GraphStore::replace_base`]: over a base the caller found stale or
+    /// unparseable.
+    Replace,
 }
 
 pub(super) fn persist_layer(
@@ -284,6 +298,7 @@ pub(super) fn persist_layer(
     layer: &GraphLayer,
     previous: Option<&GraphLayer>,
     base: Option<&GraphLayer>,
+    write: BaseWrite,
 ) -> Result<u64> {
     match scope {
         SourceGraphScope::Overlay { plan, stage } => {
@@ -307,9 +322,14 @@ pub(super) fn persist_layer(
         }
         SourceGraphScope::Base { revision } => {
             let bytes = serialized_len(layer)?;
-            graph_store
-                .publish_base(revision, layer)
-                .map(|written| if written { bytes } else { 0 })
+            let written = match write {
+                BaseWrite::Publish => graph_store.publish_base(revision, layer)?,
+                BaseWrite::Replace => {
+                    graph_store.replace_base(revision, layer)?;
+                    true
+                }
+            };
+            Ok(if written { bytes } else { 0 })
         }
     }
 }

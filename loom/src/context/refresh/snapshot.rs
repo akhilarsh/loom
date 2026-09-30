@@ -1,20 +1,19 @@
 //! One policy-driven decision path for ensuring source-graph snapshots.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::{
-    fs,
     path::Path,
     time::{Duration, Instant},
 };
 
 use super::source_graph::{
-    clean_generation, reconcile_with_working_tree, working_tree, WorkingTree,
+    clean_generation, reconcile_with_working_tree, replace_base_with_working_tree, working_tree,
+    WorkingTree,
 };
 use super::{SourceGraphCounters, SourceGraphOutcome, SourceGraphScope};
 use crate::context::extract;
 use crate::context::graph_store::{GraphLayer, GraphStore};
 use crate::context::local_overlay::local_overlay_key;
-use crate::context::source_graph::FileCoverage;
 use crate::context::store::ContextStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +54,10 @@ pub struct SnapshotOutcome {
 }
 
 mod describe;
+
+/// Whether a layer entry was stamped by the extractor now registered for its
+/// path; `worktree_graph` reaches the check through here.
+pub(crate) use super::source_graph::parser_version_matches;
 
 /// Ensure the policy-selected graph layer without making callers repeat its decision tree.
 ///
@@ -150,24 +153,27 @@ fn ensure_base(
     project_root: &Path,
     tree: &WorkingTree,
 ) -> Result<Option<SourceGraphOutcome>> {
-    if let Some(base) = graph_store.load_base(&tree.head)? {
-        if layer_is_current(&base) {
-            return Ok(None);
-        }
-        let path = graph_store.base_path(&tree.head);
-        fs::remove_file(&path)
-            .with_context(|| format!("Failed to replace stale source graph: {}", path.display()))?;
-    }
-    reconcile_with_working_tree(
-        store,
-        graph_store,
-        project_root,
-        SourceGraphScope::Base {
+    let replace = match graph_store.load_base(&tree.head)? {
+        Some(base) if layer_is_current(&base) => return Ok(None),
+        Some(_) => true,
+        // `load_base` reports an unparseable file as absent.
+        None => graph_store.base_path(&tree.head).exists(),
+    };
+    // A stale or unparseable base is overwritten in place, never deleted
+    // first: a delete fails on a read-only cache, which must serve the rebuild
+    // from memory, and can remove a racer's current base. A racer publishing
+    // between this check and the write is harmless on either route:
+    // `publish_base` keeps its base, `replace_base` overwrites it with an
+    // equally current one.
+    let outcome = if replace {
+        replace_base_with_working_tree(store, graph_store, project_root, tree)?
+    } else {
+        let scope = SourceGraphScope::Base {
             revision: tree.head.clone(),
-        },
-        tree,
-    )
-    .map(Some)
+        };
+        reconcile_with_working_tree(store, graph_store, project_root, scope, tree)?
+    };
+    Ok(Some(outcome))
 }
 
 fn ensure_stage_overlay(
@@ -251,23 +257,19 @@ fn overlay_is_current(
         .is_some_and(|layer| layer.generation == generation && layer_is_current(layer)))
 }
 
+/// A layer is current when it was written under
+/// [`GRAPH_SCHEMA_VERSION`](crate::context::source_graph::GRAPH_SCHEMA_VERSION)
+/// and every entry's parser version matches the extractor that would parse it
+/// now ([`parser_version_matches`]).
 fn layer_is_current(layer: &GraphLayer) -> bool {
+    if !layer.has_current_schema() {
+        return false;
+    }
     let extractors = extract::registry();
-    layer.files.iter().all(|(path, entry)| {
-        let Some(node) = entry.nodes.first() else {
-            return true;
-        };
-        let path = Path::new(path);
-        match extractors.iter().find(|extractor| extractor.supports(path)) {
-            Some(extractor) => {
-                extractor.cache_identity().to_parser_version() == node.parser_version
-            }
-            None => {
-                matches!(&entry.coverage, FileCoverage::Deleted)
-                    || node.parser_version == extract::lexical::LEXICAL_PARSER_VERSION
-            }
-        }
-    })
+    layer
+        .files
+        .iter()
+        .all(|(path, entry)| parser_version_matches(entry, &extractors, Path::new(path)))
 }
 
 fn from_reconcile(
