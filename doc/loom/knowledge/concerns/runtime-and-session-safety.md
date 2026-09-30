@@ -138,7 +138,7 @@ it is also a real edge-case correctness gap for any deployment where the loom ma
 could legitimately be 1. Not fixed — recorded because the test-fixture use depends on the same
 behaviour that makes it a latent bug elsewhere.
 
-## Dispute Bookkeeping Gaps Around Escalation (2026-09-30)
+## Dispute Bookkeeping Gaps Around Escalation
 
 `--approve` refuses while a worker session is live, so no path into `NeedsHumanReview` can queue a stage onto a live agent. Dispute bookkeeping still has three gaps:
 

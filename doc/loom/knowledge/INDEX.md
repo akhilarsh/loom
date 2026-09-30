@@ -14,7 +14,7 @@
 | [conventions.md](conventions.md) | Coding conventions discovered in the codebase | 243 |
 | [mistakes.md](mistakes.md) | Mistakes made and lessons learned - what to avoid | 250 |
 | [stack.md](stack.md) | Dependencies, frameworks, and tooling used in the project | 119 |
-| [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 236 |
+| [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 235 |
 
 ## Tier 2 — Topics
 
@@ -37,7 +37,7 @@
 | [execution-containment](architecture/execution-containment.md) | Sandboxed command containment and its limits | 343 |
 | [hook-system](architecture/hook-system.md) | Hook embedding, SessionStart contract, enforcement | 245 |
 | [knowledge-bootstrap](architecture/knowledge-bootstrap.md) | Deterministic phase, digest, receipts | 86 |
-| [knowledge-hierarchy](architecture/knowledge-hierarchy.md) | fs/knowledge targets, INDEX.md, checks, baselines | 287 |
+| [knowledge-hierarchy](architecture/knowledge-hierarchy.md) | fs/knowledge targets, INDEX.md, checks, baselines | 261 |
 | [memory-spool](architecture/memory-spool.md) | Read before touching loom memory | 188 |
 | [merge-flow](architecture/merge-flow.md) | How a completed stage reaches its target branch | 79 |
 | [orchestrator-loop](architecture/orchestrator-loop.md) | Tick order, Monitor, heartbeat liveness | 56 |
@@ -158,7 +158,7 @@
 | Topic | Blurb | Lines |
 | --- | --- | --- |
 | [agent-rule-bending-hardening](concerns/agent-rule-bending-hardening.md) | Checks an agent can bend, and the hardening backlog | 213 |
-| [automatic-knowledge-source-graph-followups](concerns/automatic-knowledge-source-graph-followups.md) | Knowledge-plan followups: retrieval gap, stopwording | 89 |
+| [automatic-knowledge-source-graph-followups](concerns/automatic-knowledge-source-graph-followups.md) | Knowledge-plan followups: retrieval gap, stopwording | 51 |
 | [code-quality-and-hook-debt](concerns/code-quality-and-hook-debt.md) | Oversized units, duplicated tables, hook debt | 195 |
 | [codex-heartbeat-starvation](concerns/codex-heartbeat-starvation.md) | Heartbeat starvation from long codex runs | 73 |
 | [iterm2-window-teardown](concerns/iterm2-window-teardown.md) | iTerm2 window never named, so teardown cannot close it | 48 |

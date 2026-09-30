@@ -98,14 +98,13 @@ Full detail: [codex-heartbeat-starvation.md](concerns/codex-heartbeat-starvation
 - **18 TODO comments** found in source files
 - **7 FIXME comments** found in source files
 
-## Open After PLAN-automatic-knowledge-and-source-graph (2026-08-18)
+## Automatic-Knowledge Plan Followups
 
-Five smaller open items from this plan: an unbounded whole-file read ahead of the
-extraction size cap, four production-dead `KnowledgeDir` methods kept alive only by
-each other's tests, a writer/reader plan-key normalisation mismatch, a permission
-deny that now reaches the `loom` binary's own child processes, and a fossilized
-`LOOM_PERMISSIONS_WORKTREE` grant with no real consumers. The same topic now also
-covers the retrieval-degradation ambiguity and natural-language stopwording.
+Four open items: an unbounded whole-file read ahead of the extraction size cap,
+three production-dead `KnowledgeDir` methods kept alive only by each other's tests,
+a writer/reader plan-key normalisation mismatch, and a `LOOM_PERMISSIONS_WORKTREE`
+constant with no consumer. The topic also covers natural-language queries that
+corpus stopwording empties.
 
 Full detail: [automatic-knowledge-source-graph-followups.md](concerns/automatic-knowledge-source-graph-followups.md).
 

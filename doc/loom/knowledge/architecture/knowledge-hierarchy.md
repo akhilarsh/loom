@@ -4,16 +4,13 @@ sources:
 - loom/src/commands/knowledge/check.rs
 - loom/src/fs/knowledge/catalog/issue.rs
 - loom/src/fs/knowledge/catalog/evidence.rs
-verified: 6bb1dfd01ccb8456c978e9d5812e1bb61543b8e2
+verified: fffbcda55b1c83af0e06059063cab7bf93c6de67
 ---
 # Knowledge Hierarchy
 
 > fs/knowledge targets, INDEX.md, checks, baselines
 
 ## Module Layout (`fs/knowledge/`)
-
-Split by concern when the tiering work pushed `dir.rs` past the 400-line cap; every
-public method signature was kept stable so no caller changed.
 
 | File | Owns |
 | --- | --- |
@@ -22,6 +19,8 @@ public method signature was kept stable so no caller changed.
 | `index.rs` | `scan_topics`, `generate_index`, `write_index`, `MAX_BLURB_CHARS` |
 | `catalog.rs` | `catalog::build` — deterministic chunk list plus `CatalogIssue` diagnostics over the curated tree (see *Audit Rules* below) |
 | `catalog/issue.rs` | the `CatalogIssue` enum and `is_review_only` |
+| `catalog/baseline.rs` | `CheckBaseline` — reads and compares the `loom knowledge check --baseline` file |
+| `catalog/headings.rs` | `HeadingTally` — `DuplicateHeading` and `DuplicateHeadingAcrossFiles` |
 | `catalog/size.rs` | the three size limits and their checks |
 | `fs/knowledge/catalog/evidence.rs` | `changed_since_verified` — the `EvidenceChanged` check against frontmatter `sources` and `verified` |
 | `catalog/source_roots.rs` | resolving backticked source paths: project root, cargo package source roots, unique path suffix, or basename |
@@ -33,15 +32,10 @@ public method signature was kept stable so no caller changed.
 | `scaffold.rs` | tier-2 stub-header detection/healing helpers used when a new topic file is created |
 | `templates.rs` | tier-1 and tier-2 file scaffolds, and `scaffold_blurb` (what `GenericBlurb` compares against) |
 
-There is no `gc.rs` or `summary.rs` in this module — an earlier version of this doc
-invented both.
-
 The alias table lives in `types.rs`, not the CLI layer:
 `commands/knowledge/mod.rs::update`/`replace_section` resolve their `file` argument
 through `KnowledgeTarget::parse`, which matches the no-slash case against
-`KnowledgeFile::parse`, so the data layer and the CLI cannot drift. There is no
-`parse_file_type` function anywhere in the tree — a name an earlier version of this
-doc invented.
+`KnowledgeFile::parse`, so the data layer and the CLI cannot drift.
 
 ## Layout Predicate
 
@@ -112,36 +106,25 @@ repaired (`catalog/size.rs`, the mechanical form of CLAUDE.md Rule 12):
 
 Tier-1 is decided by path depth alone (`is_tier_one`: one path component under the
 knowledge root); every file in a category directory is tier-2 and takes the tier-2
-pair. An earlier version of this table said tier-2 topic files were exempt from both
-line limits; the knowledge-hygiene stage added the tier-2 pair (`catalog/size.rs`), and
-a tier-2 file that grows past it is split into narrower topics, not baselined. All five
+pair (`catalog/size.rs`). A tier-2 file that grows past it is split into narrower
+topics, not baselined. All five
 count toward `loom knowledge check --strict`; a tree that cannot clear them yet records
 them with `--write-baseline` (see the baseline section below). The blurb cap (`MAX_BLURB_CHARS = 80`,
 `index.rs`) is separate: it truncates in the index and makes `annotate --blurb`
 refuse, but raises no catalog issue.
 
-None of `SECTION_EXTRACT_THRESHOLD`, `DEFAULT_MAX_TIER1_LINES`,
-`DEFAULT_MAX_TOPIC_LINES` or `DEFAULT_MAX_PROMOTED_BLOCKS` exist anywhere in the
-tree — an earlier version of this doc invented all four, and a later one wrongly
-said no size limit was enforced at all.
+## The `loom knowledge` CLI Surface
 
-## Coverage Blast Radius
-
-`architecture_coverage_text()` does not exist anywhere in the tree — an earlier
-version of this doc invented it, along with the coverage-weighted-retrieval
-mechanism it described. No function concatenates the tier-1 architecture summary
-with tier-2 architecture topics to weight source-directory matches.
-(`context/coverage/mod.rs` does define a `CoverageReport`, but it reports source-graph
-parse coverage per file, which is unrelated to knowledge docs.) There is no
-`--min-coverage` gate either.
-
-`loom knowledge check` DOES exist (`commands/knowledge/check.rs`; see *Audit Rules*
-above). The `loom knowledge` CLI has nine subcommands, all dispatched from
+`loom knowledge` has ten subcommands, all dispatched from
 `cli/dispatch.rs::dispatch_knowledge`: `update`, `replace-section`, `delete-section`, `annotate`
 (frontmatter lifecycle state, `--source` evidence paths, the `--verified` revision,
 aliases, and the topic blurb), `context`, `eval` (scores retrieval against a
 checked-in case file), `telemetry` (summarizes delivery and retrieval events),
-`sync`, and `check`.
+`sync`, `check` (`commands/knowledge/check.rs`; see *Audit Rules* below), and
+`bootstrap` (see [knowledge-bootstrap.md](knowledge-bootstrap.md)).
+
+No knowledge-coverage metric exists. `CoverageReport` (`context/coverage/mod.rs`)
+measures source-graph parse coverage per file, and there is no `--min-coverage` gate.
 
 ## Migration Is Opt-In (a Deliberate Backwards-Compatibility Exception)
 
@@ -160,9 +143,7 @@ writes the first `INDEX.md` (`upgrade_flat_layout`, a hard failure if that write
 fails); on an already-hierarchical one it regenerates the index best-effort before
 rebuilding the derived catalog. `update`, `replace-section`, `annotate` and every
 retrieval path leave a flat directory flat. Writing an `INDEX.md` by hand also opts
-a directory in, since the layout predicate checks only that the file exists. The
-`gc`-driven compaction verb an earlier version of this section described is gone
-with the rest of that CLI surface.
+a directory in, since the layout predicate checks only that the file exists.
 
 ## Locking
 
@@ -173,7 +154,7 @@ per open file description. Tier-2 writes lock `<root>/<category>/` and therefore
 with an index write. Refresh failures warn to stderr and return `Ok`, so that a successful
 content write is never retried into a double append.
 
-## Baselines, `delete-section`, `annotate --section` and `memory pending --group` (2026-09-19)
+## Baselines, `delete-section`, `annotate --section` and `memory pending --group`
 
 - **`loom knowledge check --baseline <file>`** makes `--strict` fail only on structural issues the file does not
   record (a missing file is an empty baseline), so a tree can adopt the size limits without a flag day.
@@ -190,7 +171,7 @@ content write is never retried into a double append.
   `delete-section` then `update`.
 - **`annotate --section <heading> --state <state>`** writes a `<!-- state: ... -->` marker under the heading; only
   `##` headings are accepted (`fs/knowledge/splice.rs`).
-- **`loom memory pending --group`** prints four groups (corrections, mistakes, decisions, other); corrections are
+- **`loom memory pending --group`** prints five groups (corrections, mistakes, decisions, suggestions, other); corrections are
   sorted by target file then heading with the target in its own column, so a distiller works file by file, and
   `--json --group` carries the same structure. `--strict` keeps its meaning. `loom memory note` rejects a
   `mistake:` note without `Prevention:` and a `stale-knowledge:` note that does not parse as
@@ -202,11 +183,6 @@ content write is never retried into a double append.
   sentence so it carries an example marker (`<`, "example") or says "does not exist".
 
 ## Audit Rules — the Catalog Issue Kinds
-
-Earlier versions of this doc described a `gc`-based system with two disagreeing link-form checks, and a
-four-kind list plus an index-staleness text check; neither matches the tree (no link-form rule, no
-index-staleness check). The heading of the old version said "Nine"; the count is eleven now, and
-delete-section plus update is how a heading gets renamed.
 
 `fs::knowledge::catalog::build` walks every curated markdown file under the
 knowledge root (recursing into category directories, skipping `INDEX.md` and
@@ -222,17 +198,15 @@ deterministically by `catalog/order.rs`:
 - **`BrokenLink`** — a markdown link target does not resolve to a real file, by
   lexical path resolution (`.` and `..` folded relative to the linking file,
   `contained_link_target`). An absolute target, or one that folds outside the
-  knowledge root, is reported as broken without being probed on disk — an earlier
-  version of this section said such targets were skipped.
+  knowledge root, is reported as broken without being probed on disk.
 - **`MissingSourceRef`** — a backticked source path classified live does not
   resolve (see *Reference classification* below).
 - **`EvidenceChanged`** — a file's frontmatter declares `sources` and a `verified`
   revision, and `git diff --name-only <verified>..HEAD -- <sources>` lists one of
   them (`fs/knowledge/catalog/evidence.rs`). `EvidenceCollector` defers the git
   work until every file is parsed, so files declaring the same `verified` and
-  sources share one bounded probe (`MAX_GIT_OUTPUT_BYTES`, 1 MiB). An earlier
-  version of this bullet said any git failure skips the check; it now reports
-  the next kind.
+  sources share one bounded probe (`MAX_GIT_OUTPUT_BYTES`, 1 MiB). A git failure
+  reports the next kind.
 - **`EvidenceUnavailable`** — declared evidence could not be assessed, with a
   reason: `missing_revision`, `invalid_revision`, `missing_repository`,
   `git_unavailable`, `command_failed` or `resource_limit` (`catalog/issue.rs`).
