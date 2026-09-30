@@ -2,11 +2,13 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use crate::context::extract::dialect::{dialect_by_id, DialectSpec};
 use crate::context::extract::{
-    run_query, ExtractorIdentity, FileExtraction, QueryHarness, SourceGraphExtractor,
+    run_query, Capabilities, ExtractorIdentity, FileExtraction, QueryHarness, SourceGraphExtractor,
 };
-use crate::context::source_graph::{NodeLanguage, SourceNodeKind};
-use crate::language::DetectedLanguage;
+use crate::context::source_graph::{ImportBinding, NodeLanguage, SourceNodeKind, Span};
+
+mod imports;
 
 /// Extracts named Python functions and classes, imports, and direct or attribute calls;
 /// module-level assignments are deliberately excluded because their targets are ambiguous
@@ -33,16 +35,24 @@ const QUERY: &str = r#"
   name: (identifier) @name) @definition.type
 
 (import_statement
-  name: (dotted_name) @import.path)
+  name: [
+    (dotted_name) @import.path
+    (aliased_import
+      name: (dotted_name) @import.path)
+  ]) @import.statement
 
 (import_from_statement
-  module_name: (dotted_name) @import.path)
+  module_name: [
+    (dotted_name)
+    (relative_import)
+  ] @import.path) @import.statement
 
 (call
   function: (identifier) @call.name)
 
 (call
   function: (attribute
+    object: (_) @call.receiver
     attribute: (identifier) @call.name))
 "#;
 
@@ -57,9 +67,10 @@ impl QueryHarness for PythonExtractor {
 
     fn identity(&self) -> ExtractorIdentity {
         ExtractorIdentity {
+            dialect: "python",
             grammar_version: "0.25.0",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 1,
+            extractor_version: 2,
         }
     }
 
@@ -74,28 +85,40 @@ impl QueryHarness for PythonExtractor {
             _ => None,
         }
     }
+
+    fn import_bindings(&self, statement: &str, path: &str, site: Span) -> Vec<ImportBinding> {
+        imports::statement_bindings(statement, path, site)
+    }
 }
 
 impl SourceGraphExtractor for PythonExtractor {
-    fn language(&self) -> DetectedLanguage {
-        DetectedLanguage::Python
+    fn dialect(&self) -> &'static DialectSpec {
+        dialect_by_id("python").expect("the dialect table names every registered extractor")
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            declarations: true,
+            imports: true,
+            import_bindings: true,
+            calls: true,
+            receivers: true,
+            references: false,
+        }
     }
 
     fn cache_identity(&self) -> ExtractorIdentity {
         QueryHarness::identity(self)
     }
 
-    fn supports(&self, path: &Path) -> bool {
-        matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("py") | Some("pyi")
-        )
-    }
-
     fn extract(&self, path: &Path, bytes: &[u8]) -> Result<FileExtraction> {
         run_query(self, path, bytes)
     }
 }
+
+#[cfg(test)]
+#[path = "python/tests_imports.rs"]
+mod tests_imports;
 
 #[cfg(test)]
 mod tests {
@@ -150,61 +173,61 @@ def run():
     /// short — the maintainability scanner budgets function bodies, not
     /// `const` declarations.
     const EXPECTED_EDGES: &[(&str, &str, &str, &str)] = &[
-        ("src/fixture.py", "<unresolved>", "imports", "inferred"),
-        ("src/fixture.py", "<unresolved>", "imports", "inferred"),
+        ("src/fixture.py", "<unresolved>", "imports", "syntax"),
+        ("src/fixture.py", "<unresolved>", "imports", "syntax"),
         (
             "src/fixture.py",
             "src/fixture.py#function:run",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.py",
             "src/fixture.py#type:Widget",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.py#function:Widget::first",
             "src/fixture.py#function:Widget::second",
             "calls",
-            "parser",
+            "receiver",
         ),
         (
             "src/fixture.py#function:Widget::second",
             "src/fixture.py#function:Widget::second::inner",
             "calls",
-            "parser",
+            "local-name",
         ),
         (
             "src/fixture.py#function:Widget::second",
             "src/fixture.py#function:Widget::second::inner",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.py#function:Widget::second::inner",
             "<unresolved>",
             "calls",
-            "inferred",
+            "syntax",
         ),
         (
             "src/fixture.py#function:run",
             "<unresolved>",
             "calls",
-            "inferred",
+            "syntax",
         ),
         (
             "src/fixture.py#type:Widget",
             "src/fixture.py#function:Widget::first",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.py#type:Widget",
             "src/fixture.py#function:Widget::second",
             "contains",
-            "parser",
+            "structural",
         ),
     ];
 
@@ -241,7 +264,7 @@ def run():
             .find(|edge| edge.symbol == "unknown")
             .unwrap();
 
-        assert_eq!(edge.provenance, EdgeProvenance::Inferred);
+        assert_eq!(edge.provenance, EdgeProvenance::Syntax);
         assert!(edge.confidence <= 0.5);
         assert!(edge.is_unresolved());
     }

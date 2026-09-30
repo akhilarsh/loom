@@ -2,11 +2,11 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use crate::context::extract::dialect::{dialect_by_id, DialectSpec};
 use crate::context::extract::{
-    run_query, ExtractorIdentity, FileExtraction, QueryHarness, SourceGraphExtractor,
+    run_query, Capabilities, ExtractorIdentity, FileExtraction, QueryHarness, SourceGraphExtractor,
 };
-use crate::context::source_graph::{NodeLanguage, SourceNodeKind};
-use crate::language::DetectedLanguage;
+use crate::context::source_graph::{ImportBinding, NodeLanguage, SourceNodeKind, Span};
 
 /// Extracts top-level Go packages, named declarations, imports, and direct or
 /// selected calls; it deliberately does not model local bindings, fields,
@@ -57,13 +57,14 @@ const QUERY: &str = r#"
 ; `import_spec`; matching the spec directly covers the grouped form, whose
 ; specs hang off an `import_spec_list` rather than the declaration itself.
 (import_spec
-  path: (interpreted_string_literal) @import.path)
+  path: (interpreted_string_literal) @import.path) @import.statement
 
 (call_expression
   function: (identifier) @call.name)
 
 (call_expression
   function: (selector_expression
+    operand: (_) @call.receiver
     field: (field_identifier) @call.name))
 "#;
 
@@ -78,9 +79,10 @@ impl QueryHarness for GoExtractor {
 
     fn identity(&self) -> ExtractorIdentity {
         ExtractorIdentity {
+            dialect: "go",
             grammar_version: "0.25.0",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 1,
+            extractor_version: 2,
         }
     }
 
@@ -98,28 +100,57 @@ impl QueryHarness for GoExtractor {
             _ => None,
         }
     }
+
+    /// One `import_spec`: `"a/b"` binds under its last segment, `x "a/b"` under
+    /// `x`, `. "a/b"` is a glob, and `_ "a/b"` binds nothing.
+    fn import_bindings(&self, statement: &str, path: &str, site: Span) -> Vec<ImportBinding> {
+        let written_name = statement
+            .split_once(['"', '`'])
+            .map_or("", |(before, _)| before.trim());
+        let (alias, glob) = match written_name {
+            "" => (None, false),
+            "." => (None, true),
+            "_" => (Some(String::new()), false),
+            name => (Some(name.to_string()), false),
+        };
+        vec![ImportBinding {
+            path: path.to_string(),
+            name: None,
+            alias,
+            glob,
+            site,
+        }]
+    }
 }
 
 impl SourceGraphExtractor for GoExtractor {
-    fn language(&self) -> DetectedLanguage {
-        DetectedLanguage::Go
+    fn dialect(&self) -> &'static DialectSpec {
+        dialect_by_id("go").expect("the dialect table names every registered extractor")
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            declarations: true,
+            imports: true,
+            import_bindings: true,
+            calls: true,
+            receivers: false,
+            references: false,
+        }
     }
 
     fn cache_identity(&self) -> ExtractorIdentity {
         QueryHarness::identity(self)
     }
 
-    fn supports(&self, path: &Path) -> bool {
-        matches!(
-            path.extension().and_then(|extension| extension.to_str()),
-            Some("go")
-        )
-    }
-
     fn extract(&self, path: &Path, bytes: &[u8]) -> Result<FileExtraction> {
         run_query(self, path, bytes)
     }
 }
+
+#[cfg(test)]
+#[path = "go/tests_imports.rs"]
+mod tests_imports;
 
 #[cfg(test)]
 mod tests {
@@ -185,67 +216,67 @@ func Use() {
     /// short — the maintainability scanner budgets function bodies, not
     /// `const` declarations.
     const EXPECTED_EDGES: &[(&str, &str, &str, &str)] = &[
-        ("src/fixture.go", "<unresolved>", "imports", "inferred"),
-        ("src/fixture.go", "<unresolved>", "imports", "inferred"),
+        ("src/fixture.go", "<unresolved>", "imports", "syntax"),
+        ("src/fixture.go", "<unresolved>", "imports", "syntax"),
         (
             "src/fixture.go",
             "src/fixture.go#constant:Count",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.go",
             "src/fixture.go#constant:Value",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.go",
             "src/fixture.go#function:First",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.go",
             "src/fixture.go#function:Second",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.go",
             "src/fixture.go#function:Use",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.go",
             "src/fixture.go#interface:Runner",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.go",
             "src/fixture.go#module:fixture",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.go",
             "src/fixture.go#type:Widget",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.go#function:Second",
-            "src/fixture.go#function:First",
+            "<unresolved>",
             "calls",
-            "parser",
+            "syntax",
         ),
         (
             "src/fixture.go#function:Use",
             "<unresolved>",
             "calls",
-            "inferred",
+            "syntax",
         ),
     ];
 
@@ -282,7 +313,7 @@ func Use() {
             .find(|edge| edge.symbol == "Println")
             .unwrap();
 
-        assert_eq!(edge.provenance, EdgeProvenance::Inferred);
+        assert_eq!(edge.provenance, EdgeProvenance::Syntax);
         assert!(edge.confidence <= 0.5);
         assert!(edge.is_unresolved());
     }

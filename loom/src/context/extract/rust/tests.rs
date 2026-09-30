@@ -4,6 +4,7 @@
 use std::path::Path;
 
 use super::*;
+use crate::context::source_graph::{EdgeProvenance, SourceEdgeKind, RECEIVER_CONFIDENCE};
 
 const FIXTURE: &str = r#"
 mod example {
@@ -112,98 +113,98 @@ const EXPECTED_EDGES: &[(&str, &str, &str, &str, &str)] = &[
         "src/fixture.rs",
         "<unresolved>",
         "imports",
-        "inferred",
+        "syntax",
         "crate::external::Thing",
     ),
     (
         "src/fixture.rs",
         "src/fixture.rs#module:example",
         "contains",
-        "parser",
+        "structural",
         "example",
     ),
     (
         "src/fixture.rs#function:example::Widget::call_helper",
         "src/fixture.rs#function:example::Widget::describe",
         "calls",
-        "parser",
+        "local-name",
         "Widget::describe",
     ),
     (
         "src/fixture.rs#function:example::Widget::call_helper",
         "src/fixture.rs#function:example::Widget::helper",
         "calls",
-        "parser",
+        "receiver",
         "helper",
     ),
     (
         "src/fixture.rs#function:example::invoke_external",
         "<unresolved>",
         "calls",
-        "inferred",
+        "syntax",
         "Vec::new",
     ),
     (
         "src/fixture.rs#function:example::invoke_external",
         "<unresolved>",
         "calls",
-        "inferred",
+        "syntax",
         "crate::other::helper",
     ),
     (
         "src/fixture.rs#function:example::invoke_external",
         "<unresolved>",
         "calls",
-        "inferred",
+        "syntax",
         "missing_api",
     ),
     (
         "src/fixture.rs#implementation:example::Widget",
         "src/fixture.rs#function:example::Widget::call_helper",
         "contains",
-        "parser",
+        "structural",
         "call_helper",
     ),
     (
         "src/fixture.rs#implementation:example::Widget",
         "src/fixture.rs#function:example::Widget::describe",
         "contains",
-        "parser",
+        "structural",
         "describe",
     ),
     (
         "src/fixture.rs#implementation:example::Widget",
         "src/fixture.rs#function:example::Widget::helper",
         "contains",
-        "parser",
+        "structural",
         "helper",
     ),
     (
         "src/fixture.rs#module:example",
         "src/fixture.rs#function:example::invoke_external",
         "contains",
-        "parser",
+        "structural",
         "invoke_external",
     ),
     (
         "src/fixture.rs#module:example",
         "src/fixture.rs#implementation:example::Widget",
         "contains",
-        "parser",
+        "structural",
         "Widget",
     ),
     (
         "src/fixture.rs#module:example",
         "src/fixture.rs#interface:example::Describable",
         "contains",
-        "parser",
+        "structural",
         "Describable",
     ),
     (
         "src/fixture.rs#module:example",
         "src/fixture.rs#type:example::Widget",
         "contains",
-        "parser",
+        "structural",
         "Widget",
     ),
 ];
@@ -238,7 +239,7 @@ fn a_qualified_call_resolves_against_the_impl_it_names() {
     assert_eq!(edge.to, "src/fixture.rs#function:example::Widget::describe");
     assert_eq!(
         edge.provenance,
-        crate::context::source_graph::EdgeProvenance::Parser
+        crate::context::source_graph::EdgeProvenance::LocalName
     );
 }
 
@@ -251,7 +252,7 @@ fn a_qualified_call_out_of_the_file_never_claims_a_local_namesake() {
     assert!(edge.is_unresolved());
     assert_eq!(
         edge.provenance,
-        crate::context::source_graph::EdgeProvenance::Inferred
+        crate::context::source_graph::EdgeProvenance::Syntax
     );
     assert!(edge.confidence <= 0.5);
 }
@@ -267,7 +268,7 @@ fn a_turbofish_is_dropped_from_the_recorded_callee() {
     assert!(edge.is_unresolved());
     assert_eq!(
         edge.provenance,
-        crate::context::source_graph::EdgeProvenance::Inferred
+        crate::context::source_graph::EdgeProvenance::Syntax
     );
     assert!(edge.confidence <= 0.5);
 
@@ -283,13 +284,72 @@ fn a_turbofish_is_dropped_from_the_recorded_callee() {
     );
 }
 
+/// A `self.helper()` call inside the `impl` binds to that `impl`'s member,
+/// with the receiver kept on the edge.
+#[test]
+fn a_self_method_call_binds_by_receiver() {
+    let edge = edge_naming("helper");
+
+    assert_eq!(edge.to, "src/fixture.rs#function:example::Widget::helper");
+    assert_eq!(edge.provenance, EdgeProvenance::Receiver);
+    assert_eq!(edge.confidence, RECEIVER_CONFIDENCE);
+    assert_eq!(edge.receiver.as_deref(), Some("self"));
+}
+
+/// A member call on any other receiver is never bound by its member name,
+/// even when the file defines a member with that name.
+#[test]
+fn a_call_on_another_receiver_is_not_bound() {
+    let extraction = RustExtractor::new()
+        .extract(
+            Path::new("src/other.rs"),
+            b"struct W;\nimpl W {\n    fn helper(&self) {}\n    fn run(&self, other: &W) {\n        other.helper();\n    }\n}\n",
+        )
+        .unwrap();
+    let edge = extraction
+        .edges
+        .iter()
+        .find(|edge| edge.symbol == "helper")
+        .unwrap();
+
+    assert_eq!(edge.provenance, EdgeProvenance::Syntax);
+    assert!(edge.is_unresolved());
+    assert_eq!(edge.receiver.as_deref(), Some("other"));
+}
+
+/// `Self::helper()` inside an `impl` binds to the member of that `impl`'s type,
+/// through the `Self` receiver.
+#[test]
+fn a_self_path_call_binds_to_the_enclosing_type() {
+    let extraction = RustExtractor::new()
+        .extract(
+            Path::new("src/w.rs"),
+            b"struct W;\nimpl W {\n    fn helper() {}\n    fn run() {\n        Self::helper();\n        Self::helper::<u8>();\n    }\n}\n",
+        )
+        .unwrap();
+    let edges: Vec<_> = extraction
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == SourceEdgeKind::Calls)
+        .collect();
+
+    assert_eq!(edges.len(), 1, "both spellings are one edge with two sites");
+    let edge = edges[0];
+    assert_eq!(edge.to, "src/w.rs#function:W::helper");
+    assert_eq!(edge.symbol, "helper");
+    assert_eq!(edge.provenance, EdgeProvenance::Receiver);
+    assert_eq!(edge.confidence, RECEIVER_CONFIDENCE);
+    assert_eq!(edge.receiver.as_deref(), Some("Self"));
+    assert_eq!(edge.sites.len(), 2);
+}
+
 #[test]
 fn marks_undefined_calls_as_low_confidence_inferred_edges() {
     let edge = edge_naming("missing_api");
 
     assert_eq!(
         edge.provenance,
-        crate::context::source_graph::EdgeProvenance::Inferred
+        crate::context::source_graph::EdgeProvenance::Syntax
     );
     assert!(edge.confidence <= 0.5);
     assert!(edge.is_unresolved());
