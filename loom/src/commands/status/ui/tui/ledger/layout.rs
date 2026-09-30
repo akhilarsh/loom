@@ -58,7 +58,7 @@ pub fn render(frame: &mut Frame, view: &LedgerView) -> RenderOutcome {
     let budget = budget(
         area.height,
         view.alerts.len(),
-        view.attention.len(),
+        panels::attention_line_count(view.attention, area.width),
         view.activity.len(),
         quota::has_quota(&view.data.quota),
     );
@@ -74,12 +74,12 @@ pub fn render(frame: &mut Frame, view: &LedgerView) -> RenderOutcome {
 fn budget(
     height: u16,
     alerts: usize,
-    attention_entries: usize,
+    attention_lines: usize,
     activity_len: usize,
     has_quota: bool,
 ) -> Budget {
     let alerts = (alerts.min(ALERT_MAX_HEIGHT as usize)) as u16;
-    let mut attention = attention_height(attention_entries);
+    let mut attention = attention_height(attention_lines);
     let mut activity = activity_height(activity_len);
     let mut footer = footer_height(has_quota);
     let mut compact = false;
@@ -113,11 +113,12 @@ fn budget(
     }
 }
 
-fn attention_height(entries: usize) -> u16 {
-    if entries == 0 {
+/// The panel's entry lines plus its title row, capped at 10.
+fn attention_height(lines: usize) -> u16 {
+    if lines == 0 {
         0
     } else {
-        entries.saturating_mul(3).saturating_add(1).min(10) as u16
+        lines.saturating_add(1).min(10) as u16
     }
 }
 
@@ -253,7 +254,8 @@ mod tests {
 
     #[test]
     fn budget_leaves_the_remainder_for_the_table() {
-        let budget = budget(40, 8, 3, 8, false);
+        // Nine entry lines: three entries of header, evidence and command.
+        let budget = budget(40, 8, 9, 8, false);
 
         assert_eq!(budget.alerts, 4);
         assert_eq!(budget.attention, 10);
@@ -262,8 +264,16 @@ mod tests {
     }
 
     #[test]
+    fn attention_budget_fits_a_review_entry_and_its_three_commands() {
+        // Header plus the three `loom stage human-review` command lines.
+        let budget = budget(40, 0, 4, 0, false);
+
+        assert_eq!(budget.attention, 5);
+    }
+
+    #[test]
     fn budget_preserves_a_minimum_table_before_panels() {
-        let budget = budget(16, 0, 2, 3, false);
+        let budget = budget(16, 0, 6, 3, false);
 
         assert_eq!(budget.activity, 0);
         assert_eq!(budget.attention, 4);
@@ -315,7 +325,7 @@ mod tests {
             no_panels.alerts + no_panels.table + no_panels.attention + no_panels.activity <= 16
         );
 
-        let with_panels = budget(16, 4, 2, 3, false);
+        let with_panels = budget(16, 4, 6, 3, false);
         assert_eq!(with_panels.alerts, 4);
         assert_eq!(with_panels.attention, 4);
         assert_eq!(with_panels.activity, 0);

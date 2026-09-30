@@ -167,7 +167,7 @@ fn review_state(
     if outgoing.is_some_and(|session| session.status.is_terminal()) {
         return Some((
             CompletionBlockerState::Blocked,
-            format!("fix {code}, then retry or reset the stage"),
+            format!("fix {code}, then approve, force-complete or reject the review"),
         ));
     }
     let session_id = stage.session.as_deref()?;

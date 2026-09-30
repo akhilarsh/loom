@@ -79,11 +79,8 @@ fn merge_probe_failure_does_not_consume_resolver_attempt_budget() {
     let mut orchestrator = constructed.unwrap();
 
     assert_eq!(orchestrator.spawn_merge_resolution_sessions().unwrap(), 0);
-    assert_eq!(orchestrator.merge_resolver_attempts(&stage.id), 0);
-    assert!(!orchestrator
-        .merge_resolver_attempts_dir()
-        .join(format!("{}.count", stage.id))
-        .exists());
+    assert_eq!(super::merge_resolver_attempts(&work_dir, &stage.id), 0);
+    assert!(!super::attempts_file(&work_dir, &stage.id).exists());
 }
 
 struct FakeRetirementBackend {

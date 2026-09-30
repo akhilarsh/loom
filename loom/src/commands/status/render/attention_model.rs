@@ -9,6 +9,8 @@ use crate::commands::status::data::{
 use crate::models::failure::FailureType;
 use crate::models::session::{SessionExitReason, SessionType};
 use crate::models::stage::{StageStatus, StageType};
+use crate::orchestrator::core::MAX_MERGE_RESOLVER_ATTEMPTS;
+use crate::orchestrator::retry::should_auto_retry;
 
 /// Display-ready information for one stage that needs human attention.
 #[derive(Debug, Clone)]
@@ -16,7 +18,14 @@ pub struct AttentionEntry {
     pub id: String,
     pub name: String,
     pub label: &'static str,
-    pub hint: String,
+    /// A shell command the operator should run. `None` when no single command
+    /// applies or loom is handling the state.
+    pub command: Option<String>,
+    /// What loom is doing, or what the operator should do when no single
+    /// command fits. Prose, never a command meant for copying.
+    pub note: Option<String>,
+    /// Loom is handling this state itself; the operator need not act.
+    pub automatic: bool,
     pub failure_type: Option<FailureType>,
     pub evidence: Vec<String>,
     pub review_reason: Option<String>,
@@ -26,6 +35,85 @@ pub struct AttentionEntry {
     pub judge_heartbeat_secs: Option<u64>,
     pub completion_blocker: Option<CompletionBlockerSummary>,
     pub outgoing_session_exit_reason: Option<SessionExitReason>,
+}
+
+/// The `command`, `note` and `automatic` triple of an [`AttentionEntry`].
+#[derive(Default)]
+struct Guidance {
+    command: Option<String>,
+    note: Option<String>,
+    automatic: bool,
+}
+
+impl Guidance {
+    /// The operator should run `command`.
+    fn run(command: impl Into<String>) -> Self {
+        Self {
+            command: Some(command.into()),
+            ..Self::default()
+        }
+    }
+
+    /// The operator should act as `note` says; no single command fits.
+    fn manual(note: impl Into<String>) -> Self {
+        Self {
+            note: Some(note.into()),
+            ..Self::default()
+        }
+    }
+
+    /// Loom is handling the state as `note` says.
+    fn automatic(note: impl Into<String>) -> Self {
+        Self {
+            automatic: true,
+            ..Self::manual(note)
+        }
+    }
+}
+
+const INPUT_NOTE: &str = "the agent is waiting on a question: answer it in the stage's terminal";
+const ADJUDICATION_NOTE: &str = "a judge session is ruling on the open disputes";
+
+impl AttentionEntry {
+    /// An entry for `stage` carrying only its identity, label and guidance.
+    fn new(stage: &StageSummary, label: &'static str, guidance: Guidance) -> Self {
+        Self {
+            id: stage.id.clone(),
+            name: stage.name.clone(),
+            label,
+            command: guidance.command,
+            note: guidance.note,
+            automatic: guidance.automatic,
+            failure_type: None,
+            evidence: Vec::new(),
+            review_reason: None,
+            cleanup_warning: None,
+            has_human_review_choices: false,
+            dispute_count: None,
+            judge_heartbeat_secs: None,
+            completion_blocker: None,
+            outgoing_session_exit_reason: stage.outgoing_session_exit_reason,
+        }
+    }
+}
+
+/// The three decisions a stage awaiting human review accepts, as full
+/// commands for stage `id`, each with what it does.
+pub fn human_review_choices(id: &str) -> [(String, &'static str); 3] {
+    [
+        (
+            format!("loom stage human-review {id} --approve"),
+            "queue a fresh session with fresh fix attempts",
+        ),
+        (
+            format!("loom stage human-review {id} --force-complete"),
+            "skip acceptance and mark completed",
+        ),
+        (
+            format!("loom stage human-review {id} --reject \"<reason>\""),
+            "block the stage",
+        ),
+    ]
 }
 
 /// Return the attention entries in the same order as their input stages.
@@ -45,41 +133,30 @@ fn attention_entry(stage: &StageSummary) -> Option<AttentionEntry> {
 }
 
 fn cleanup_entry(stage: &StageSummary) -> AttentionEntry {
+    let guidance = Guidance::run(format!("loom worktree remove {}", stage.id));
     AttentionEntry {
-        id: stage.id.clone(),
-        name: stage.name.clone(),
-        label: "CLEANUP FAILED",
-        hint: format!("loom worktree remove {}", stage.id),
-        failure_type: None,
-        evidence: Vec::new(),
-        review_reason: None,
         cleanup_warning: stage.cleanup_warning.clone(),
-        has_human_review_choices: false,
-        dispute_count: None,
-        judge_heartbeat_secs: None,
-        completion_blocker: None,
-        outgoing_session_exit_reason: stage.outgoing_session_exit_reason,
+        ..AttentionEntry::new(stage, "CLEANUP FAILED", guidance)
     }
 }
 
+/// A completion blocker's `next_action` is prose. The daemon still owns an
+/// `Executing` stage; a parked stage takes the review decisions once the
+/// blocker is confirmed.
 fn completion_blocker_entry(
     stage: &StageSummary,
     blocker: CompletionBlockerSummary,
 ) -> AttentionEntry {
+    let label = completion_blocker_label(blocker.state);
+    let guidance = Guidance {
+        automatic: stage.status == StageStatus::Executing,
+        ..Guidance::manual(blocker.next_action.clone())
+    };
     AttentionEntry {
-        id: stage.id.clone(),
-        name: stage.name.clone(),
-        label: completion_blocker_label(blocker.state),
-        hint: blocker.next_action.clone(),
-        failure_type: None,
-        evidence: Vec::new(),
-        review_reason: None,
-        cleanup_warning: None,
-        has_human_review_choices: false,
-        dispute_count: None,
-        judge_heartbeat_secs: None,
+        has_human_review_choices: stage.status == StageStatus::NeedsHumanReview
+            && blocker.state == CompletionBlockerState::Blocked,
         completion_blocker: Some(blocker),
-        outgoing_session_exit_reason: stage.outgoing_session_exit_reason,
+        ..AttentionEntry::new(stage, label, guidance)
     }
 }
 
@@ -92,8 +169,8 @@ fn completion_blocker_label(state: CompletionBlockerState) -> &'static str {
 }
 
 fn status_entry(stage: &StageSummary) -> Option<AttentionEntry> {
-    let (label, hint, has_human_review_choices, is_adjudicating) =
-        attention_status(&stage.status, &stage.id)?;
+    let (label, guidance) = status_guidance(stage)?;
+    let is_adjudicating = stage.status == StageStatus::NeedsAdjudication;
     let (dispute_count, judge_heartbeat_secs) = if is_adjudicating {
         (Some(stage.dispute_count), stage.judge_heartbeat_secs)
     } else {
@@ -107,39 +184,73 @@ fn status_entry(stage: &StageSummary) -> Option<AttentionEntry> {
         });
 
     Some(AttentionEntry {
-        id: stage.id.clone(),
-        name: stage.name.clone(),
-        label,
-        hint,
         failure_type,
         evidence,
         review_reason: stage.review_reason.clone(),
-        cleanup_warning: None,
-        has_human_review_choices,
+        has_human_review_choices: stage.status == StageStatus::NeedsHumanReview,
         dispute_count,
         judge_heartbeat_secs,
-        completion_blocker: None,
-        outgoing_session_exit_reason: stage.outgoing_session_exit_reason,
+        ..AttentionEntry::new(stage, label, guidance)
     })
 }
 
-fn attention_status(status: &StageStatus, id: &str) -> Option<(&'static str, String, bool, bool)> {
-    let (label, command, has_human_review_choices, is_adjudicating) = match status {
-        StageStatus::Blocked => ("BLOCKED", "retry", false, false),
-        StageStatus::MergeConflict => ("MERGE CONFLICT", "merge", false, false),
-        StageStatus::CompletedWithFailures => ("ACCEPTANCE FAILED", "retry", false, false),
-        StageStatus::MergeBlocked => ("MERGE ERROR", "merge", false, false),
-        StageStatus::NeedsHumanReview => ("NEEDS REVIEW", "human-review", true, false),
-        StageStatus::WaitingForInput => ("NEEDS INPUT", "resume", false, false),
-        StageStatus::NeedsAdjudication => ("ADJUDICATING", "status --verbose", false, true),
+fn status_guidance(stage: &StageSummary) -> Option<(&'static str, Guidance)> {
+    Some(match stage.status {
+        StageStatus::Blocked => ("BLOCKED", blocked_guidance(stage)),
+        StageStatus::MergeConflict => ("MERGE CONFLICT", merge_guidance(stage)),
+        StageStatus::CompletedWithFailures => ("ACCEPTANCE FAILED", retry_guidance(stage)),
+        StageStatus::MergeBlocked => ("MERGE ERROR", merge_guidance(stage)),
+        StageStatus::NeedsHumanReview => ("NEEDS REVIEW", Guidance::default()),
+        StageStatus::WaitingForInput => ("NEEDS INPUT", Guidance::manual(INPUT_NOTE)),
+        StageStatus::NeedsAdjudication => ("ADJUDICATING", Guidance::automatic(ADJUDICATION_NOTE)),
         _ => return None,
-    };
-    let hint = if is_adjudicating {
-        format!("loom {command}")
-    } else {
-        format!("loom stage {command} {id}")
-    };
-    Some((label, hint, has_human_review_choices, is_adjudicating))
+    })
+}
+
+/// The daemon spawns a merge resolver for both merge states, up to
+/// [`MAX_MERGE_RESOLVER_ATTEMPTS`], then routes the stage to human review.
+fn merge_guidance(stage: &StageSummary) -> Guidance {
+    let used = stage.merge_resolver_attempts.unwrap_or(0);
+    let max = MAX_MERGE_RESOLVER_ATTEMPTS;
+    Guidance::automatic(match stage.merge_resolver_session.as_deref() {
+        Some(session) => format!("merge resolver {session} is running (attempt {used} of {max})"),
+        None => format!(
+            "waiting for the daemon to start a merge resolver ({used} of {max} attempts used)"
+        ),
+    })
+}
+
+/// A crash or timeout under the retry limit is requeued by the daemon once its
+/// backoff elapses; any other failure waits for `loom stage retry`.
+fn blocked_guidance(stage: &StageSummary) -> Guidance {
+    let max = retry_limit(stage);
+    match stage.failure_info.as_ref() {
+        Some(failure) if should_auto_retry(&failure.failure_type, stage.retry_count, max) => {
+            Guidance::automatic(format!(
+                "auto-retry {} of {max} pending after a {}",
+                stage.retry_count + 1,
+                failure_label(&failure.failure_type)
+            ))
+        }
+        _ => retry_guidance(stage),
+    }
+}
+
+/// `loom stage retry` refuses a stage at its retry limit unless forced.
+fn retry_guidance(stage: &StageSummary) -> Guidance {
+    let max = retry_limit(stage);
+    if stage.retry_count < max {
+        return Guidance::run(format!("loom stage retry {}", stage.id));
+    }
+    Guidance {
+        note: Some(format!("retry limit reached ({}/{max})", stage.retry_count)),
+        ..Guidance::run(format!("loom stage retry {} --force", stage.id))
+    }
+}
+
+/// The stage's retry limit, with the default the daemon and `loom stage retry` apply.
+fn retry_limit(stage: &StageSummary) -> u32 {
+    stage.max_retries.unwrap_or(3)
 }
 
 /// A `Standard` stage in the contract-writer phase: an `Executing` stage

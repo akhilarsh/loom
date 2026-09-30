@@ -122,7 +122,7 @@ fn parked_terminal_session_is_blocked() {
     assert_eq!(summary.state, CompletionBlockerState::Blocked);
     assert_eq!(
         summary.next_action,
-        "fix sandbox_denied, then retry or reset the stage"
+        "fix sandbox_denied, then approve, force-complete or reject the review"
     );
 }
 

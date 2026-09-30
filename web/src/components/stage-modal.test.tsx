@@ -166,7 +166,9 @@ describe("stage modal", () => {
       id: stage.id,
       name: stage.name,
       label: "NEEDS ADJUDICATION",
-      hint: "loom stage adjudicate client",
+      command: null,
+      note: "a judge session is ruling on the open disputes",
+      automatic: true,
       failure_type: null,
       failure_label: null,
       evidence: [],
@@ -183,5 +185,26 @@ describe("stage modal", () => {
     expect(counts.textContent).not.toContain("acceptance criterion");
     expect(screen.getByText(reason)).toBeTruthy();
     expect(screen.getAllByText(reason)).toHaveLength(1);
+  });
+
+  it("heads an automatic entry with what loom is doing and an operator entry with what to do", () => {
+    const stage = terminalStage();
+    const operator = fixture.attention.find((entry) => entry.id === "client");
+    if (!operator) throw new Error("fixture attention entry client is missing");
+    renderModal(stage, `/?stage=${stage.id}`, true, [operator]);
+
+    expect(screen.getByText("what to do")).toBeTruthy();
+    expect(screen.queryByText("what loom is doing")).toBeNull();
+    cleanup();
+
+    const note = "auto-retry 2 of 3 pending after a crash";
+    renderModal(stage, `/?stage=${stage.id}`, true, [
+      { ...operator, label: "BLOCKED", command: null, note, automatic: true },
+    ]);
+
+    expect(screen.getByText("what loom is doing")).toBeTruthy();
+    expect(screen.queryByText("what to do")).toBeNull();
+    expect(screen.getByText(note)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^copy / })).toBeNull();
   });
 });

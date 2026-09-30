@@ -18,13 +18,16 @@ function settledSnapshot(): Snapshot {
   return snapshot;
 }
 
+const NOTE = "the agent is waiting on a question: answer it in the stage's terminal";
+
 function attentionFor(stage: StageSummary, label: string) {
   return {
     ...fixture.attention[0]!,
     id: stage.id,
     name: stage.name,
     label,
-    hint: "loom stage resume example",
+    command: null,
+    note: NOTE,
   };
 }
 
@@ -37,7 +40,7 @@ describe("notifiableEvents", () => {
     expect(notifiableEvents(fixture, structuredClone(fixture))).toEqual([]);
   });
 
-  it("emits a newly arrived attention entry without its hint", () => {
+  it("emits a newly arrived attention entry without its note", () => {
     const previous = structuredClone(fixture);
     const next = structuredClone(fixture);
     const stage = next.status.stages[0]!;
@@ -53,7 +56,7 @@ describe("notifiableEvents", () => {
         body: `${stage.name} (${stage.id})`,
       },
     ]);
-    expect(events[0]!.body).not.toContain(entry.hint);
+    expect(events[0]!.body).not.toContain(NOTE);
   });
 
   it("emits attention again when the same stage receives a different label", () => {
@@ -72,12 +75,33 @@ describe("notifiableEvents", () => {
     const previous = structuredClone(fixture);
     const pending = structuredClone(fixture);
     const stage = pending.status.stages[0]!;
-    pending.attention = [attentionFor(stage, "COMPLETION PENDING")];
+    pending.attention = [{ ...attentionFor(stage, "COMPLETION PENDING"), automatic: true }];
     const blocked = structuredClone(pending);
     blocked.attention = [attentionFor(stage, "COMPLETION BLOCKED")];
 
     expect(notifiableEvents(previous, pending)).toEqual([]);
     expect(notifiableEvents(pending, blocked)).toMatchObject([
+      { key: `attention:${stage.id}:COMPLETION BLOCKED` },
+    ]);
+  });
+
+  it("skips a new entry loom is handling itself", () => {
+    const previous = structuredClone(fixture);
+    const next = structuredClone(fixture);
+    const stage = next.status.stages[0]!;
+    next.attention.push({ ...attentionFor(stage, "ADJUDICATING"), automatic: true });
+
+    expect(notifiableEvents(previous, next)).toEqual([]);
+  });
+
+  it("emits an entry loom was handling once it passes to the operator", () => {
+    const previous = structuredClone(fixture);
+    const stage = previous.status.stages[0]!;
+    previous.attention = [{ ...attentionFor(stage, "COMPLETION BLOCKED"), automatic: true }];
+    const next = structuredClone(previous);
+    next.attention = [attentionFor(stage, "COMPLETION BLOCKED")];
+
+    expect(notifiableEvents(previous, next)).toMatchObject([
       { key: `attention:${stage.id}:COMPLETION BLOCKED` },
     ]);
   });

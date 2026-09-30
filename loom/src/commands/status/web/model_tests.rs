@@ -87,7 +87,7 @@ fn fixture_snapshot() -> WebSnapshot {
         .iter()
         .map(WebAttention::from)
         .collect();
-    let status = fixture_status(stages);
+    let status = without_merge_resolver_facts(fixture_status(stages));
     WebSnapshot {
         status,
         attention,
@@ -150,7 +150,9 @@ fn attention_conversion_keeps_failure_label() {
         id: "server".to_owned(),
         name: "Rust server".to_owned(),
         label: "BLOCKED",
-        hint: "loom stage retry server".to_owned(),
+        command: Some("loom stage retry server".to_owned()),
+        note: None,
+        automatic: false,
         failure_type: Some(FailureType::TestFailure),
         evidence: vec!["test failed".to_owned()],
         review_reason: None,
@@ -164,6 +166,11 @@ fn attention_conversion_keeps_failure_label() {
     let attention = WebAttention::from(&entry);
     assert_eq!(attention.label, "BLOCKED");
     assert_eq!(attention.failure_label.as_deref(), Some("test"));
+    let wire = serde_json::to_value(&attention).unwrap();
+    assert_eq!(wire["command"], "loom stage retry server");
+    assert!(wire["note"].is_null());
+    assert_eq!(wire["automatic"], false);
+    assert!(wire.get("hint").is_none());
 }
 
 /// Every [`StageStatus`], ordered as `web/src/api/fixtures/statuses.json` lists

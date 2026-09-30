@@ -42,19 +42,19 @@ pub const LEGEND: [(StageStatus, &str); 13] = [
     ),
     (
         StageStatus::Blocked,
-        "errored; needs intervention → loom stage retry <id>",
+        "errored; crashes auto-retry, else → loom stage retry <id>",
     ),
     (
         StageStatus::CompletedWithFailures,
-        "acceptance failed; retried automatically up to the limit",
+        "acceptance failed → loom stage retry <id>",
     ),
     (
         StageStatus::MergeConflict,
-        "merge conflict → loom stage merge <id>",
+        "merge conflict; a merge resolver session fixes it",
     ),
     (
         StageStatus::MergeBlocked,
-        "merge errored (not a conflict) → loom stage merge <id>",
+        "merge errored (not a conflict); a resolver session fixes it",
     ),
     (
         StageStatus::NeedsHumanReview,

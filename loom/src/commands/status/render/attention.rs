@@ -5,11 +5,11 @@ use std::io::Write;
 
 use crate::commands::status::data::StageSummary;
 
-use super::attention_model::{attention_entries, AttentionEntry};
+use super::attention_model::{attention_entries, human_review_choices, AttentionEntry};
 
 /// Render detailed failure information for blocked stages. The status line,
-/// ID, `Reason:`, and `Hint:` always render for a problem stage; `verbose`
-/// only gates the `Evidence:` listing (see `render_failure_evidence`).
+/// ID, `Reason:`, and the entry's guidance always render for a problem stage;
+/// `verbose` only gates the `Evidence:` listing (see `render_failure_evidence`).
 pub fn render_attention<W: Write>(
     w: &mut W,
     stages: &[StageSummary],
@@ -27,33 +27,35 @@ pub fn render_attention<W: Write>(
 
     for stage in &problem_stages {
         render_problem_stage(w, stage, verbose)?;
-        // The other problem statuses have one obvious next command; a stage
-        // stopped for a human has three, so it gets the extra lines spelling
-        // them out instead of leaving the operator to `human-review` with no
-        // flags to see them.
-        if stage.has_human_review_choices {
-            render_human_review_choices(w)?;
-        }
     }
 
     Ok(())
 }
 
-/// The three `loom stage human-review` actions, indented under the hint line
-/// `render_problem_stage` already printed for a `NeedsHumanReview` stage.
-/// Kept out of `render_problem_stage` itself so that the pinned
-/// function's line count does not grow.
-fn render_human_review_choices<W: Write>(w: &mut W) -> std::io::Result<()> {
-    const CHOICES: [(&str, &str); 3] = [
-        ("--approve", "queue a fresh session with fresh fix attempts"),
-        ("--force-complete", "skip acceptance and mark completed"),
-        ("--reject <reason>", "block the stage"),
-    ];
-    for (flag, description) in CHOICES {
+/// The entry's command, its note, and, for a stage stopped for a human, the
+/// three full review commands. Prints nothing for a part the entry lacks.
+fn render_guidance<W: Write>(w: &mut W, entry: &AttentionEntry) -> std::io::Result<()> {
+    if let Some(command) = entry.command.as_deref() {
+        writeln!(w, "    {}: {}", "Run".cyan(), command.dimmed())?;
+    }
+    if let Some(note) = entry.note.as_deref() {
+        writeln!(w, "    {}: {}", "Note".cyan(), note.dimmed())?;
+    }
+    if !entry.has_human_review_choices {
+        return Ok(());
+    }
+    let choices = human_review_choices(&entry.id);
+    let width = choices
+        .iter()
+        .map(|(command, _)| command.len())
+        .max()
+        .unwrap_or(0);
+    writeln!(w, "    {}:", "Run one of".cyan())?;
+    for (command, description) in choices {
         writeln!(
             w,
-            "          {}",
-            format!("{flag:<19}{description}").dimmed()
+            "      {}  {description}",
+            format!("{command:<width$}").dimmed()
         )?;
     }
     Ok(())
@@ -95,9 +97,7 @@ fn render_problem_stage<W: Write>(
     }
     render_adjudication_reason(w, entry)?;
     render_last_session(w, entry)?;
-    writeln!(w, "    {}: {}", "Hint".cyan(), entry.hint.dimmed())?;
-
-    Ok(())
+    render_guidance(w, entry)
 }
 
 fn render_completion_blocker<W: Write>(w: &mut W, entry: &AttentionEntry) -> std::io::Result<()> {
@@ -116,7 +116,7 @@ fn render_completion_blocker<W: Write>(w: &mut W, entry: &AttentionEntry) -> std
         writeln!(w, "    last observed: {}", last.dimmed())?;
     }
     render_last_session(w, entry)?;
-    writeln!(w, "    next: {}", blocker.next_action.cyan())
+    render_guidance(w, entry)
 }
 
 fn render_last_session<W: Write>(w: &mut W, entry: &AttentionEntry) -> std::io::Result<()> {
@@ -162,16 +162,16 @@ fn render_adjudication_reason<W: Write>(w: &mut W, entry: &AttentionEntry) -> st
 }
 
 /// Render a stage entirely on account of a failed/refused deferred cleanup:
-/// header, ID, warning body, and its `loom worktree remove` hint. Takes over
-/// the whole presentation regardless of `stage.status` — cleanup runs on
+/// header, ID, warning body, and its `loom worktree remove` command. Takes
+/// over the whole presentation regardless of `stage.status` — cleanup runs on
 /// Skipped stages too, not just Completed. Only called when
 /// `stage.cleanup_warning` is `Some`.
 ///
 /// `cleanup_warning` is flattened to one line and capped at
 /// `MAX_INLINE_CHARS` by `context::untrusted::inline_safe` before it ever
 /// reaches here (git's stderr is otherwise multi-line and can carry an ANSI
-/// escape), so there is only ever one line to print — the hint below points
-/// at the stage file for the untruncated text.
+/// escape), so there is only ever one line to print — it points at the stage
+/// file for the untruncated text.
 fn render_cleanup_warning<W: Write>(w: &mut W, entry: &AttentionEntry) -> std::io::Result<()> {
     writeln!(
         w,
@@ -181,16 +181,14 @@ fn render_cleanup_warning<W: Write>(w: &mut W, entry: &AttentionEntry) -> std::i
     )?;
     writeln!(w, "    ID: {}", entry.id.dimmed())?;
     if let Some(ref warning) = entry.cleanup_warning {
-        writeln!(w, "    Cleanup warning: {}", warning.yellow())?;
+        writeln!(
+            w,
+            "    Cleanup warning: {} (full text in the stage file)",
+            warning.yellow()
+        )?;
     }
     render_last_session(w, entry)?;
-    writeln!(
-        w,
-        "    {}: {} (full text in the stage file)",
-        "Hint".cyan(),
-        entry.hint.dimmed()
-    )?;
-    Ok(())
+    render_guidance(w, entry)
 }
 
 #[cfg(test)]

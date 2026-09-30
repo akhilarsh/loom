@@ -46,6 +46,8 @@ fn make_stage_summary(id: &str, status: StageStatus) -> StageSummary {
         session_backend: None,
         outgoing_session_exit_reason: None,
         completion_blocker: None,
+        merge_resolver_session: None,
+        merge_resolver_attempts: None,
     }
 }
 
@@ -63,39 +65,59 @@ fn completion_blocker(fingerprint: &str, next_action: &str) -> CompletionBlocker
     }
 }
 
+fn rendered(stages: &[StageSummary]) -> String {
+    let mut output = Vec::new();
+    render_attention(&mut output, stages, false).unwrap();
+    String::from_utf8(output).unwrap()
+}
+
 #[test]
-fn needs_human_review_renders_the_human_review_hint_and_the_three_choices() {
+fn needs_human_review_renders_the_three_full_review_commands() {
     let stages = vec![make_stage_summary(
         "integration-verify",
         StageStatus::NeedsHumanReview,
     )];
-    let mut output = Vec::new();
-    render_attention(&mut output, &stages, false).unwrap();
-    let output_str = String::from_utf8(output).unwrap();
+    let output_str = rendered(&stages);
+
+    for (command, description) in [
+        (
+            "loom stage human-review integration-verify --approve",
+            "queue a fresh session with fresh fix attempts",
+        ),
+        (
+            "loom stage human-review integration-verify --force-complete",
+            "skip acceptance and mark completed",
+        ),
+        (
+            "loom stage human-review integration-verify --reject \"<reason>\"",
+            "block the stage",
+        ),
+    ] {
+        assert!(output_str.contains(command), "output: {output_str}");
+        assert!(output_str.contains(description), "output: {output_str}");
+    }
+    // Label substrings, not `Label:`: a colored label is followed by an escape
+    // sequence when stdout is a terminal.
+    assert!(
+        output_str.matches("Run").count() == 1 && !output_str.contains("Note"),
+        "a review entry has no single command or note line: {output_str}"
+    );
+}
+
+#[test]
+fn an_automatic_entry_renders_its_note_and_no_command() {
+    let mut stage = make_stage_summary("docs", StageStatus::MergeConflict);
+    stage.merge_resolver_session = Some("session-abc".to_string());
+    stage.merge_resolver_attempts = Some(1);
+    let output_str = rendered(&[stage]);
 
     assert!(
-        output_str.contains("loom stage human-review integration-verify"),
+        output_str.contains("merge resolver session-abc is running (attempt 1 of 3)"),
         "output: {output_str}"
     );
-    assert!(output_str.contains("--approve"), "output: {output_str}");
+    assert!(!output_str.contains("Run"), "output: {output_str}");
     assert!(
-        output_str.contains("queue a fresh session with fresh fix attempts"),
-        "output: {output_str}"
-    );
-    assert!(
-        output_str.contains("--force-complete"),
-        "output: {output_str}"
-    );
-    assert!(
-        output_str.contains("skip acceptance and mark completed"),
-        "output: {output_str}"
-    );
-    assert!(
-        output_str.contains("--reject <reason>"),
-        "output: {output_str}"
-    );
-    assert!(
-        output_str.contains("block the stage"),
+        !output_str.contains("loom stage merge"),
         "output: {output_str}"
     );
 }
@@ -244,7 +266,7 @@ fn completion_blockers_render_recovery_details_and_distinct_exit_reasons() {
     let output = String::from_utf8(output).unwrap();
 
     assert!(
-        output.contains("next:")
+        output.contains("Note")
             && output.contains("confirm the sandbox grant, then retry")
             && output.contains("fingerprint:")
             && output.contains("feedface1234")

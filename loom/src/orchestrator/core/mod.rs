@@ -39,6 +39,9 @@ pub mod state_identity;
 mod verdict_apply;
 
 pub(crate) use crash_classification::spawn_failure_type;
+pub(crate) use merge_handler::resolver_attempts::{
+    merge_resolver_attempts, MAX_MERGE_RESOLVER_ATTEMPTS,
+};
 pub use orchestrator::{Orchestrator, OrchestratorConfig, OrchestratorResult};
 pub use state_identity::{abort_foreign_state, check_lock_identity, LockCheck, LockIdentity};
 

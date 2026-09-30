@@ -71,8 +71,14 @@ pub struct WebAttention {
     pub name: String,
     /// Short attention label.
     pub label: String,
-    /// Suggested operator command or action.
-    pub hint: String,
+    /// Shell command the operator should run; `None` when no single command
+    /// applies or loom is handling the state.
+    pub command: Option<String>,
+    /// What loom is doing, or what the operator should do when no single
+    /// command fits. Prose, never a command meant for copying.
+    pub note: Option<String>,
+    /// Whether loom is handling this state itself, so the operator need not act.
+    pub automatic: bool,
     /// Failure category, when present.
     pub failure_type: Option<FailureType>,
     /// Short label for the failure category.
@@ -118,7 +124,9 @@ impl From<&AttentionEntry> for WebAttention {
             id: entry.id.clone(),
             name: entry.name.clone(),
             label: entry.label.to_owned(),
-            hint: entry.hint.clone(),
+            command: entry.command.clone(),
+            note: entry.note.clone(),
+            automatic: entry.automatic,
             failure_type: entry.failure_type.clone(),
             failure_label: entry
                 .failure_type
@@ -190,7 +198,7 @@ pub fn collect_snapshot(
         .flatten()
         .map(|tick| tick.age_secs(Utc::now()));
     WebSnapshot {
-        status,
+        status: without_merge_resolver_facts(status),
         attention,
         alerts,
         daemon,
@@ -201,6 +209,16 @@ pub fn collect_snapshot(
         generated_at: Utc::now(),
         version: crate::version::VERSION.to_owned(),
     }
+}
+
+/// `status` without the merge-resolver facts the daemon ships for the attention
+/// notes: `attention` already states them, and the page's stage schema is strict.
+fn without_merge_resolver_facts(mut status: StatusData) -> StatusData {
+    for stage in &mut status.stages {
+        stage.merge_resolver_session = None;
+        stage.merge_resolver_attempts = None;
+    }
+    status
 }
 
 #[cfg(test)]

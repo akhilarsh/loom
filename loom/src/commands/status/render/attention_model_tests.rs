@@ -2,8 +2,11 @@ use super::*;
 use crate::commands::status::data::{
     ActivityStatus, CompletionBlockerState, CompletionBlockerSummary, StageType,
 };
-use crate::models::failure::FailureType;
+use crate::models::failure::{FailureInfo, FailureType};
 use crate::models::stage::StageStatus;
+
+#[path = "attention_model_guidance_tests.rs"]
+mod guidance_tests;
 
 fn make_stage_summary(id: &str, status: StageStatus) -> StageSummary {
     StageSummary {
@@ -44,7 +47,32 @@ fn make_stage_summary(id: &str, status: StageStatus) -> StageSummary {
         session_backend: None,
         outgoing_session_exit_reason: None,
         completion_blocker: None,
+        merge_resolver_session: None,
+        merge_resolver_attempts: None,
     }
+}
+
+fn failure(failure_type: FailureType) -> Option<FailureInfo> {
+    Some(FailureInfo {
+        failure_type,
+        detected_at: chrono::Utc::now(),
+        evidence: vec![],
+    })
+}
+
+/// The single entry `stage` produces.
+fn entry_for(stage: StageSummary) -> AttentionEntry {
+    let mut entries = attention_entries(&[stage]);
+    assert_eq!(entries.len(), 1);
+    entries.remove(0)
+}
+
+fn guidance(entry: &AttentionEntry) -> (Option<&str>, Option<&str>, bool) {
+    (
+        entry.command.as_deref(),
+        entry.note.as_deref(),
+        entry.automatic,
+    )
 }
 
 fn completion_blocker(state: CompletionBlockerState) -> CompletionBlockerSummary {
@@ -93,19 +121,19 @@ fn entries_cover_adjudication_and_input() {
     let entries = attention_entries(&stages);
     let details = entries
         .iter()
-        .map(|entry| (entry.label, entry.hint.as_str()))
+        .map(|entry| (entry.label, entry.command.as_deref()))
         .collect::<Vec<_>>();
 
     assert_eq!(
         details,
         vec![
-            ("NEEDS INPUT", "loom stage resume stage-3"),
-            ("BLOCKED", "loom stage retry stage-4"),
-            ("MERGE CONFLICT", "loom stage merge stage-8"),
-            ("ACCEPTANCE FAILED", "loom stage retry stage-9"),
-            ("MERGE ERROR", "loom stage merge stage-10"),
-            ("NEEDS REVIEW", "loom stage human-review stage-11"),
-            ("ADJUDICATING", "loom status --verbose"),
+            ("NEEDS INPUT", None),
+            ("BLOCKED", Some("loom stage retry stage-4")),
+            ("MERGE CONFLICT", None),
+            ("ACCEPTANCE FAILED", Some("loom stage retry stage-9")),
+            ("MERGE ERROR", None),
+            ("NEEDS REVIEW", None),
+            ("ADJUDICATING", None),
         ]
     );
     assert!(entries.iter().any(|entry| entry.label == "NEEDS INPUT"));
@@ -145,7 +173,11 @@ fn cleanup_warning_wins_over_completed_status() {
     let entries = attention_entries(&[stage]);
 
     assert_eq!(entries[0].label, "CLEANUP FAILED");
-    assert_eq!(entries[0].hint, "loom worktree remove cleanup-stage");
+    assert_eq!(
+        guidance(&entries[0]),
+        (Some("loom worktree remove cleanup-stage"), None, false)
+    );
+    assert!(!entries[0].has_human_review_choices);
 }
 
 #[test]

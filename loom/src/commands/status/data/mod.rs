@@ -175,6 +175,15 @@ pub struct StageSummary {
     /// Actionable completion failure associated with the exact current session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_blocker: Option<CompletionBlockerSummary>,
+    /// Id of the live merge-resolver session for a `MergeConflict` or
+    /// `MergeBlocked` stage. Feeds the attention note: it crosses the daemon
+    /// socket, and `web::model::collect_snapshot` drops it from the browser wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_resolver_session: Option<String>,
+    /// Merge-resolver sessions the daemon has spawned for a `MergeConflict` or
+    /// `MergeBlocked` stage; `None` for every other stage. Carried like the above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_resolver_attempts: Option<u32>,
 }
 
 impl StageSummary {

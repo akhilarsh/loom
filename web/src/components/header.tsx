@@ -17,7 +17,8 @@ import { attentionAtom, snapshotAtom } from "@/state/atoms";
 /// stage and merge rails, with the daemon/feed state and controls on the right.
 export function Header({ onOpenLegend }: { onOpenLegend: () => void }) {
   const snapshot = useAtomValue(snapshotAtom);
-  const attention = useAtomValue(attentionAtom);
+  // The alarm cell counts only what waits on the operator.
+  const attention = useAtomValue(attentionAtom).filter((entry) => !entry.automatic);
   const openSettings = useOpenSettings();
 
   return (

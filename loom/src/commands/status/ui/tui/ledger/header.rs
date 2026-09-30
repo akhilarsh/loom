@@ -45,7 +45,10 @@ fn header_lines(view: &LedgerView, width: u16) -> Vec<Line<'static>> {
                 data.progress.executing,
                 queued,
                 waiting,
-                view.attention.len(),
+                view.attention
+                    .iter()
+                    .filter(|entry| !entry.automatic)
+                    .count(),
                 data.progress.completed,
             ),
             width,

@@ -219,7 +219,9 @@ function Body({
         <div className="flex flex-col gap-4">
           {attention && (
             <div className="flex flex-col gap-2.5 rounded-lg border border-hairline bg-card p-4 text-sm">
-              <h2 className="eyebrow">what to do</h2>
+              <h2 className="eyebrow">
+                {attention.automatic ? "what loom is doing" : "what to do"}
+              </h2>
               <AttentionBody entry={attention} />
             </div>
           )}

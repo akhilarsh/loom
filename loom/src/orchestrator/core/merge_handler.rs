@@ -23,17 +23,12 @@ use super::persistence::Persistence;
 use super::{clear_status_line, Orchestrator};
 
 mod merge_gate;
+pub(super) mod resolver_attempts;
 mod spawn_failure;
 
-/// Maximum number of merge-resolver sessions the daemon will spawn for a single
-/// stage before giving up and routing it to `NeedsHumanReview`. Mirrors the
-/// crash-retry cap (`DEFAULT_MAX_RETRIES`).
-///
-/// Without this cap a resolver that fails fast and deterministically would be
-/// respawned on every ~5s poll cycle (the kept signal file is NOT a guard —
-/// `find_live_merge_session_for_stage` deletes it once the PID is dead), each
-/// spawn on `opus`/`xhigh` → unbounded token + window burn (O-3).
-const MAX_MERGE_RESOLVER_ATTEMPTS: u32 = 3;
+use resolver_attempts::{
+    attempts_dir, attempts_file, merge_resolver_attempts, MAX_MERGE_RESOLVER_ATTEMPTS,
+};
 
 impl Orchestrator {
     pub(super) fn handle_merge_session_completed(
@@ -901,7 +896,7 @@ impl Orchestrator {
             // Count only successfully spawned resolvers. Probe and spawn
             // failures are transient operational errors, not failed resolver
             // sessions, so they must leave the retry budget intact.
-            let attempts = self.merge_resolver_attempts(&stage_id);
+            let attempts = merge_resolver_attempts(&self.config.work_dir, &stage_id);
             if attempts >= MAX_MERGE_RESOLVER_ATTEMPTS {
                 self.escalate_merge_resolver_exhausted(&stage_id, attempts);
                 continue;
@@ -918,31 +913,11 @@ impl Orchestrator {
         Ok(spawned)
     }
 
-    /// Directory holding per-stage merge-resolver attempt counters.
-    ///
-    /// Stored on disk (rather than in memory) so the cap survives daemon
-    /// restarts — a resolver that crash-loops across restarts must not reset
-    /// its budget each time `loom run` starts.
-    fn merge_resolver_attempts_dir(&self) -> std::path::PathBuf {
-        self.config.work_dir.join("merge-resolver-attempts")
-    }
-
-    fn merge_resolver_attempts(&self, stage_id: &str) -> u32 {
-        std::fs::read_to_string(
-            self.merge_resolver_attempts_dir()
-                .join(format!("{stage_id}.count")),
-        )
-        .ok()
-        .and_then(|count| count.trim().parse::<u32>().ok())
-        .unwrap_or(0)
-    }
-
     /// Record a resolver only after its session successfully spawned.
     fn next_merge_resolver_attempt(&self, stage_id: &str) -> u32 {
-        let dir = self.merge_resolver_attempts_dir();
-        let path = dir.join(format!("{stage_id}.count"));
-        let current = self.merge_resolver_attempts(stage_id);
-        let next = current.saturating_add(1);
+        let dir = attempts_dir(&self.config.work_dir);
+        let path = attempts_file(&self.config.work_dir, stage_id);
+        let next = merge_resolver_attempts(&self.config.work_dir, stage_id).saturating_add(1);
         if let Err(e) = std::fs::create_dir_all(&dir) {
             tracing::warn!(
                 stage_id = %stage_id,
@@ -966,9 +941,7 @@ impl Orchestrator {
     /// Called once a merge is finalized so a later, unrelated conflict on the
     /// same stage id starts with a fresh budget.
     fn clear_merge_resolver_attempts(&self, stage_id: &str) {
-        let path = self
-            .merge_resolver_attempts_dir()
-            .join(format!("{stage_id}.count"));
+        let path = attempts_file(&self.config.work_dir, stage_id);
         if path.exists() {
             if let Err(e) = std::fs::remove_file(&path) {
                 tracing::warn!(
@@ -1029,10 +1002,8 @@ impl Orchestrator {
     /// stage is no longer in MergeConflict/MergeBlocked, so the spawn loop stops
     /// considering it and respawning ceases.
     fn escalate_merge_resolver_exhausted(&mut self, stage_id: &str, failed_attempts: u32) {
-        let reason = format!(
-            "merge resolution failed after {failed_attempts} resolver attempt(s); \
-             escalating to human review. Resolve manually with `loom stage merge {stage_id}`."
-        );
+        let steps = self.manual_merge_steps(stage_id);
+        let reason = format!("merge resolver gave up after {failed_attempts} attempt(s): {steps}");
         tracing::error!(
             stage_id = %stage_id,
             failed_attempts = %failed_attempts,
@@ -1050,7 +1021,7 @@ impl Orchestrator {
         clear_status_line();
         eprintln!(
             "Stage '{stage_id}' needs human review: merge resolution failed after \
-             {failed_attempts} attempt(s). Run `loom stage merge {stage_id}` manually."
+             {failed_attempts} attempt(s). To finish it, {steps}."
         );
     }
 
@@ -1215,13 +1186,6 @@ mod tests {
             !StageStatus::MergeBlocked.can_transition_to(&StageStatus::NeedsHumanReview),
             "MergeBlocked -> NeedsHumanReview is expected to be illegal (escalation forces it)"
         );
-    }
-
-    #[test]
-    fn test_max_merge_resolver_attempts_matches_default_retries() {
-        // The merge-resolver respawn cap should mirror the crash-retry cap so
-        // both failure-bounding mechanisms agree on "3 attempts".
-        assert_eq!(super::MAX_MERGE_RESOLVER_ATTEMPTS, 3);
     }
 
     #[test]

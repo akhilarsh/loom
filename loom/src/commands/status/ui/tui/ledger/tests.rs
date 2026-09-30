@@ -76,6 +76,8 @@ pub(super) fn make_stage(id: &str, status: StageStatus) -> StageSummary {
         session_backend: None,
         outgoing_session_exit_reason: None,
         completion_blocker: None,
+        merge_resolver_session: None,
+        merge_resolver_attempts: None,
     }
 }
 
@@ -342,7 +344,10 @@ fn header_counts_match_progress() {
         .iter()
         .filter(|stage| stage.status.bucket() == StatusBucket::Completed)
         .count();
-    let attention_count = attention_entries(&data.stages).len();
+    let attention = attention_entries(&data.stages);
+    let attention_count = attention.iter().filter(|entry| !entry.automatic).count();
+    // Entries loom handles itself (adjudication, merge resolution) are left out.
+    assert!(attention_count < attention.len());
     let rows = render_view(&data, 120, 40, false);
     let header = &rows[2];
     assert!(header.contains(&format!("{executing} executing")));

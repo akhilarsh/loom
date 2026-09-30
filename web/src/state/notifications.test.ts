@@ -53,7 +53,8 @@ function attentionFor(stage: StageSummary, label: string) {
     id: stage.id,
     name: stage.name,
     label,
-    hint: "loom stage resume example",
+    command: null,
+    note: "the agent is waiting on a question: answer it in the stage's terminal",
   };
 }
 

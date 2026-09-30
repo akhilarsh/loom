@@ -43,7 +43,8 @@ const EVIDENCE_TRUNCATED_MARKER: &str = "... evidence truncated; see the stage f
 /// a control character in the first place. `incoherence` is included because it
 /// is not the fixed string it looks like — `orchestrator::coherence` wraps
 /// fixed prose around the stage's `session` pointer and a session record's
-/// `stage_id`, both read from unvalidated frontmatter.
+/// `stage_id`, both read from unvalidated frontmatter. `merge_resolver_session`
+/// is likewise a session record's `id`, and the attention note prints it.
 pub(super) fn sanitize_stage_summary(summary: &mut StageSummary) {
     flatten(&mut summary.model);
     summary.execution_models.iter_mut().for_each(flatten);
@@ -54,6 +55,7 @@ pub(super) fn sanitize_stage_summary(summary: &mut StageSummary) {
     flatten_multiline(&mut summary.review_notes);
     summary.cleanup_warning.iter_mut().for_each(flatten);
     summary.incoherence.iter_mut().for_each(flatten);
+    summary.merge_resolver_session.iter_mut().for_each(flatten);
     if let Some(blocker) = summary.completion_blocker.as_mut() {
         flatten(&mut blocker.failure_code);
         blocker.summary.iter_mut().for_each(flatten);
@@ -153,6 +155,8 @@ mod tests {
             session_backend: None,
             outgoing_session_exit_reason: None,
             completion_blocker: None,
+            merge_resolver_session: None,
+            merge_resolver_attempts: None,
         }
     }
 
@@ -212,6 +216,18 @@ mod tests {
 
         let evidence = &stage.failure_info.unwrap().evidence;
         assert_eq!(evidence, &["build failed dessap stset lla"]);
+    }
+
+    #[test]
+    fn a_control_sequence_in_the_merge_resolver_session_is_flattened() {
+        let mut stage = summary();
+        stage.merge_resolver_session = Some("resolver\u{1b}[2J\u{202E}1".to_string());
+
+        sanitize_stage_summary(&mut stage);
+
+        let session = stage.merge_resolver_session.unwrap();
+        assert!(!session.contains('\u{1b}'));
+        assert!(!session.contains('\u{202E}'));
     }
 
     #[test]

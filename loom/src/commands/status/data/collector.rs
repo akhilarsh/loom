@@ -7,6 +7,7 @@ use crate::fs::work_dir::{load_config, resolve_context_ceiling_tokens, WorkDir};
 use crate::models::session::{Session, SessionType};
 use crate::models::stage::{Stage, StageStatus, StatusBucket};
 use crate::orchestrator::coherence::executing_stage_incoherence;
+use crate::orchestrator::core::merge_resolver_attempts;
 use crate::orchestrator::get_merge_point;
 use crate::parser::frontmatter::parse_from_markdown;
 use crate::plan::parser::extract_plan_name;
@@ -14,7 +15,7 @@ use crate::verify::transitions::list_all_stages;
 
 use super::completion_view::collect_completion_view;
 use super::heartbeat_facts::{heartbeat_facts, stage_extras};
-use super::sanitize::sanitize_stage_summary;
+use super::sanitize::{sanitize_stage_summary, valid_stage_id};
 use super::timing::{elapsed_secs_live, execution_secs_live};
 use super::{MergeSummary, ProgressSummary, StageSummary, StatusData};
 
@@ -128,6 +129,41 @@ struct SessionFacts<'a> {
     context_ceiling_tokens: Option<u32>,
     pid: Option<u32>,
     session_alive: bool,
+    merge_resolver_session: Option<String>,
+    merge_resolver_attempts: Option<u32>,
+}
+
+/// The live merge resolver for a stage in a merge state, if one is running: a
+/// non-terminal `Merge` session naming the stage whose recorded pid, if any, is
+/// alive. Deliberately not `find_live_merge_session_for_stage`, which deletes
+/// stale signal files; status collection never writes.
+fn live_merge_resolver<'a>(stage: &Stage, sessions: &'a [Session]) -> Option<&'a Session> {
+    sessions.iter().find(|s| {
+        s.session_type == SessionType::Merge
+            && s.stage_id.as_deref() == Some(stage.id.as_str())
+            && !s.status.is_terminal()
+            && s.pid.is_none_or(crate::process::is_process_alive)
+    })
+}
+
+/// The live resolver's id and the resolver attempts spent, for a stage the
+/// daemon resolves a merge for; `(None, None)` for every other stage. An id
+/// that is unsafe as a path segment reads no counter file.
+fn merge_resolver_facts(
+    stage: &Stage,
+    sessions: &[Session],
+    work_dir: &WorkDir,
+) -> (Option<String>, Option<u32>) {
+    if !matches!(
+        stage.status,
+        StageStatus::MergeConflict | StageStatus::MergeBlocked
+    ) {
+        return (None, None);
+    }
+    (
+        live_merge_resolver(stage, sessions).map(|s| s.id.clone()),
+        valid_stage_id(&stage.id).then(|| merge_resolver_attempts(work_dir.root(), &stage.id)),
+    )
 }
 
 fn session_facts<'a>(
@@ -145,6 +181,8 @@ fn session_facts<'a>(
         .map(|_| resolve_context_ceiling_tokens(work_dir.root(), stage.context_ceiling_tokens));
     let pid = session.and_then(|s| s.pid);
     let session_alive = pid.map(crate::process::is_process_alive).unwrap_or(false);
+    let (merge_resolver_session, merge_resolver_attempts) =
+        merge_resolver_facts(stage, sessions, work_dir);
 
     SessionFacts {
         session,
@@ -154,6 +192,8 @@ fn session_facts<'a>(
         context_ceiling_tokens,
         pid,
         session_alive,
+        merge_resolver_session,
+        merge_resolver_attempts,
     }
 }
 
@@ -180,9 +220,8 @@ fn build_stage_summary(stage: &Stage, sessions: &[Session], work_dir: &WorkDir) 
     let now = Utc::now();
     let heartbeat = heartbeat_facts(stage, facts.session, work_dir);
     let extras = stage_extras(stage, work_dir);
-    let outgoing = assigned_session(stage, sessions);
     let (outgoing_session_exit_reason, completion_blocker) =
-        collect_completion_view(stage, outgoing, work_dir);
+        collect_completion_view(stage, assigned_session(stage, sessions), work_dir);
 
     StageSummary {
         id: stage.id.clone(),
@@ -222,6 +261,8 @@ fn build_stage_summary(stage: &Stage, sessions: &[Session], work_dir: &WorkDir) 
         session_backend: facts.session.map(|s| s.backend),
         outgoing_session_exit_reason,
         completion_blocker,
+        merge_resolver_session: facts.merge_resolver_session,
+        merge_resolver_attempts: facts.merge_resolver_attempts,
     }
 }
 

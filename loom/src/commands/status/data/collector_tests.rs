@@ -259,3 +259,102 @@ fn stage_summary_ignores_unattested_current_checkpoint() {
 
     assert!(summary.completion_blocker.is_none());
 }
+
+#[test]
+fn live_merge_resolver_ignores_a_terminal_merge_session() {
+    let (_tmp, work_dir) = temp_work_dir();
+    let stage = make_test_stage("stage-1", StageStatus::MergeConflict);
+    let mut finished = Session::new();
+    finished.id = "resolver-old".to_string();
+    finished.session_type = SessionType::Merge;
+    finished.stage_id = Some("stage-1".to_string());
+    finished.status = SessionStatus::Completed;
+    let mut live = finished.clone();
+    live.id = "resolver-live".to_string();
+    live.status = SessionStatus::Running;
+
+    let only_finished = build_stage_summary(&stage, &[finished.clone()], &work_dir);
+    let with_live = build_stage_summary(&stage, &[finished, live], &work_dir);
+
+    assert_eq!(only_finished.merge_resolver_session, None);
+    assert_eq!(
+        with_live.merge_resolver_session.as_deref(),
+        Some("resolver-live")
+    );
+    assert_eq!(with_live.merge_resolver_attempts, Some(0));
+}
+
+#[test]
+fn merge_resolver_facts_cross_the_daemon_wire_for_merge_stages_only() {
+    let (_tmp, work_dir) = temp_work_dir();
+    let mut resolver = Session::new();
+    resolver.session_type = SessionType::Merge;
+    resolver.stage_id = Some("stage-1".to_string());
+    resolver.status = SessionStatus::Running;
+    let sessions = [resolver.clone()];
+    let merging = make_test_stage("stage-1", StageStatus::MergeBlocked);
+    let queued = make_test_stage("stage-1", StageStatus::Queued);
+    let merging = build_stage_summary(&merging, &sessions, &work_dir);
+    let queued = build_stage_summary(&queued, &sessions, &work_dir);
+
+    let received: StageSummary =
+        serde_json::from_str(&serde_json::to_string(&merging).unwrap()).unwrap();
+    let queued_wire = serde_json::to_value(&queued).unwrap();
+
+    assert_eq!(received.merge_resolver_session, Some(resolver.id));
+    assert_eq!(received.merge_resolver_attempts, Some(0));
+    assert!(queued_wire.get("merge_resolver_session").is_none());
+    assert!(queued_wire.get("merge_resolver_attempts").is_none());
+}
+
+/// Every directory (`None`) and file (its bytes) under `dir`, so a test can
+/// prove that collecting status left the tree exactly as it found it.
+fn tree(dir: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>> {
+    let mut entries = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            entries.extend(tree(&path));
+            entries.insert(path, None);
+        } else {
+            let bytes = std::fs::read(&path).unwrap();
+            entries.insert(path, Some(bytes));
+        }
+    }
+    entries
+}
+
+#[test]
+fn merge_resolver_attempts_are_read_from_the_counter_file_without_writing() {
+    let (_tmp, work_dir) = temp_work_dir();
+    let counters = work_dir.root().join("merge-resolver-attempts");
+    std::fs::create_dir_all(&counters).unwrap();
+    std::fs::write(counters.join("stage-1.count"), "2").unwrap();
+    let before = tree(work_dir.root());
+    let stage = make_test_stage("stage-1", StageStatus::MergeBlocked);
+
+    let summary = build_stage_summary(&stage, &[], &work_dir);
+
+    assert_eq!(summary.merge_resolver_attempts, Some(2));
+    assert_eq!(tree(work_dir.root()), before);
+}
+
+#[test]
+fn a_merge_session_whose_process_died_is_not_the_live_resolver() {
+    let (_tmp, work_dir) = temp_work_dir();
+    let stage = make_test_stage("stage-1", StageStatus::MergeConflict);
+    let mut dead = Session::new();
+    dead.session_type = SessionType::Merge;
+    dead.stage_id = Some("stage-1".to_string());
+    dead.status = SessionStatus::Running;
+    // Above Linux's pid_max, so no process holds it (see `process::tests`).
+    dead.pid = Some(999_999_999);
+    let mut live = dead.clone();
+    live.pid = Some(std::process::id());
+
+    let with_dead = build_stage_summary(&stage, &[dead], &work_dir);
+    let with_live = build_stage_summary(&stage, &[live.clone()], &work_dir);
+
+    assert_eq!(with_dead.merge_resolver_session, None);
+    assert_eq!(with_live.merge_resolver_session, Some(live.id));
+}

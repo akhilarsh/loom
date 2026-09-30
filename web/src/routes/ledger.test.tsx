@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { createStore } from "jotai";
 import { Provider } from "jotai/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -40,6 +40,16 @@ describe("ledger route", () => {
     // The "server" stage is the only one with context tokens in the fixture
     // (312000 of an 800000 ceiling).
     expect(screen.getByText("39%")).toBeTruthy();
+  });
+
+  it("leaves the automatic merge conflict out of the header's attention count", () => {
+    renderAt("/ledger");
+
+    const rail = screen.getByRole("region", { name: "stages" });
+    const cell = within(rail).getByText("attention").closest("li");
+    if (!cell) throw new Error("the attention cell is missing");
+    expect(snapshot.attention).toHaveLength(3);
+    expect(within(cell).getByText("2")).toBeTruthy();
   });
 });
 

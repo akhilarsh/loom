@@ -15,7 +15,7 @@ import { attentionAtom } from "@/state/atoms";
 /// Computed here because no formatter exposes it.
 ///
 /// Keyed on the Rust side's literal attention-label strings
-/// (`loom/src/commands/status/render/attention_model.rs:79-85`). It omits
+/// (`status_guidance` in `loom/src/commands/status/render/attention_model.rs`). It omits
 /// "BLOCKED" and "CLEANUP FAILED" deliberately — they fall through to the
 /// `"blocked"` default below and land on the right tone and glyph anyway. A
 /// label rename on the Rust side desyncs this map with no compile-time
@@ -37,18 +37,48 @@ export function attentionStatus(entry: Attention): StageStatus {
   return LABEL_STATUS[entry.label] ?? "blocked";
 }
 
+/// A state loom is resolving itself is never an error for the operator.
 export function attentionHazard(entry: Attention): "error" | "warning" {
+  if (entry.automatic) return "warning";
   return hazardTone(attentionStatus(entry)) ?? "error";
 }
 
-/// One card per stage that needs a person; hidden when nothing does.
+/// One card per attention entry: the ones waiting on a person under "needs
+/// attention", the ones loom is resolving under "handled by loom". Each group
+/// is hidden when empty, the whole panel when both are.
 export function AttentionPanel() {
   const entries = useAtomValue(attentionAtom);
   if (entries.length === 0) return null;
   return (
-    <section aria-labelledby="attention-title" className="@container flex flex-col gap-3">
-      <h2 id="attention-title" className="eyebrow">
-        needs attention
+    <div className="flex flex-col gap-5">
+      <AttentionGroup
+        titleId="attention-title"
+        title="needs attention"
+        entries={entries.filter((entry) => !entry.automatic)}
+      />
+      <AttentionGroup
+        titleId="attention-automatic-title"
+        title="handled by loom"
+        entries={entries.filter((entry) => entry.automatic)}
+      />
+    </div>
+  );
+}
+
+function AttentionGroup({
+  titleId,
+  title,
+  entries,
+}: {
+  titleId: string;
+  title: string;
+  entries: Attention[];
+}) {
+  if (entries.length === 0) return null;
+  return (
+    <section aria-labelledby={titleId} className="@container flex flex-col gap-3">
+      <h2 id={titleId} className="eyebrow">
+        {title}
       </h2>
       <div className="grid grid-cols-1 gap-3 @3xl:grid-cols-2 @6xl:grid-cols-3">
         {entries.map((entry) => (
@@ -88,16 +118,20 @@ function AttentionCard({ entry }: { entry: Attention }) {
   );
 }
 
-/// The evidence, the command, the review choices, and the cleanup warning:
-/// what the card and the stage dialog both show under their strips.
+/// The evidence, the note, the command, the review choices, and the cleanup
+/// warning: what the card and the stage dialog both show under their strips.
+/// The note is prose, so it never gets a copy button.
 export function AttentionBody({ entry }: { entry: Attention }) {
   return (
     <>
       {entry.evidence.length > 0 && <Evidence lines={entry.evidence} />}
-      <div className="flex flex-col gap-1.5 text-foreground">
-        <CopyCommand command={entry.hint} />
-        {entry.has_human_review_choices && <ReviewChoices id={entry.id} />}
-      </div>
+      {entry.note && <p>{entry.note}</p>}
+      {(entry.command || entry.has_human_review_choices) && (
+        <div className="flex flex-col gap-1.5 text-foreground">
+          {entry.command && <CopyCommand command={entry.command} />}
+          {entry.has_human_review_choices && <ReviewChoices id={entry.id} />}
+        </div>
+      )}
       {entry.cleanup_warning && (entry.review_reason || entry.failure_type) && (
         <p className={cn("text-xs", toneClass("warning"))}>{entry.cleanup_warning}</p>
       )}

@@ -51,6 +51,8 @@ macro_rules! stage {
             session_backend: $session_backend,
             outgoing_session_exit_reason: None,
             completion_blocker: None,
+            merge_resolver_session: None,
+            merge_resolver_attempts: None,
         }
     };
 }
@@ -204,7 +206,7 @@ fn stage_design() -> StageSummary {
 
 fn stage_docs() -> StageSummary {
     let empty: &[&str] = &[];
-    stage!(
+    let mut stage = stage!(
         "docs",
         "Documentation",
         StageStatus::MergeConflict,
@@ -234,7 +236,10 @@ fn stage_docs() -> StageSummary {
         0,
         None,
         None
-    )
+    );
+    stage.merge_resolver_session = Some("session-3f9a2c1e-1788720000".to_owned());
+    stage.merge_resolver_attempts = Some(1);
+    stage
 }
 
 fn stage_integration_verify() -> StageSummary {

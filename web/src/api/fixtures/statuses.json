@@ -45,25 +45,25 @@
     "status": "blocked",
     "icon": "✗",
     "label": "Blocked",
-    "legend": "errored; needs intervention → loom stage retry <id>"
+    "legend": "errored; crashes auto-retry, else → loom stage retry <id>"
   },
   {
     "status": "completed-with-failures",
     "icon": "⚠",
     "label": "Failed",
-    "legend": "acceptance failed; retried automatically up to the limit"
+    "legend": "acceptance failed → loom stage retry <id>"
   },
   {
     "status": "merge-conflict",
     "icon": "⚡",
     "label": "Conflict",
-    "legend": "merge conflict → loom stage merge <id>"
+    "legend": "merge conflict; a merge resolver session fixes it"
   },
   {
     "status": "merge-blocked",
     "icon": "⊗",
     "label": "MergeBlk",
-    "legend": "merge errored (not a conflict) → loom stage merge <id>"
+    "legend": "merge errored (not a conflict); a resolver session fixes it"
   },
   {
     "status": "needs-human-review",

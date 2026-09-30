@@ -44,6 +44,8 @@ fn make_stage_summary(id: &str, deps: Vec<&str>, status: StageStatus) -> StageSu
         session_backend: None,
         outgoing_session_exit_reason: None,
         completion_blocker: None,
+        merge_resolver_session: None,
+        merge_resolver_attempts: None,
     }
 }
 

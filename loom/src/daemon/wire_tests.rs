@@ -114,6 +114,8 @@ fn stage_summary(id: &str, status: StageStatus) -> StageSummary {
         session_backend: None,
         outgoing_session_exit_reason: None,
         completion_blocker: None,
+        merge_resolver_session: None,
+        merge_resolver_attempts: None,
     }
 }
 

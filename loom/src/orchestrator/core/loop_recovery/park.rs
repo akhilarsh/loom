@@ -191,7 +191,7 @@ impl Orchestrator {
         remove_signal(&session.id, &self.config.work_dir)?;
         self.active_sessions.remove(stage_id);
         let reason = format!(
-            "completion blocked {} after {repeat_count} verified attempts: {failure_code}; fix it, then retry or reset the stage",
+            "completion blocked {} after {repeat_count} verified attempts: {failure_code}; fix it, then approve, force-complete or reject the review",
             short_fingerprint(fingerprint)
         );
         self.set_completion_review(stage_id, &session.id, reason, true)

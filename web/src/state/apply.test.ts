@@ -49,7 +49,8 @@ function nextSnapshotWithAttention(generatedAt: string) {
     id: stage.id,
     name: stage.name,
     label: "NEEDS INPUT",
-    hint: "loom stage resume example",
+    command: null,
+    note: "the agent is waiting on a question: answer it in the stage's terminal",
   });
   return next;
 }

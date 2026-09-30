@@ -5,7 +5,8 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 /// A shell command in mono with a copy button; shows a tick for a moment
-/// after copying.
+/// after copying. A long command wraps onto further lines, so two commands
+/// that share a prefix never read the same; the button stays on the first line.
 export function CopyCommand({ command, className }: { command: string; className?: string }) {
   const [copied, setCopied] = useState(false);
 
@@ -27,11 +28,11 @@ export function CopyCommand({ command, className }: { command: string; className
   return (
     <span
       className={cn(
-        "inline-flex max-w-full items-center gap-1 rounded-md border border-hairline bg-background pl-2.5",
+        "inline-flex max-w-full items-start gap-1 rounded-md border border-hairline bg-background pl-2.5",
         className,
       )}
     >
-      <code className="truncate py-1 text-xs">{command}</code>
+      <code className="min-w-0 py-1 text-xs wrap-anywhere">{command}</code>
       <Button
         type="button"
         variant="ghost"

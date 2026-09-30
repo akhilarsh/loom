@@ -2,8 +2,6 @@ import type { Snapshot } from "@/api/schema";
 import { statusesById } from "@/lib/activity";
 import { orderStages } from "@/lib/levels";
 
-const INFORMATIONAL_LABEL = "COMPLETION PENDING";
-
 export interface NotifyEvent {
   /** Stable de-dupe key; also used as the Notification `tag`. */
   key: string;
@@ -42,13 +40,17 @@ export function notifiableEvents(previous: Snapshot | null, next: Snapshot): Not
   }
 
   const events: NotifyEvent[] = [];
+  // Only entries waiting on the operator notify, so one loom was handling that
+  // passes to the operator under the same label is new to them.
   const previousAttention = new Set(
-    previous.attention.map((entry) => `${entry.id}:${entry.label}`),
+    previous.attention
+      .filter((entry) => !entry.automatic)
+      .map((entry) => `${entry.id}:${entry.label}`),
   );
 
   for (const entry of next.attention) {
     const attentionKey = `${entry.id}:${entry.label}`;
-    if (entry.label === INFORMATIONAL_LABEL || previousAttention.has(attentionKey)) {
+    if (entry.automatic || previousAttention.has(attentionKey)) {
       continue;
     }
     events.push({
