@@ -60,7 +60,16 @@ cargo fmt
 echo "Linting markdown files..."
 cd "$REPO_ROOT" || exit 1
 if [ -n "$(git ls-files -- '*.md')" ]; then
-    git ls-files -z -- '*.md' | xargs -0 bunx markdownlint-cli2 --fix 2>/dev/null || true
+    MD_OUT=$(git ls-files -z -- '*.md' | xargs -0 bunx markdownlint-cli2 --fix 2>&1) || true
+    # The version banner is the only proof the linter ran: bunx dies silently
+    # when the sandbox blocks its cache or the registry. Warn only; pre-push gates.
+    case "$MD_OUT" in
+        *'markdownlint-cli2 v'*) ;;
+        *)
+            echo "WARNING: markdownlint-cli2 could not run - markdown was NOT linted (pre-push will block until it runs)" >&2
+            printf '%s\n' "$MD_OUT" | tail -n 5 >&2
+            ;;
+    esac
 fi
 
 # Re-add any staged files that were modified by formatting
