@@ -4,6 +4,7 @@ pub mod bootstrap;
 pub mod check;
 mod check_lines;
 pub mod context;
+mod context_render;
 pub mod eval;
 pub mod sync;
 pub mod telemetry;

@@ -32,7 +32,7 @@
 
 use crate::context::config::RetrievalConfig;
 use crate::context::delivery::{self, DeliveryRecord};
-use crate::context::retrieve::{context_epoch, retrieve_for_stage, StageQuery};
+use crate::context::retrieve::{context_epoch, retrieve_for_stage, StageQuery, Surface};
 use crate::context::schema::ContextPack;
 use crate::fs::work_dir::WorkDir;
 use anyhow::Result;
@@ -151,7 +151,7 @@ fn retrieve_pack(
     session_id: Option<&str>,
     config: &RetrievalConfig,
 ) -> Option<ContextPack> {
-    let mut query = StageQuery::new(&target.project_root, prompt);
+    let mut query = StageQuery::new(&target.project_root, prompt).with_surface(Surface::Hook);
     query.overlay = target.overlay.clone();
     match retrieve_for_stage(&query, config.prompt_budget_tokens) {
         Ok(pack) => Some(pack),

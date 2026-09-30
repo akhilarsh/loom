@@ -180,8 +180,14 @@ fn clears_emit_floor(pack: &ContextPack, config: &RetrievalConfig) -> bool {
         .any(|item| clears_item_floor(item, config))
 }
 
+/// A symbol question (`what does X do`) names its one term outright, so the
+/// item it admitted passes even though a single term is below
+/// `config.min_knowledge_terms`.
 fn clears_item_floor(item: &ContextItem, config: &RetrievalConfig) -> bool {
-    item.reasons.iter().any(is_exact_rung) || item.matched_term_count >= config.min_knowledge_terms
+    item.reasons
+        .iter()
+        .any(|reason| is_exact_rung(reason) || *reason == SelectionReason::SymbolQuestion)
+        || item.matched_term_count >= config.min_knowledge_terms
 }
 
 /// A [`SelectionReason`] strong enough to justify emitting on its own — every
@@ -312,4 +318,79 @@ fn carrying(pack: &ContextPack, items: Vec<ContextItem>) -> ContextPack {
     narrowed.omitted.coverage.included_tokens =
         narrowed.items.iter().map(|item| item.token_count).sum();
     narrowed
+}
+
+#[cfg(test)]
+mod floor_tests {
+    use super::*;
+    use crate::context::schema::{
+        Channel, ChunkId, Confidence, Freshness, ItemKind, LifecycleState, OmissionSummary,
+        SourcePointer,
+    };
+    use std::path::PathBuf;
+
+    fn symbol_question_item() -> ContextItem {
+        ContextItem {
+            id: ChunkId::from("src/a.rs#function:plan_key"),
+            kind: ItemKind::SourceNode,
+            pointer: SourcePointer {
+                path: PathBuf::from("src/a.rs"),
+                anchor: String::new(),
+                line_start: Some(1),
+                line_end: Some(3),
+            },
+            summary: "function plan_key".to_string(),
+            source: Channel::Source,
+            token_count: 10,
+            score: 1.0,
+            reasons: vec![SelectionReason::SymbolQuestion],
+            confidence: Confidence::Low,
+            state: LifecycleState::Active,
+            content_hash: "sha256:a".to_string(),
+            excerpt: None,
+            truncated: false,
+            matched_term_count: 1,
+            explanation: None,
+            caveat: None,
+            window: None,
+        }
+    }
+
+    #[test]
+    fn symbol_question_item_passes_the_emit_floor() {
+        let config = RetrievalConfig::default();
+        let mut item = symbol_question_item();
+        assert!(
+            item.matched_term_count < config.min_knowledge_terms,
+            "the fixture must sit below the term floor for this test to mean anything"
+        );
+        assert!(clears_item_floor(&item, &config));
+
+        item.reasons = vec![SelectionReason::Lexical];
+        assert!(
+            !clears_item_floor(&item, &config),
+            "the same item without the symbol-question reason stays below the floor"
+        );
+    }
+
+    #[test]
+    fn a_pack_of_one_symbol_question_item_is_emitted() {
+        let config = RetrievalConfig::default();
+        let pack = ContextPack {
+            query: "what does plan_key do".to_string(),
+            scope: Channel::all().to_vec(),
+            budget_tokens: config.prompt_budget_tokens,
+            estimated_tokens: 10,
+            structural_freshness: Freshness::default(),
+            semantic_freshness: Freshness::default(),
+            items: vec![symbol_question_item()],
+            unmet_required: Vec::new(),
+            omitted: OmissionSummary::default(),
+            dropped_terms: Vec::new(),
+            degraded: None,
+            text_search: None,
+        };
+
+        assert!(compose(Some("stage-a"), &pack, &BTreeSet::new(), &config).is_some());
+    }
 }

@@ -6,11 +6,12 @@
 //! [`StageQuery`] and renders the resulting [`ContextPack`]. There is no model
 //! call and no network access anywhere in this path.
 
+use super::context_render::{format_source_details, format_text_search};
 use crate::context::delivery::dependency_chunk_ids;
 use crate::context::freshness::GraphState;
 use crate::context::local_overlay::OverlayScope;
 use crate::context::render::render_excerpt_block;
-use crate::context::retrieve::{resolve_roots, retrieve_for_stage, StageQuery};
+use crate::context::retrieve::{resolve_roots, retrieve_for_stage, StageQuery, Surface};
 use crate::context::store::ContextStore;
 use crate::context::untrusted::inline_safe;
 use crate::context::{
@@ -146,6 +147,7 @@ fn build_stage_query(
         // The CLI asks about the tree in front of the user, so it reads that
         // checkout's working-tree overlay — not the last clean base revision.
         overlay: OverlayScope::Local,
+        surface: Surface::Cli,
     }
 }
 
@@ -179,6 +181,9 @@ fn print_human(pack: &ContextPack, explain: bool) {
         for item in &pack.items {
             print_item(item, explain);
         }
+    }
+    if let Some(line) = format_text_search(pack) {
+        println!("{line}");
     }
     for requirement in &pack.unmet_required {
         println!("{}", format_unmet_requirement(requirement));
@@ -296,9 +301,10 @@ fn print_item(item: &ContextItem, explain: bool) {
 /// convention every other renderer in this file follows, so callers only
 /// print it.
 ///
-/// A source-node item keeps its single line: `context::extract` never stores
-/// a node's body (see `orchestrator::signals::format::brief`'s module docs),
-/// so there is nothing to quote past the signature already on the line.
+/// A source-node item keeps its single line, plus the explanation, caveat and
+/// attached window `format_source_details` renders under it: a node's body is
+/// never stored (see `orchestrator::signals::format::brief`'s module docs), so
+/// the window is the only source text it can quote.
 ///
 /// The excerpt is rendered through the SAME [`render_excerpt_block`] the
 /// Knowledge Brief uses, so the escape-proofing has one implementation rather
@@ -331,6 +337,7 @@ fn format_item_block(item: &ContextItem, explain: bool) -> String {
             out.push('\n');
         }
     }
+    out.push_str(&format_source_details(item));
     out
 }
 
