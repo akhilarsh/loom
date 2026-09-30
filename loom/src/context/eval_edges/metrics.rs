@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::ids::unknown_label_ids;
 use super::labels::{Expectation, Labels, ReferenceLabel};
 use super::{EdgeQualityReport, LabelCounts};
 use crate::context::graph_store::ResolvedGraph;
@@ -11,7 +12,7 @@ use crate::context::source_graph::{SourceEdge, SourceEdgeKind};
 /// A bound edge at or above this confidence asserts its target.
 const HIGH_CONFIDENCE: f32 = 0.8;
 
-/// The edge kinds a reference label can name, and the kinds impact walks.
+/// The edge kinds a reference label can name.
 const SEMANTIC_KINDS: [SourceEdgeKind; 4] = [
     SourceEdgeKind::Calls,
     SourceEdgeKind::References,
@@ -45,6 +46,7 @@ pub(super) fn score(labels: &Labels, graph: &ResolvedGraph) -> EdgeQualityReport
         impact_false_negatives,
         labels: counts,
         undefined_ratios,
+        unknown_label_ids: unknown_label_ids(labels, graph),
         failures,
     }
 }
@@ -217,8 +219,6 @@ fn count_impact_misses(
     for label in &labels.impact {
         let options = ImpactOptions {
             max_depth: label.depth,
-            kinds: SEMANTIC_KINDS.to_vec(),
-            follow_candidates: true,
             ..ImpactOptions::default()
         };
         let reached: BTreeSet<String> = impact_with(graph, &label.start, &options)

@@ -19,5 +19,9 @@ fn main() {
     let saved = persist(&mut mem, &widget);
     let total = Count::from(3u8);
     let json = to_string(&widget.label());
-    println!("{key} {saved} {} {:?}", total.value, json);
+    let held = holder::held();
+    println!("{key} {saved} {} {:?} {held}", total.value, json);
 }
+
+mod holder;
+mod name;

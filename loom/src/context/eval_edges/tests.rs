@@ -11,8 +11,28 @@ use super::metrics::symbol_matches;
 use super::{build, evaluate_dir, load_thresholds, Thresholds};
 use crate::map::views::eval_edges;
 
-const MAIN_RS: &str =
-    "fn local() {}\nfn run() {\n    local();\n    parse();\n    fetch();\n    save();\n}\n";
+/// Lines 1-7 are the small corpus the metric tests point at; the rest lifts it
+/// to the label floors a corpus must clear.
+const MAIN_RS: &str = "fn local() {}
+fn run() {
+    local();
+    parse();
+    fetch();
+    save();
+}
+fn step_a() {}
+fn step_b() {}
+fn step_c() {}
+fn idle() {}
+fn drive() {
+    step_a();
+    step_b();
+    step_c();
+    local();
+    missing_one();
+    missing_two();
+}
+";
 
 const PERFECT_LABELS: &str = "dialect: rust
 declarations:
@@ -21,13 +41,27 @@ declarations:
   - {path: src/util.rs, kind: function, scope: [parse], line: 1}
   - {path: src/a.rs, kind: function, scope: [save], line: 1}
   - {path: src/b.rs, kind: function, scope: [save], line: 1}
+  - {path: src/main.rs, kind: function, scope: [step_a], line: 8}
+  - {path: src/main.rs, kind: function, scope: [step_b], line: 9}
+  - {path: src/main.rs, kind: function, scope: [step_c], line: 10}
+  - {path: src/main.rs, kind: function, scope: [idle], line: 11}
+  - {path: src/main.rs, kind: function, scope: [drive], line: 12}
 references:
   - {path: src/main.rs, line: 3, symbol: local, expect: {target: \"src/main.rs#function:local\"}}
   - {path: src/main.rs, line: 4, symbol: parse, expect: {target: \"src/util.rs#function:parse\"}}
   - {path: src/main.rs, line: 5, symbol: fetch, expect: {external: true}}
   - {path: src/main.rs, line: 6, symbol: save, expect: {ambiguous: [\"src/a.rs#function:save\", \"src/b.rs#function:save\"]}}
+  - {path: src/main.rs, line: 13, symbol: step_a, expect: {target: \"src/main.rs#function:step_a\"}}
+  - {path: src/main.rs, line: 14, symbol: step_b, expect: {target: \"src/main.rs#function:step_b\"}}
+  - {path: src/main.rs, line: 15, symbol: step_c, expect: {target: \"src/main.rs#function:step_c\"}}
+  - {path: src/main.rs, line: 16, symbol: local, expect: {target: \"src/main.rs#function:local\"}}
+  - {path: src/main.rs, line: 17, symbol: missing_one, expect: {external: true}}
+  - {path: src/main.rs, line: 18, symbol: missing_two, expect: {external: true}}
 impact:
   - {start: \"src/util.rs#function:parse\", depth: 1, expect: [\"src/main.rs#function:run\"]}
+  - {start: \"src/main.rs#function:step_a\", depth: 1, expect: [\"src/main.rs#function:drive\"]}
+  - {start: \"src/main.rs#function:local\", depth: 2, expect: [\"src/main.rs#function:run\", \"src/main.rs#function:drive\"]}
+  - {start: \"src/main.rs#function:step_b\", depth: 3, expect: [\"src/main.rs#function:drive\"]}
 syntax_error_files: [src/broken.rs]
 ";
 

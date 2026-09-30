@@ -15,10 +15,17 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 mod build;
+mod ids;
 mod labels;
 mod metrics;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_build;
+#[cfg(test)]
+mod tests_floors;
+#[cfg(test)]
+mod tests_unknown_ids;
 
 use labels::{Expectation, Labels};
 
@@ -36,6 +43,8 @@ pub struct LabelCounts {
     pub externals: usize,
     pub ambiguous: usize,
     pub impacts: usize,
+    /// The impact labels whose depth is 1.
+    pub impacts_depth_1: usize,
     pub syntax_error_files: usize,
 }
 
@@ -60,6 +69,9 @@ pub struct EdgeQualityReport {
     pub labels: LabelCounts,
     /// Metrics whose denominator was 0; each is a violation.
     pub undefined_ratios: Vec<&'static str>,
+    /// One message per labelled id the corpus graph has no node for (a
+    /// mistyped label would otherwise score as a miss); each is a violation.
+    pub unknown_label_ids: Vec<String>,
     /// One human line per miss.
     pub failures: Vec<String>,
 }
@@ -98,6 +110,11 @@ impl LabelCounts {
             externals: 0,
             ambiguous: 0,
             impacts: labels.impact.len(),
+            impacts_depth_1: labels
+                .impact
+                .iter()
+                .filter(|label| label.depth == 1)
+                .count(),
             syntax_error_files: labels.syntax_error_files.len(),
         };
         for reference in &labels.references {
@@ -142,15 +159,21 @@ impl Thresholds {
 
     /// One message per violation; empty when `report` clears every bar.
     ///
-    /// A metric with a zero denominator is a violation, and so is a corpus
-    /// lacking a target, external, ambiguous or impact label or a
-    /// syntax-error file.
+    /// A metric with a zero denominator is a violation, so is a labelled id the
+    /// corpus graph has no node for, and so is a corpus carrying fewer labels
+    /// of any kind than `check_coverage` requires.
     pub fn check(&self, report: &EdgeQualityReport) -> Vec<String> {
         let mut violations: Vec<String> = report
             .undefined_ratios
             .iter()
             .map(|name| format!("{name}: no labels to divide by (0/0 is a failure)"))
             .collect();
+        violations.extend(
+            report
+                .unknown_label_ids
+                .iter()
+                .map(|message| format!("unknown label id: {message}")),
+        );
         self.check_scores(report, &mut violations);
         check_coverage(&report.labels, &mut violations);
         violations
@@ -196,18 +219,43 @@ impl Thresholds {
     }
 }
 
-/// A corpus must exercise every label kind and carry a syntax-error file.
+/// The fewest labels of each kind a corpus may carry, however well it scores:
+/// thresholds alone pass a corpus cut down to one label per kind. Each floor is
+/// at or just below the smallest count among the corpora under
+/// `tests/fixtures/source/labeled`, so a shipped corpus cannot shrink past it
+/// without this table changing in review.
+const MIN_DECLARATIONS: usize = 10;
+const MIN_TARGETS: usize = 6;
+const MIN_EXTERNALS: usize = 3;
+const MIN_AMBIGUOUS: usize = 1;
+const MIN_IMPACTS: usize = 4;
+const MIN_IMPACTS_DEPTH_1: usize = 2;
+const MIN_SYNTAX_ERROR_FILES: usize = 1;
+
+/// A corpus must carry the floor of every label kind and a syntax-error file.
 fn check_coverage(counts: &LabelCounts, violations: &mut Vec<String>) {
     let required = [
-        ("target label", counts.targets),
-        ("external label", counts.externals),
-        ("ambiguous label", counts.ambiguous),
-        ("impact label", counts.impacts),
-        ("syntax_error_files entry", counts.syntax_error_files),
+        ("declaration labels", counts.declarations, MIN_DECLARATIONS),
+        ("target labels", counts.targets, MIN_TARGETS),
+        ("external labels", counts.externals, MIN_EXTERNALS),
+        ("ambiguous labels", counts.ambiguous, MIN_AMBIGUOUS),
+        ("impact labels", counts.impacts, MIN_IMPACTS),
+        (
+            "depth-1 impact labels",
+            counts.impacts_depth_1,
+            MIN_IMPACTS_DEPTH_1,
+        ),
+        (
+            "syntax_error_files entries",
+            counts.syntax_error_files,
+            MIN_SYNTAX_ERROR_FILES,
+        ),
     ];
-    for (what, count) in required {
-        if count == 0 {
-            violations.push(format!("corpus lacks a {what}"));
+    for (what, count, floor) in required {
+        if count < floor {
+            violations.push(format!(
+                "corpus lacks a full set of {what}: has {count}, needs at least {floor}"
+            ));
         }
     }
 }
