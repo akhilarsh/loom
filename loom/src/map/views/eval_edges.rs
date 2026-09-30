@@ -58,7 +58,7 @@ pub fn run(dir: &Path, thresholds: Option<&Path>, json: bool) -> Result<EvalOutc
         0
     };
     let text = if json {
-        render_json(&scored, &summary)
+        render_json(&scored, failing, &summary)
     } else {
         render_human(&scored, &summary)
     };
@@ -88,7 +88,7 @@ fn score_corpus(corpus: &Path, thresholds: &Thresholds) -> Scored {
     }
 }
 
-fn render_json(scored: &[Scored], summary: &str) -> String {
+fn render_json(scored: &[Scored], failing: usize, summary: &str) -> String {
     let results: Vec<Value> = scored
         .iter()
         .map(|s| {
@@ -100,7 +100,6 @@ fn render_json(scored: &[Scored], summary: &str) -> String {
             })
         })
         .collect();
-    let failing = scored.iter().filter(|s| !s.violations.is_empty()).count();
     json!({
         "corpora": scored.len(),
         "failing": failing,
