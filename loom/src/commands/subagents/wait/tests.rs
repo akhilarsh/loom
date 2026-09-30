@@ -327,22 +327,35 @@ fn stalled_exit_code_is_distinct() {
     .contains(&EXIT_STALLED));
 }
 
-// --- Defect 2: named worker ids ----------------------------------------
+// --- Named worker ids --------------------------------------------------
 
-/// `<name>@session-<hex>` parses as-is (id keeps the full compound, since
-/// the ledger records `agent_id` verbatim); an unsafe half either side of
-/// `@` still rejects the whole selector; `@` never splits for a Codex id.
+/// A harness-named `<name>@session-<hex>` id is a teammate that idles instead
+/// of stopping, so the watch rejects it at parse time with the fix; an unsafe
+/// id still gets the generic message, and `@` is unsafe for a Codex id.
 #[test]
-fn worker_spec_from_str_accepts_a_named_claude_id() {
-    let named: WorkerSpec = "claude:census@session-a23f0a9e".parse().unwrap();
-    assert_eq!(named.id, "census@session-a23f0a9e");
+fn worker_spec_from_str_rejects_a_named_claude_id() {
+    let message = "claude:census@session-a23f0a9e"
+        .parse::<WorkerSpec>()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains("named spawns cannot be watched") && message.contains("without `name`"),
+        "{message}"
+    );
+}
 
-    let rejected = [
+/// Only the `<name>@session-<hex>` form gets the named-spawn message; every
+/// other id with an unsafe character keeps the generic error.
+#[test]
+fn worker_spec_from_str_keeps_the_generic_error_for_other_unsafe_ids() {
+    for case in [
         "claude:../evil@session-a23f0a9e",
-        "claude:census@../x",
+        "claude:census@session-xyz",
+        "claude:census@session-",
+        "claude:census@other",
+        "claude:a@b",
         "codex:unit@session-a23f0a9e",
-    ];
-    for case in rejected {
+    ] {
         assert_eq!(
             case.parse::<WorkerSpec>().unwrap_err().to_string(),
             "worker id is empty or unsafe",
@@ -351,32 +364,14 @@ fn worker_spec_from_str_accepts_a_named_claude_id() {
     }
 }
 
-/// An unnamed id's transcript is still built directly from the id. A named
-/// id's transcript instead carries an unrelated 16-hex suffix, so it is
-/// found by listing the directory for `agent-a<name>-*.jsonl`; zero or
-/// several matches is an error, never a silent guess.
+/// A plain id's transcript is built directly from the id.
 #[test]
-fn resolve_claude_transcript_covers_unnamed_and_named_ids() {
+fn resolve_claude_transcript_builds_the_plain_id_path() {
     let temp = TempDir::new().unwrap();
-    let unnamed_file = temp.path().join("agent-a1255b1022dc461fd.jsonl");
-    std::fs::write(&unnamed_file, "").unwrap();
+    let file = temp.path().join("agent-a1255b1022dc461fd.jsonl");
+    std::fs::write(&file, "").unwrap();
     assert_eq!(
         resolve_claude_transcript(temp.path(), "a1255b1022dc461fd").unwrap(),
-        std::fs::canonicalize(&unnamed_file).unwrap()
+        std::fs::canonicalize(&file).unwrap()
     );
-
-    let named = "census@session-a23f0a9e";
-    let error = resolve_claude_transcript(temp.path(), named).unwrap_err();
-    assert!(error.to_string().contains("0 transcripts"), "{error}");
-
-    let named_file = temp.path().join("agent-acensus-ee46a7e13ef80a9e.jsonl");
-    std::fs::write(&named_file, "").unwrap();
-    assert_eq!(
-        resolve_claude_transcript(temp.path(), named).unwrap(),
-        std::fs::canonicalize(&named_file).unwrap()
-    );
-
-    std::fs::write(temp.path().join("agent-acensus-bbbbbbbbbbbbbbbb.jsonl"), "").unwrap();
-    let error = resolve_claude_transcript(temp.path(), named).unwrap_err();
-    assert!(error.to_string().contains("2 transcripts"), "{error}");
 }
