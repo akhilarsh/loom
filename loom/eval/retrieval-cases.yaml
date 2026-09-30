@@ -206,3 +206,57 @@ cases:
       - "loom/src/context/refresh/source_graph.rs#function:reconcile_source_graph"
     relevant:
       - "loom/src/context/refresh/source_graph.rs#function:reconcile_source_graph"
+
+  # --- Query intents: symbol questions, plain-word prose, relationships,
+  # literal text. The ids are the ones `loom map --find-all` / `--impact` name
+  # for this checkout; `plan` and `graph` are module names that plain prose
+  # must not reach.
+  - name: symbol-question-plan-key-unquoted
+    query: "what does plan_key do"
+    expect:
+      - "loom/src/context/delivery.rs#function:plan_key"
+    relevant:
+      - "loom/src/context/delivery.rs#function:plan_key"
+
+  - name: symbol-question-reconcile-source-graph-defined
+    query: "where is reconcile_source_graph defined"
+    expect:
+      - "loom/src/context/refresh/source_graph.rs#function:reconcile_source_graph"
+    relevant:
+      - "loom/src/context/refresh/source_graph.rs#function:reconcile_source_graph"
+
+  - name: plain-words-plan-and-graph-prose
+    query: "the plan looks fine but the graph of stages is confusing to read"
+    forbid:
+      - "loom/src/commands/mod.rs#module:plan"
+      - "loom/src/lib.rs#module:plan"
+      - "loom/src/commands/mod.rs#module:graph"
+      - "loom/src/plan/mod.rs#module:graph"
+
+  - name: plain-words-plan-and-graph-request
+    query: "I think the plan for this graph needs another pass before we go on"
+    forbid:
+      - "loom/src/commands/mod.rs#module:plan"
+      - "loom/src/lib.rs#module:plan"
+      - "loom/src/context/retrieve.rs#module:graph"
+      - "loom/src/plan/mod.rs#module:graph"
+
+  - name: relationship-callers-of-reconcile-source-graph
+    query: "who calls reconcile_source_graph"
+    expect:
+      - "loom/src/context/refresh/source_graph.rs#function:reconcile_source_graph"
+    relevant:
+      - "loom/src/orchestrator/merge_lifecycle.rs#function:reconcile"
+      - "loom/src/context/refresh/source_graph.rs#function:reconcile_source_graph"
+
+  # A quoted message is text in a body, which the graph does not index: the
+  # pack carries a `Literal text:` search hint instead of source items. The
+  # forbidden ids are the source nodes the words `source graph never built`
+  # would otherwise surface (`abstain` covers the whole hook and cannot say
+  # "no source item").
+  - name: literal-text-source-graph-never-built
+    query: 'where do we print "source graph never built"'
+    forbid:
+      - "loom/src/context/retrieve/graph.rs#constant:NEVER_BUILT_REASON"
+      - "loom/src/commands/map.rs#function:report_snapshot"
+      - "loom/src/context/refresh/source_graph.rs#function:reconcile_source_graph"
