@@ -149,6 +149,27 @@ fn this_and_bare_calls_bind_to_members_in_and_out_of_the_class() {
 }
 
 #[test]
+fn a_free_prototype_is_a_reference_and_a_member_declaration_is_not() {
+    let source = "namespace s {\nint total(int v);\nint &pick(int v);\n}\n\
+                  class W {\n    void run();\n};\n";
+    let header = extraction("include/s.h", source);
+
+    let references: Vec<(&str, &str)> = header
+        .edges
+        .iter()
+        .filter(|e| e.kind == SourceEdgeKind::References)
+        .map(|e| (e.from.as_str(), e.symbol.as_str()))
+        .collect();
+    assert_eq!(
+        references,
+        vec![
+            ("include/s.h#module:s", "pick"),
+            ("include/s.h#module:s", "total"),
+        ]
+    );
+}
+
+#[test]
 fn includes_are_glob_bindings() {
     let widget = extraction("src/this_call.cpp", THIS_CALL);
 

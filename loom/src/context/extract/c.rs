@@ -11,8 +11,10 @@ use crate::context::source_graph::{ImportBinding, NodeLanguage, SourceNodeKind, 
 /// Extracts declarations, `#include`s and calls from `.c` files. A prototype is
 /// not a definition: `@definition.function` sits on the `function_definition`,
 /// so its span covers the body and calls inside it are attributed to the
-/// function. Macros, `#ifdef` selection and function-pointer targets are gaps:
-/// nothing is expanded, so nothing is invented.
+/// function. A prototype is a `References` edge naming the function it
+/// declares, which tells the resolver the project declares that name. Macros,
+/// `#ifdef` selection and function-pointer targets are gaps: nothing is
+/// expanded, so nothing is invented.
 pub struct CExtractor;
 
 impl CExtractor {
@@ -29,11 +31,22 @@ impl Default for CExtractor {
 
 /// The patterns C and C++ share: type declarations (`typedef struct Foo {..}
 /// Foo;` is one `type:Foo`, since the typedef's own type is named), includes,
-/// and calls by bare name or through a member. A macro so the C++ extractor can
-/// `concat!` its own patterns onto it without copying these.
+/// prototypes, and calls by bare name or through a member. A macro so the C++
+/// extractor can `concat!` its own patterns onto it without copying these.
 macro_rules! c_family_query {
     () => {
         r#"
+; A prototype (`int area(const Shape *s);`) declares a function without
+; defining it: a `References` edge naming it, never a node.
+(declaration
+  declarator: [
+    (function_declarator
+      declarator: (identifier) @reference.name)
+    (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @reference.name))
+  ])
+
 (struct_specifier
   name: (type_identifier) @name
   body: (_)) @definition.type
@@ -111,7 +124,7 @@ impl QueryHarness for CExtractor {
             dialect: "c",
             grammar_version: "0.24.2",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 1,
+            extractor_version: 2,
         }
     }
 

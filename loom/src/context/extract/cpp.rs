@@ -12,7 +12,8 @@ use crate::context::source_graph::{ImportBinding, NodeLanguage, SourceNodeKind, 
 /// Extracts declarations, `#include`s and calls from C++ sources and `.h`
 /// headers. A prototype or in-class `void run();` is not a definition:
 /// `@definition.function` sits on the `function_definition`, so its span covers
-/// the body. A qualified definition (`void W::run() {}`) scopes as `[W, run]`,
+/// the body. A free prototype (`int total(const Shape &s);`) is a `References`
+/// edge naming the function, as in C. A qualified definition (`void W::run() {}`) scopes as `[W, run]`,
 /// and a `namespace A::B` is one `Module` with the single scope segment
 /// `A::B`. Templates, overload resolution and macros are gaps: a template's
 /// inner definition is captured as written and no instantiation is modelled.
@@ -105,6 +106,12 @@ const QUERY: &str = concat!(
 (namespace_definition
   name: [(namespace_identifier) (nested_namespace_specifier)] @name) @definition.module
 
+; A prototype returning a reference; the shared patterns cover the others.
+(declaration
+  declarator: (reference_declarator
+    (function_declarator
+      declarator: (identifier) @reference.name)))
+
 (call_expression
   function: (qualified_identifier) @call.name)
 
@@ -135,7 +142,7 @@ impl QueryHarness for CppExtractor {
             dialect: "cpp",
             grammar_version: "0.23.4",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 1,
+            extractor_version: 2,
         }
     }
 

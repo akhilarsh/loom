@@ -19,6 +19,7 @@ use crate::context::source_graph::{EdgeProvenance, SourceEdge, SourceEdgeKind, M
 use super::bindings::{self, Step};
 use super::paths::{import_candidates, PathIndex};
 use super::receivers;
+use super::record::record_file;
 use super::symbols::SymbolIndex;
 
 /// Families whose files share a package scope beyond imports: Go and Java by
@@ -44,18 +45,29 @@ pub(super) struct Resolution {
     pub(super) keys: BTreeSet<String>,
 }
 
-/// The whole-graph indexes every rule reads, built once per resolution.
-pub(super) struct Indexes {
+/// The whole-graph indexes every rule reads, built once per resolution, and
+/// the graph they were built from.
+pub(super) struct Indexes<'g> {
     pub(super) symbols: SymbolIndex,
     pub(super) paths: PathIndex,
+    graph: &'g ResolvedGraph,
 }
 
-impl Indexes {
-    pub(super) fn build(graph: &ResolvedGraph) -> Self {
+impl<'g> Indexes<'g> {
+    pub(super) fn build(graph: &'g ResolvedGraph) -> Self {
         Indexes {
             symbols: SymbolIndex::build(graph),
             paths: PathIndex::build(graph),
+            graph,
         }
+    }
+
+    /// The entry of the file at `path`, for a rule that reads another file's
+    /// import bindings or edges. Records the keys any change to that file
+    /// touches.
+    pub(super) fn entry(&self, path: &str, keys: &mut BTreeSet<String>) -> Option<&'g FileEntry> {
+        record_file(path, keys);
+        self.graph.files.get(path)
     }
 }
 
@@ -66,7 +78,7 @@ pub(super) struct Site<'a> {
     pub(super) file: &'a str,
     pub(super) entry: &'a FileEntry,
     pub(super) dialect: &'static DialectSpec,
-    pub(super) indexes: &'a Indexes,
+    pub(super) indexes: &'a Indexes<'a>,
 }
 
 impl Site<'_> {
@@ -80,17 +92,31 @@ impl Site<'_> {
 
     /// The outcome of `ids` as targets of this edge: one binds with
     /// `provenance`, more become candidates.
-    pub(super) fn decide(&self, mut ids: Vec<String>, provenance: EdgeProvenance) -> Outcome {
+    pub(super) fn decide(&self, ids: Vec<String>, provenance: EdgeProvenance) -> Outcome {
+        let mut ids = self.targets(ids);
         if ids.len() == 1 && ids[0] != self.edge.from {
             return Outcome::Bound(ids.remove(0), provenance);
         }
-        self.candidates_only(ids)
+        self.listed(ids)
     }
 
     /// The outcome of `ids` as targets this edge may name but never bind: one
     /// to [`MAX_CANDIDATES`] of them become candidates. A lone candidate that
     /// is the edge's own origin resolves nothing.
     pub(super) fn candidates_only(&self, ids: Vec<String>) -> Outcome {
+        self.listed(self.targets(ids))
+    }
+
+    /// `ids` narrowed to what this edge's kind can land on: a call never
+    /// lands on a file, nor on a type beside its own constructor.
+    fn targets(&self, ids: Vec<String>) -> Vec<String> {
+        match self.edge.kind {
+            SourceEdgeKind::Calls => self.symbols().callable(ids),
+            _ => ids,
+        }
+    }
+
+    fn listed(&self, ids: Vec<String>) -> Outcome {
         let lone_origin = ids.len() == 1 && ids[0] == self.edge.from;
         if ids.is_empty() || lone_origin || ids.len() > MAX_CANDIDATES {
             return Outcome::Unresolved;
@@ -128,7 +154,7 @@ pub(super) fn resolve(
     edge: &SourceEdge,
     file: &str,
     entry: &FileEntry,
-    indexes: &Indexes,
+    indexes: &Indexes<'_>,
 ) -> Resolution {
     let mut keys = BTreeSet::new();
     let outcome = match dialect_for_path(Path::new(file)) {

@@ -26,16 +26,24 @@
 //!    qualifier naming nothing here is a call into a dependency and stays a gap
 //!    unless an import binds its first segment (rule 4).
 //! 2. *Other receiver* (`obj.m()`, `ns.m()`): when the receiver is an import's
-//!    local name, `m` is looked up in the files the import names. Any other
-//!    receiver is a value of unknown type and is never bound.
+//!    local name, `m` is looked up in the files the import names; when it names
+//!    a type a glob import brings into scope (`Strings.clean()` under
+//!    `import app.util.*;`), `Strings::clean` is looked up in the glob's files.
+//!    Any other receiver is a value of unknown type and is never bound.
 //! 3. *Self receiver* (`self.m()`, `this.m()`): the members named `m` of the
-//!    enclosing type, wherever its parts are declared.
+//!    enclosing type, wherever its parts are declared, else of the traits it
+//!    uses (PHP `use Loggable;`).
 //! 4. *Named or aliased import*: the imported name in the files the import
-//!    names.
+//!    names, following a re-export (`from .pricing import total as
+//!    compute_total` in a package `__init__.py`) when those files only import
+//!    it.
 //! 5. *Package scope*: the other files of the edge's Go or Java package
 //!    directory, or of its C# or PHP namespace.
 //! 6. *Glob imports*: the files of every glob import that resolves.
 //! 7. *Unique name*: the only definition of the name in the family.
+//!
+//! A call never lands on a file node, and a type listed beside its own
+//! constructor yields to it: `new Widget(..)` runs `Widget::Widget`.
 //!
 //! Rules 1 to 6 bind with [`EdgeProvenance::Import`] (rule 3 with
 //! [`EdgeProvenance::Receiver`]) when exactly one definition is left, and rule 7
@@ -46,7 +54,9 @@
 //! that does not resolve, is a name bound outside this graph: rule 7 may no
 //! longer bind it, because the definition that happens to be unique here is a
 //! namesake. The refused edge still records its same-family namesakes as
-//! candidates, so impact analysis keeps its recall.
+//! candidates, so impact analysis keeps its recall. A C or C++ name that the
+//! file itself or a project header it includes prototypes is the project's
+//! own, so a system include (`<stdio.h>`) does not refuse it.
 //!
 //! **Candidate sets.** Two or more definitions are never a coin flip: the edge
 //! stays unresolved and lists them as `candidates`, sorted, at most
@@ -140,8 +150,9 @@ pub fn resolve_graph_recording(graph: &mut ResolvedGraph) -> (ResolutionStats, E
 
 /// Resolve only `edges`, against indexes over the whole graph, and return the
 /// keys each consulted. A reference to no edge, or to one resolution does not
-/// act on, is skipped. Each edge's outcome depends only on the graph's nodes
-/// and import bindings, never on another edge, so resolving a subset gives
+/// act on, is skipped. Each edge's outcome depends only on the graph's nodes,
+/// import bindings and the kind and symbol of `References` edges (prototypes,
+/// trait uses), never on another edge's outcome, so resolving a subset gives
 /// those edges exactly what a full resolution would.
 pub fn resolve_edges(graph: &mut ResolvedGraph, edges: &BTreeSet<EdgeRef>) -> EdgeKeys {
     let resolutions = resolve_selected(graph, edges);
@@ -241,3 +252,7 @@ mod tests_recording;
 #[cfg(test)]
 #[path = "resolve/tests_candidates.rs"]
 mod tests_candidates;
+
+#[cfg(test)]
+#[path = "resolve/tests_scope.rs"]
+mod tests_scope;

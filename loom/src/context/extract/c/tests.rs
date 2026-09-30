@@ -33,6 +33,34 @@ fn a_prototype_in_a_header_is_not_a_definition() {
 }
 
 #[test]
+fn a_prototype_is_a_reference_to_the_function_it_declares() {
+    let source = "#include <stdio.h>\nint area(int side);\nchar *name(void);\n\
+                  int main(void)\n{\n    return area(2);\n}\n";
+    let main = extraction("src/main.c", source);
+
+    assert_eq!(
+        node_ids(&main),
+        vec!["src/main.c", "src/main.c#function:main"]
+    );
+    let references: Vec<(&str, &str, EdgeProvenance, usize)> = main
+        .edges
+        .iter()
+        .filter(|e| e.kind == SourceEdgeKind::References)
+        .map(|e| {
+            let line = e.sites[0].line_start;
+            (e.from.as_str(), e.symbol.as_str(), e.provenance, line)
+        })
+        .collect();
+    assert_eq!(
+        references,
+        vec![
+            ("src/main.c", "area", EdgeProvenance::Syntax, 2),
+            ("src/main.c", "name", EdgeProvenance::Syntax, 3),
+        ]
+    );
+}
+
+#[test]
 fn definitions_and_typedefs_are_one_node_each() {
     let api = extraction("src/api.c", API_C);
 

@@ -214,6 +214,28 @@ fn use_clauses_bind_names_and_require_or_include_binds_a_glob() {
 }
 
 #[test]
+fn a_trait_use_is_a_reference_from_the_class_to_the_trait() {
+    let extraction = extract("src/w.php", WIDGET);
+
+    let uses: Vec<&SourceEdge> = extraction
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == SourceEdgeKind::References)
+        .collect();
+    assert_eq!(uses.len(), 1, "edges: {:#?}", extraction.edges);
+    let used = uses[0];
+    assert_eq!(used.from, "src/w.php#type:Widget", "edge: {used:#?}");
+    assert_eq!(used.symbol, "Loggable", "edge: {used:#?}");
+    assert_eq!(used.to, "src/w.php#type:Loggable", "edge: {used:#?}");
+    assert_eq!(
+        used.provenance,
+        EdgeProvenance::LocalName,
+        "edge: {used:#?}"
+    );
+    assert_eq!(used.sites[0].line_start, 20, "edge: {used:#?}");
+}
+
+#[test]
 fn a_syntax_error_yields_a_parse_error_and_no_symbols() {
     let extraction = extract("src/broken.php", SYNTAX_ERROR);
 
