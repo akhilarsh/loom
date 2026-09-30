@@ -46,7 +46,9 @@
 //! [`UNRESOLVED_TARGET`]: crate::context::source_graph::UNRESOLVED_TARGET
 
 use anyhow::{anyhow, Result};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use tree_sitter::{Language, Parser, Query, Tree};
 
 use super::dialect::dialect_by_id;
@@ -164,8 +166,7 @@ pub fn run_query(harness: &dyn QueryHarness, path: &Path, bytes: &[u8]) -> Resul
         ));
     }
 
-    let query = Query::new(&harness.language(), harness.query_source())
-        .map_err(|error| anyhow!("invalid tree-sitter query for {node_language}: {error}"))?;
+    let query = compiled_query(harness, &node_language)?;
 
     let rules = binding_rules(harness, &node_language);
     let walk = collect(harness, &query, root, bytes);
@@ -177,6 +178,28 @@ pub fn run_query(harness: &dyn QueryHarness, path: &Path, bytes: &[u8]) -> Resul
         walk,
         &rules,
     ))
+}
+
+/// Compiled queries, one per language and query source for the whole process.
+/// Compiling is far costlier than running a query, and every file of a
+/// dialect runs the same one.
+type QueryCache = Mutex<HashMap<(String, &'static str), Arc<Query>>>;
+
+/// `harness`'s query, compiled on first use. A query that fails to compile is
+/// not cached, so every call reports the error.
+fn compiled_query(harness: &dyn QueryHarness, node_language: &NodeLanguage) -> Result<Arc<Query>> {
+    static CACHE: OnceLock<QueryCache> = OnceLock::new();
+    let key = (node_language.as_str().to_string(), harness.query_source());
+    let mut cache = CACHE
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(query) = cache.get(&key) {
+        return Ok(Arc::clone(query));
+    }
+    let query = Query::new(&harness.language(), key.1)
+        .map_err(|error| anyhow!("invalid tree-sitter query for {node_language}: {error}"))?;
+    Ok(Arc::clone(cache.entry(key).or_insert(Arc::new(query))))
 }
 
 /// The same-file binding rules `harness` runs under: its own receiver
