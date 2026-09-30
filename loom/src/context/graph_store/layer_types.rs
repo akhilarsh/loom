@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::context::extract::FileExtraction;
 use crate::context::source_graph::{
-    body_hash, FileCoverage, ImportBinding, SourceEdge, SourceNode,
+    body_hash, FileCoverage, ImportBinding, SourceEdge, SourceNode, GRAPH_SCHEMA_VERSION,
 };
 
 /// One file's contribution to a layer.
@@ -109,6 +109,12 @@ impl GraphLayer {
     /// Every edge in this layer, in path order.
     pub fn edges(&self) -> impl Iterator<Item = &SourceEdge> {
         self.files.values().flat_map(|entry| entry.edges.iter())
+    }
+
+    /// True when the layer was written under the current [`GRAPH_SCHEMA_VERSION`];
+    /// any other layer is never served or reused.
+    pub(crate) fn has_current_schema(&self) -> bool {
+        self.schema_version == GRAPH_SCHEMA_VERSION
     }
 }
 

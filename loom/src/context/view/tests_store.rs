@@ -16,12 +16,12 @@ use crate::context::refresh::{ensure_snapshot, SnapshotPolicy};
 use crate::context::source_graph::GRAPH_SCHEMA_VERSION;
 use crate::context::store::ContextStore;
 
-const A_RS: (&str, &str) = ("src/a.rs", "pub fn helper() {}\n");
-const B_RS: (&str, &str) = ("src/b.rs", "pub fn run() {\n    helper();\n}\n");
-const REV_OLD: &str = "aaaa1111";
-const REV_NEW: &str = "bbbb2222";
+pub(super) const A_RS: (&str, &str) = ("src/a.rs", "pub fn helper() {}\n");
+pub(super) const B_RS: (&str, &str) = ("src/b.rs", "pub fn run() {\n    helper();\n}\n");
+pub(super) const REV_OLD: &str = "aaaa1111";
+pub(super) const REV_NEW: &str = "bbbb2222";
 
-fn layer_of(revision: &str, files: &[(&str, &str)]) -> GraphLayer {
+pub(super) fn layer_of(revision: &str, files: &[(&str, &str)]) -> GraphLayer {
     let extractors = registry();
     let mut layer = GraphLayer {
         revision: revision.to_string(),
@@ -44,14 +44,14 @@ fn node_count(view: &ResolvedView) -> usize {
 
 /// A store whose project root is `root`, so `root/.loom/config.toml` is the
 /// config its prune reads.
-fn store_in(root: &Path) -> GraphStore {
+pub(super) fn store_in(root: &Path) -> GraphStore {
     GraphStore::new(
         &root.join(".loom/cache/context-v1"),
         &root.join(".loom/work"),
     )
 }
 
-fn view_file_names(store: &GraphStore) -> Vec<String> {
+pub(super) fn view_file_names(store: &GraphStore) -> Vec<String> {
     let Ok(entries) = fs::read_dir(store.view_dir()) else {
         return Vec::new();
     };

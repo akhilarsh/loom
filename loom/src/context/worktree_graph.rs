@@ -20,7 +20,7 @@ use crate::context::extract::{self, extract_file, extractor_for, Lookup};
 use crate::context::graph_store::{FileEntry, GraphLayer, GraphStore, ResolvedGraph};
 use crate::context::refresh::snapshot::parser_version_matches;
 use crate::context::refresh::BoxedExtractor;
-use crate::context::source_graph::{FileCoverage, MAX_EXTRACTED_FILE_BYTES};
+use crate::context::source_graph::FileCoverage;
 use crate::context::store::CACHE_RELATIVE_DIR;
 use crate::context::view::{build_cold, relink, ResolvedView, ViewIdentity};
 use crate::fs::safe_read::read_bounded;
@@ -303,13 +303,12 @@ fn apply_file(
 /// The bytes of the regular file at `path` beneath `worktree`, `None` when
 /// the path is absent or not a regular file (deleted, a symlink, a
 /// submodule), which the refresh path never treats as source either. The
-/// read refuses a symlink at any component and anything over the extraction
-/// cap.
+/// read refuses a symlink at any component. It is unbounded, as the refresh
+/// path's is: `extract_file` records a file over the extraction cap as
+/// `FileCoverage::Oversized` with its file node and the hash of all its bytes.
 fn read_source(worktree: &Path, path: &Path) -> Result<Option<Vec<u8>>> {
     match std::fs::symlink_metadata(worktree.join(path)) {
-        Ok(metadata) if metadata.is_file() => {
-            read_bounded(worktree, path, MAX_EXTRACTED_FILE_BYTES).map(Some)
-        }
+        Ok(metadata) if metadata.is_file() => read_bounded(worktree, path, usize::MAX).map(Some),
         Ok(_) => Ok(None),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).with_context(|| format!("Failed to inspect {}", path.display())),

@@ -29,8 +29,9 @@ pub use incremental::relink;
 /// A resolved graph together with what produced it.
 ///
 /// Every map is a `BTreeMap` and every list is sorted or in extraction order,
-/// so two equal views serialize identically.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// so two equal views serialize identically. Equality ignores
+/// [`Self::origin`], as [`canonical_bytes`] does.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedView {
     pub identity: ViewIdentity,
     /// The graph with every resolvable edge resolved.
@@ -43,6 +44,16 @@ pub struct ResolvedView {
     /// reaches [`canonical_bytes`].
     #[serde(skip)]
     pub origin: ViewOrigin,
+}
+
+impl PartialEq for ResolvedView {
+    /// A view read back from disk equals the one resolved in process.
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
+            && self.graph == other.graph
+            && self.stats == other.stats
+            && self.deps == other.deps
+    }
 }
 
 /// Whether a view was read from disk or resolved in this process; `loom map`
@@ -80,3 +91,9 @@ mod tests_equivalence;
 
 #[cfg(test)]
 mod tests_store;
+
+#[cfg(test)]
+mod tests_store_cache;
+
+#[cfg(test)]
+mod tests_transitions;

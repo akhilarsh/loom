@@ -132,7 +132,7 @@ fn relink_takes_header_from_next() {
 }
 
 /// The entry an unreadable file gets: no hash, no graph, the cause as detail.
-fn unreadable(cause: &str) -> FileEntry {
+pub(super) fn unreadable(cause: &str) -> FileEntry {
     FileEntry {
         content_hash: String::new(),
         nodes: Vec::new(),
@@ -219,10 +219,10 @@ fn identity_change_relinks_cold() {
 
 /// A 64-bit linear congruential generator with Knuth's MMIX constants: a
 /// fixed seed replays one edit sequence with no new dependency.
-struct Lcg(u64);
+pub(super) struct Lcg(pub(super) u64);
 
 impl Lcg {
-    fn below(&mut self, bound: usize) -> usize {
+    pub(super) fn below(&mut self, bound: usize) -> usize {
         self.0 = self
             .0
             .wrapping_mul(6_364_136_223_846_793_005)
@@ -231,18 +231,27 @@ impl Lcg {
     }
 }
 
-const NAMES: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
+pub(super) const NAMES: [&str; 4] = ["alpha", "beta", "gamma", "delta"];
 /// File-name prefix and extension of each language in the mix.
-const LANGUAGES: [(&str, &str); 3] = [("r", "rs"), ("t", "ts"), ("p", "py")];
+pub(super) const LANGUAGES: [(&str, &str); 3] = [("r", "rs"), ("t", "ts"), ("p", "py")];
 
-fn seeded_path(language: usize, id: usize) -> String {
+pub(super) fn seeded_path(language: usize, id: usize) -> String {
     let (prefix, extension) = LANGUAGES[language];
     format!("src/{prefix}{id}.{extension}")
 }
 
+/// The index into [`LANGUAGES`] of `path`'s extension, the first for another.
+pub(super) fn language_of(path: &str) -> usize {
+    let extension = path.rsplit('.').next().unwrap_or_default();
+    LANGUAGES
+        .iter()
+        .position(|(_, known)| *known == extension)
+        .unwrap_or(0)
+}
+
 /// A file defining one name and calling another, importing from a sibling
 /// that may not exist: by name, by glob or whole module, or not at all.
-fn seeded_source(language: usize, rng: &mut Lcg) -> String {
+pub(super) fn seeded_source(language: usize, rng: &mut Lcg) -> String {
     let (def, callee) = (NAMES[rng.below(4)], NAMES[rng.below(4)]);
     let module = format!("{}{}", LANGUAGES[language].0, rng.below(6));
     let (named, glob, body) = match LANGUAGES[language].1 {
@@ -271,14 +280,10 @@ fn seeded_source(language: usize, rng: &mut Lcg) -> String {
 }
 
 /// Apply one add, remove, rename or edit to `files`; returns which.
-fn mutate(files: &mut BTreeMap<String, String>, rng: &mut Lcg) -> &'static str {
+pub(super) fn mutate(files: &mut BTreeMap<String, String>, rng: &mut Lcg) -> &'static str {
     let paths: Vec<String> = files.keys().cloned().collect();
     let victim = paths[rng.below(paths.len())].clone();
-    let extension = victim.rsplit('.').next().unwrap_or_default();
-    let language = LANGUAGES
-        .iter()
-        .position(|(_, known)| *known == extension)
-        .unwrap_or(0);
+    let language = language_of(&victim);
     match rng.below(4) {
         0 => {
             let language = rng.below(LANGUAGES.len());
@@ -302,7 +307,7 @@ fn mutate(files: &mut BTreeMap<String, String>, rng: &mut Lcg) -> &'static str {
     }
 }
 
-fn seeded_graph(revision: &str, files: &BTreeMap<String, String>) -> ResolvedGraph {
+pub(super) fn seeded_graph(revision: &str, files: &BTreeMap<String, String>) -> ResolvedGraph {
     let pairs: Vec<(&str, &str)> = files
         .iter()
         .map(|(path, source)| (path.as_str(), source.as_str()))

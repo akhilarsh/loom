@@ -264,6 +264,17 @@ fn unreadable_entry(error: String) -> FileEntry {
     }
 }
 
+/// Whether every entry of `files` was stamped by the extractor now registered
+/// for its path ([`parser_version_matches`]).
+pub(crate) fn entries_are_current(
+    files: &BTreeMap<String, FileEntry>,
+    extractors: &[BoxedExtractor],
+) -> bool {
+    files
+        .iter()
+        .all(|(path, entry)| parser_version_matches(entry, extractors, Path::new(path)))
+}
+
 pub(crate) fn parser_version_matches(
     entry: &FileEntry,
     extractors: &[BoxedExtractor],

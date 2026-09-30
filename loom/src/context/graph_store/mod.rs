@@ -30,7 +30,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::context::source_graph::{FileCoverage, GRAPH_SCHEMA_VERSION};
+use crate::context::source_graph::FileCoverage;
 use crate::context::store::canonical_json;
 use crate::context::view::ResolvedView;
 
@@ -38,6 +38,8 @@ use crate::context::view::ResolvedView;
 pub const GRAPH_RELATIVE_DIR: &str = "graph";
 /// Immutable per-revision base layers, relative to [`GRAPH_RELATIVE_DIR`].
 pub const BASE_RELATIVE_DIR: &str = "base";
+/// Resolved views of base revisions, relative to [`GRAPH_RELATIVE_DIR`].
+pub(crate) const VIEW_RELATIVE_DIR: &str = "view";
 /// Overlay root inside `.loom/work/`.
 pub const OVERLAY_RELATIVE_DIR: &str = "context";
 /// File name of a persisted layer.
@@ -163,9 +165,8 @@ impl GraphStore {
         if path.exists() {
             return Ok(false);
         }
-        match write_layer(&path, layer) {
-            Ok(()) => self.prune_after_publish(revision),
-            Err(error) => self.fall_back_to_memory(&path, layer, error)?,
+        if self.write_or_fall_back(&path, layer)? {
+            self.prune_after_publish(revision);
         }
         Ok(true)
     }
@@ -178,13 +179,11 @@ impl GraphStore {
     /// racer rebuilding the same revision at worst overwrites it with an
     /// equally current layer, and a file that vanished meanwhile is simply
     /// written. A denied write keeps `layer` in memory, as in
-    /// [`Self::publish_base`].
+    /// [`Self::publish_base`]; a write that reaches the disk drops the layer
+    /// an earlier denied write of this process kept.
     pub fn replace_base(&self, revision: &str, layer: &GraphLayer) -> Result<()> {
-        let path = self.base_path(revision);
-        if let Err(error) = write_layer(&path, layer) {
-            return self.fall_back_to_memory(&path, layer, error);
-        }
-        Ok(())
+        self.write_or_fall_back(&self.base_path(revision), layer)
+            .map(|_| ())
     }
 
     /// Read a stage's overlay, or `None` when it has none.
@@ -205,11 +204,8 @@ impl GraphStore {
                     .as_ref()
                     .is_some_and(|base| base.files.contains_key(path))
         });
-        let path = self.overlay_path(plan, stage);
-        if let Err(error) = write_layer(&path, &persisted) {
-            return self.fall_back_to_memory(&path, &persisted, error);
-        }
-        Ok(())
+        self.write_or_fall_back(&self.overlay_path(plan, stage), &persisted)
+            .map(|_| ())
     }
 
     /// Delete a stage's overlay layer file. Idempotent.
@@ -243,7 +239,22 @@ impl GraphStore {
     /// is not an error — an overlay-only view is exactly what a stage sees
     /// before the host has ever published a base.
     pub fn resolved(&self, revision: &str, stage: Option<(&str, &str)>) -> Result<ResolvedGraph> {
-        let base = self.load_base(revision)?.unwrap_or_default();
+        self.resolved_with_schema(revision, stage)
+            .map(|(resolved, _)| resolved)
+    }
+
+    /// [`Self::resolved`], and whether every layer it drew from was written
+    /// under the current schema ([`GraphLayer::has_current_schema`]): `load_base`
+    /// and `load_overlay` serve a layer of another schema unfiltered. A missing
+    /// layer draws nothing, so it counts as current.
+    pub(crate) fn resolved_with_schema(
+        &self,
+        revision: &str,
+        stage: Option<(&str, &str)>,
+    ) -> Result<(ResolvedGraph, bool)> {
+        let base = self.load_base(revision)?;
+        let mut current = base.as_ref().is_none_or(GraphLayer::has_current_schema);
+        let base = base.unwrap_or_default();
         let mut resolved = ResolvedGraph {
             base_revision: base.revision.clone(),
             overlaid: BTreeSet::new(),
@@ -252,6 +263,7 @@ impl GraphStore {
 
         if let Some((plan, stage)) = stage {
             if let Some(overlay) = self.load_overlay(plan, stage)? {
+                current &= overlay.has_current_schema();
                 for (path, entry) in overlay.files {
                     // Wholesale replacement, never a merge: an overlay entry is
                     // the complete truth for that file in this stage.
@@ -265,7 +277,7 @@ impl GraphStore {
             }
         }
 
-        Ok(resolved)
+        Ok((resolved, current))
     }
 }
 
@@ -295,14 +307,6 @@ fn read_layer(path: &Path) -> Result<Option<GraphLayer>> {
     }
 }
 
-impl GraphLayer {
-    /// True when the layer was written under the current [`GRAPH_SCHEMA_VERSION`];
-    /// any other layer is never served or reused.
-    pub(crate) fn has_current_schema(&self) -> bool {
-        self.schema_version == GRAPH_SCHEMA_VERSION
-    }
-}
-
 /// Write one layer file with a locked, crash-atomic replacement.
 fn write_layer(path: &Path, layer: &GraphLayer) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -322,6 +326,7 @@ mod fallback;
 mod layer_types;
 mod prune;
 
+pub(crate) use fallback::is_write_denied;
 pub use layer_types::{FileEntry, GraphLayer, ResolvedGraph};
 
 #[cfg(test)]

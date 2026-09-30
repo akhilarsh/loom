@@ -113,6 +113,36 @@ fn save_overlay_falls_back_to_memory_when_the_overlay_dir_is_read_only() {
 }
 
 #[test]
+fn a_replace_that_reaches_the_disk_drops_the_earlier_memory_fallback() {
+    let temp = TempDir::new().unwrap();
+    let store = GraphStore::new(&temp.path().join("cache"), &temp.path().join("work"));
+    let base_dir = store.base_dir();
+    std::fs::create_dir_all(&base_dir).unwrap();
+
+    if !lock_down(&base_dir) {
+        eprintln!(
+            "SKIP a_replace_that_reaches_the_disk_drops_the_earlier_memory_fallback: this \
+             environment does not enforce 0o555 directory permissions"
+        );
+        return;
+    }
+    let denied = store.replace_base("rev1", &layer_with("src/a.rs", "hash-old"));
+    unlock(&base_dir);
+    denied.expect("a denied replace must not fail the caller");
+    assert!(store.fell_back());
+
+    let current = layer_with("src/a.rs", "hash-new");
+    store.replace_base("rev1", &current).unwrap();
+
+    assert!(store.base_path("rev1").is_file());
+    assert_eq!(store.load_base("rev1").unwrap(), Some(current));
+    assert!(
+        !store.fell_back(),
+        "the layer the denied write kept still shadows the file written after it"
+    );
+}
+
+#[test]
 fn is_write_denied_matches_permission_and_read_only_errors() {
     let permission = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
     let erofs = std::io::Error::from_raw_os_error(libc::EROFS);
