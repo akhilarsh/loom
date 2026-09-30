@@ -48,14 +48,18 @@ impl GraphStore {
     /// Returns, in order: the view this process just materialized, the
     /// persisted view of the requested identity, or a view relinked from the
     /// newest older base view (an overlay view: from its base view) and
-    /// persisted. Only the last case resolves edges.
+    /// persisted. Only the last case resolves edges. A persisted file that
+    /// is known stale (an overlay view older than its layer) is rebuilt
+    /// without being parsed.
     pub fn view(&self, revision: &str, overlay: Overlay<'_>) -> Result<ResolvedView> {
         let (identity, overlay) = self.view_identity(revision, overlay)?;
         if let Some(view) = self.take_cached_view(&identity, overlay) {
             return Ok(view);
         }
-        if let Some(view) = self.load_view(&identity, overlay) {
-            return Ok(view);
+        if self.has_view(&identity, overlay) {
+            if let Some(view) = self.load_view(&identity, overlay) {
+                return Ok(view);
+            }
         }
         self.build_view(identity, overlay)
     }
@@ -80,19 +84,21 @@ impl GraphStore {
         Some(view)
     }
 
-    /// Unless [`Self::has_view`] finds a current view of `revision` and
-    /// `overlay`, build and persist it, and keep it for this process: the next
-    /// [`Self::view`] call of its identity takes it instead of parsing the
-    /// persisted file. A stale file is rebuilt without being parsed.
-    pub(crate) fn materialize_view(&self, revision: &str, overlay: Overlay<'_>) -> Result<()> {
+    /// Whether a current view of `revision` and `overlay` is held in memory or
+    /// persisted, told without parsing the view file (see [`Self::has_view`]).
+    pub(crate) fn has_current_view(&self, revision: &str, overlay: Overlay<'_>) -> Result<bool> {
         let (identity, overlay) = self.view_identity(revision, overlay)?;
-        if self.has_view(&identity, overlay) {
-            return Ok(());
-        }
-        let path = self.view_path(&identity, overlay);
-        let view = self.build_view(identity, overlay)?;
+        Ok(self.has_view(&identity, overlay))
+    }
+
+    /// Keep `view`, built for a request with `overlay`, for this process: the
+    /// next [`Self::view`] call of its identity takes it instead of parsing the
+    /// persisted file. A request whose overlay layer is gone (an empty overlay
+    /// generation) resolved to the base view, so it is keyed as one.
+    pub(crate) fn cache_view(&self, view: ResolvedView, overlay: Overlay<'_>) {
+        let overlay = overlay.filter(|_| !view.identity.overlay_generation.is_empty());
+        let path = self.view_path(&view.identity, overlay);
         self.view_cache.borrow_mut().insert(path, view);
-        Ok(())
     }
 
     /// Whether a current view of `identity` is held in memory or persisted,

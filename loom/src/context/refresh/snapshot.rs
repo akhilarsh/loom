@@ -131,7 +131,7 @@ fn materialize_views(graph_store: &GraphStore, outcome: &mut SnapshotOutcome) {
 
 fn try_materialize(graph_store: &GraphStore, outcome: &SnapshotOutcome) -> Result<()> {
     let revision = outcome.revision.as_str();
-    graph_store.materialize_view(revision, None)?;
+    materialize(graph_store, revision, None)?;
     let Some((plan, stage)) = &outcome.overlay else {
         return Ok(());
     };
@@ -139,7 +139,15 @@ fn try_materialize(graph_store: &GraphStore, outcome: &SnapshotOutcome) -> Resul
         // The overlay view was resolved over the layers this snapshot rewrote.
         graph_store.discard_overlay_view(plan, stage);
     }
-    graph_store.materialize_view(revision, Some((plan.as_str(), stage.as_str())))
+    materialize(graph_store, revision, Some((plan.as_str(), stage.as_str())))
+}
+
+/// Build, persist and keep the view for the next reader unless one is current.
+fn materialize(graph_store: &GraphStore, rev: &str, overlay: Option<(&str, &str)>) -> Result<()> {
+    if !graph_store.has_current_view(rev, overlay)? {
+        graph_store.cache_view(graph_store.view(rev, overlay)?, overlay);
+    }
+    Ok(())
 }
 
 fn ensure_base_only(
