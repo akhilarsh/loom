@@ -1,6 +1,6 @@
 # Sandbox And Confinement Gaps
 
-> Sandbox gaps: no E2E canary, diverging env allowlists
+> Sandbox gaps: no E2E canary, env lists
 
 ## Sandbox Denial Has No End-to-End CI Canary
 
@@ -170,3 +170,14 @@ symlinked `doc/loom/knowledge` or `.loom` directory is still followed and writte
 ## Bubblewrap Confinement Reads as Stage Evidence in Remote-Tools Mode (unconfirmed)
 
 `_loom_confinement_evidence` (`loom-hooks/_codex_forward.sh`) treats a pid namespace whose pid 1 is `bwrap` as loom stage evidence. Claude Code runs project hooks through `wrapWithSandbox` (bubblewrap with `--unshare-pid`) when this machine executes tool calls for a remote session. A reconstruction of that confinement (`bwrap --ro-bind / / --dev /dev --unshare-pid --unshare-user --cap-drop ALL --proc /proc`) made `codex-forward-guard.sh` classify the session as a stage and block the stock `codex:codex-rescue` agent ("command is not an exact forwarding-wrapper invocation"); if those payloads also lack `agent_type` and `transcript_path`, the missing-metadata check (`codex-forward-guard.sh:345-347`) would block every call. Not reproduced in a real remote session. Local interactive sessions run hooks unsandboxed and are unaffected. Deciding it means weighing the plugin's usability there against the fail-closed stage classification that confinement evidence exists for.
+
+## A Stage Agent's Bash Allow-List Reaches Outside the Worktree
+
+A stage agent's Bash is confined by the bubblewrap sandbox (the file-tool guard `worktree-file-guard.sh` does not see Bash), but
+the allow-list still reaches beyond the worktree. The harness adds the whole git common directory: `HEAD`, `refs/heads/main`,
+`packed-refs`, `objects`, `info` and other worktrees' metadata are writable, and loom denies only `.git/hooks` and `.git/config`
+(`sandbox/control_surfaces/session_denies.rs`). `package_caches.rs` grants the operator's cargo, bun and npm caches, so a tampered
+`~/.cargo/registry/src` crate would run on the host at the next build. `denyRead` covers only five credential paths, so
+`~/.config/gh/hosts.yml`, `~/.netrc` and `~/.npmrc` are readable. The fix is a separate plan, briefed in
+`security-hardening-worktree-hook.md` at the repository root; operator decisions recorded there: per-session package caches,
+`/tmp/claude-<uid>` stays writable, nothing uid- or machine-specific.

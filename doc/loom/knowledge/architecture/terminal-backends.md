@@ -1,6 +1,6 @@
 # Terminal Backends
 
-> Native and tmux session backends, lane resolution
+> Native and tmux session backends
 
 ## Two Lanes Behind One Dispatcher
 

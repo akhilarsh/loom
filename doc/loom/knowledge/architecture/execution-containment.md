@@ -1,6 +1,6 @@
 # Execution Containment
 
-> Sandboxed command containment and its limits
+> Sandboxed command containment, limits
 
 ## Read This First: What "Containment" Means In Loom
 

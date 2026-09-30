@@ -2,7 +2,7 @@
 ---
 # Merge And Recovery
 
-> Progressive merge, conflict recovery, attribution
+> Progressive merge, conflict recovery
 
 ## Progressive Merge Pattern
 

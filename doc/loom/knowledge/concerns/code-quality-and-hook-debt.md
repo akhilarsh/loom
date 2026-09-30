@@ -87,20 +87,22 @@ this is a deliberate, separate change and not a drive-by trim.
 
 ## Duplicated Extension-to-Language Table (2026-08-17)
 
-The same real-world fact is encoded twice and nothing pins the copies together:
-`language.rs:117-129` maps a `str` to `Option<DetectedLanguage>`, and
-`context/extract/lexical.rs:22-36` maps a `Path` to `NodeLanguage`. Both cover `rs`;
-`ts,tsx,mts,cts`; `py,pyi`; `go`.
+The same real-world fact is encoded in two places and nothing pins the copies together:
+`language.rs:117-128` maps a `str` to `Option<DetectedLanguage>` and covers only `rs`, `ts`, `tsx`, `mts`,
+`cts`, `py`, `pyi` and `go`. The source graph's table is `context/extract/dialect.rs::DIALECTS`, twelve
+dialects over `js/jsx/mjs/cjs`, `java`, `cs`, `rb/rake/gemspec`, `php`, `c`, `cc/cpp/cxx/hh/hpp/hxx/h` and
+the rows above. `context/extract/lexical.rs::language_for_path` already derives its tag from
+`dialect_for_path`, so the lexical copy is gone and `DIALECTS` is the second table.
 
-**Failure mode is a silently narrowing capability, not a crash.** Add `.jsx` to one and not
-the other and the stage skill recommender classifies a file as TypeScript while the
-source-graph tagger labels it `Other` and gives it lexical-only coverage — so
-`loom map --outline` shows no symbols for a language loom otherwise claims to support, with no
-error anywhere.
+**Failure mode is a silently narrowing capability, not a crash.** The gap is wider than before: a `.jsx`,
+`.java`, `.cs`, `.rb`, `.php`, `.c` or `.cpp` file is a source-graph dialect with symbol-level nodes, but
+`DetectedLanguage` has no variant for it, so the stage skill recommender classifies it as no language at all.
+`crate::language::DetectedLanguage` is deliberately untouched by the source-graph plan because stage and skill
+behaviour is keyed to it.
 
-**Fix:** have `extract::lexical::language_for_path` delegate to `language::language_for_path`
-(make it `pub(crate)`) rather than re-encoding the mapping. The test that matters asserts the
-two agree over a shared fixture list — not more tests on either side.
+**Fix:** a shared fixture list asserting the two tables agree on the four core languages, plus a decision on
+which `DetectedLanguage` variants the eight extra dialects need. `dialect.rs` already pins that every
+extension appears in exactly one `DIALECTS` row.
 
 ## Low-Severity Cleanups Deferred From the Verification Gate (2026-08-17)
 

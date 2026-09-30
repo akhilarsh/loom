@@ -16,7 +16,7 @@ plus edges between them. It has **two** production consumers, and both are live:
 
 | Consumer | Route in | What it reads |
 | --- | --- | --- |
-| `loom map` (`--outline`, `--find-all`, `--impact`) | `context::graph_store` | the resolved layer, rendered as read-only views |
+| `loom map` (`--outline`, `--find-all`, `--impact`, `--callers`, `--callees`, `--references`, `--window`, `--census`, `--eval-edges`) | `context::graph_store` and the resolved view (`context::view`) | the resolved graph, rendered as read-only views |
 | the `Source` retrieval channel | `context::rank_source` → `fuse` → `pack` | symbol nodes, scored and fused with knowledge chunks into one `ContextPack` |
 
 The ranking design behind the second consumer is in
@@ -36,223 +36,251 @@ of `SourceNode`/`SourceEdge` is naming the re-export — run
 
 ## The Honesty Contract
 
-**This graph is never claimed to be exhaustive** (`source_graph/mod.rs:14-21`).
-Every `SourceEdge` carries an `EdgeProvenance` and an explicit confidence, and a
-call whose target cannot be resolved is emitted as an *inferred* edge or as
-`UNRESOLVED_TARGET` (`"<unresolved>"`) — never as an authoritative parser edge,
-and never silently dropped or given an invented destination. Consumers that
-render or traverse the graph **must surface that confidence rather than
-flattening it away**.
+**This graph is never claimed to be exhaustive** (`source_graph/mod.rs` module doc).
+Every `SourceEdge` carries an `EdgeProvenance` (seven evidence classes, strongest
+first) and an explicit confidence. A call whose target cannot be resolved is a `Syntax`
+edge to `UNRESOLVED_TARGET` (`"<unresolved>"`), never silently dropped and never given
+an invented destination. Consumers that render or traverse the graph **must surface
+provenance and confidence rather than flattening them away**.
 
-| Provenance | Meaning | Confidence ceiling |
+| Class (`as_str`) | Meaning | Confidence constant |
 | --- | --- | --- |
-| `Parser` | the grammar resolved both endpoints syntactically within ONE file | `1.0` — reserved for this alone |
-| `Lsp` | a language server resolved it | reserved; **nothing emits this today** |
-| `Inferred` | heuristically matched across files, or unresolved | `MAX_INFERRED_CONFIDENCE = 0.5` at extraction |
+| `Structural` (`structural`) | containment: both endpoints are declarations the grammar placed in one file | `STRUCTURAL_CONFIDENCE = 1.0` |
+| `Compiler` (`compiler`) | bound by a compiler or language server; reserved, **nothing emits it** | ceiling `1.0` |
+| `Receiver` (`receiver`) | a `self`/`this`/`Self`/`$this`/`static` call bound to a member of the enclosing type | `RECEIVER_CONFIDENCE = 0.85` |
+| `Import` (`import`) | bound through an import, alias, module-qualified path or package/namespace scope to exactly one definition | `IMPORT_CONFIDENCE = 0.85` |
+| `LocalName` (`local-name`) | same-file spelling with exactly one eligible definition | `LOCAL_NAME_CONFIDENCE = 0.8` |
+| `UniqueName` (`unique-name`) | the only same-family definition of the name, no stronger evidence, no refusal rule firing | `UNIQUE_NAME_CONFIDENCE = 0.6` |
+| `Syntax` (`syntax`) | captured at a site; target unresolved or ambiguous | calls `0.3`, imports and references `0.5` (`syntax_confidence(kind)`); ceiling `MAX_SYNTAX_CONFIDENCE = 0.5` |
 
-`context::resolve` may raise a uniquely-matched inferred edge to at most
-`MAX_RESOLVED_INFERRED_CONFIDENCE = 0.9` — deliberately below `1.0`, because
-cross-file uniqueness is real evidence an extractor never had, but a unique
-*name* match is still not a parse: two unrelated crates can define one name, and
-a graph that omits a file omits its definitions too, so "the only match I can
-see" is not "the only match" (`source_graph/mod.rs:42-51`). Resolution **only
-ever raises confidence with evidence**, and never promotes `Inferred` to
-`Parser`.
+The constants live in `context/source_graph/mod.rs`, each with a docstring stating that
+the number is an evidence ranking, not a calibrated probability. Only `Structural` (and
+the reserved `Compiler`) may carry `1.0`; a contract test pins that, and
+`SourceEdge::bound` debug-asserts against minting a `Structural` or `Syntax` edge.
+`EdgeProvenance::ceiling()` returns the column above and `rank()` orders strength for
+"weakest provenance" reporting.
 
-That ceiling discipline is the reusable idea: when a component's view of the
-world is structurally narrower than the claim it is asked to make, encode the gap
-as a numeric ceiling in a named constant with the reasoning in its docstring —
-not as a comment at the call site.
+**Edge shape** (`source_graph/edge.rs`). Beyond `from`/`to`/`kind`/`provenance`/`confidence`
+an edge carries `symbol` (the spelling written at the site), `sites` (every reference
+`Span`, sorted by `start_byte`, deduplicated), `candidates` and `receiver` (receiver text
+of a member call). An edge lives in the `FileEntry` of the file it was extracted from,
+so a site's path is that entry's key; `site_id(path, span)` is `"{path}@{start}-{end}"`,
+stable within one snapshot and never persisted. Extraction-time deduplication
+(`extract/treesitter/build.rs::dedupe`) groups on `(from, to, kind, provenance, symbol,
+receiver)` and merges `sites`, so two calls to one callee are one edge with two sites.
+`Contains` edges carry no sites; `Calls`, `Imports` and `References` carry at least one.
+`SourceEdge::bind` moves ONLY an unresolved `Syntax` edge to `Receiver`, `Import` or
+`UniqueName` at that class's ceiling and clears its candidates; `unbind` restores the
+extraction-time state (relink uses it, see [Source Graph Resolved View](source-graph-view.md)).
+
+**Candidate sets.** A `Syntax` edge whose target is ambiguous keeps `candidates`: sorted
+node ids, at most `MAX_CANDIDATES = 8`; with more than 8 the list stays empty and the edge is
+plain unresolved. Traversal (`impact_with`, which `impact`, `reachable` and impact-selected
+tests share) treats each candidate as a reverse edge trusted at
+`AMBIGUOUS_CANDIDATE_CONFIDENCE = 0.2`, so the hit's weakest provenance is `syntax` and it is
+flagged `via_candidates`. Retrieval expansion never follows candidates: they sit below its 0.5
+floor. A plan check that must not rest on candidates sets `min_confidence` above 0.2.
+
+**Import bindings** (`source_graph/imports.rs`). `ImportBinding { path, name, alias,
+exported_as, glob, site }` records what each import statement binds; `local_name()` is the
+alias, else the name, else the path's last segment (`None` for a glob). A side-effect import
+(TS `import "x"`, Go `import _ "p"`) and a re-export bind no local name (alias `Some("")`); a
+re-export records the name it exports under in `exported_as` (`export { a as b } from "x"`
+gives `b`). `path` is lossless: C/C++ `#include <x>` keeps its `<` and is external, Ruby
+`require_relative 'x'` is `./x`. One `Imports` edge per statement still exists, now a
+`Syntax` edge with a site.
+
+The ceiling discipline is the reusable idea: when a component's view of the world is
+structurally narrower than the claim it is asked to make, encode the gap as a numeric ceiling
+in a named constant with the reasoning in its docstring, not as a comment at the call site.
+A unique *name* match is still not a parse: two unrelated crates can define one name, and a
+graph that omits a file omits its definitions too, so "the only match I can see" is not "the
+only match". Resolution only ever raises confidence with evidence.
 
 ## The Extractor Trait
 
-`context/extract/mod.rs` — bytes in, `FileExtraction` out. Each language
-implements `SourceGraphExtractor` over a pinned grammar and a tree-sitter query
-embedded in that language's module. **The registry (`extract::registry()`) is the
-only thing the rest of loom sees; callers never name a grammar directly.** Without
-the `source-graph` feature the registry is empty.
+`context/extract/mod.rs` — bytes in, `FileExtraction` out. Each dialect has one extractor
+over a pinned grammar and a tree-sitter query embedded in its module.
 
 ```rust
 pub trait SourceGraphExtractor {
-    fn language(&self) -> DetectedLanguage;
+    fn dialect(&self) -> &'static DialectSpec;
+    fn capabilities(&self) -> Capabilities;
     fn cache_identity(&self) -> ExtractorIdentity;
-    fn supports(&self, path: &Path) -> bool;
     fn extract(&self, path: &Path, bytes: &[u8]) -> Result<FileExtraction>;
 }
 ```
 
-What an extractor promises: every node it emits corresponds to a real
-declaration in the bytes it was handed, and every edge carries honest
-provenance. What it does **not** promise: an exhaustive call graph. Extraction is
-per-file, so a call to a symbol defined in another file is inferred or
-unresolved, never a parser edge (the `context::extract` module doc). A syntax
-error is data (`FileCoverage::ParseError`), never an `Err`. Cross-file resolution
-is `context::resolve`'s job.
+**Dialect lookup, not `supports()`.** `context/extract/dialect.rs` (always compiled, no `cfg`)
+holds `DIALECTS: &[DialectSpec]`, `dialect_for_path` (lowercase extension) and `dialect_by_id`.
+A `DialectSpec` carries `id` (equals `NodeLanguage::as_str()`), `language`, `family`,
+`extensions`, `grammar` (crate and version), `pack: GrammarPack`, `self_receivers` and
+`bare_calls_reach_members`. Every extension appears in exactly one row, pinned by a unit test.
+`extractor_for(extractors, path)` is the one path to an extractor and returns
+`Lookup::{Extractor, Gap, Unknown}`; `extract_file`, `parser_version_matches`,
+`layer_is_current`, the `worktree_graph` scan and `verify/goal_backward` all call it.
 
-**One shared harness, not four implementations.** The tree-sitter walk lives in
-the directory module `context/extract/treesitter/mod.rs` (`run_query`, with
-`treesitter/build.rs` and `treesitter/collect.rs`), parameterized by the
-per-language `QueryHarness` trait. A language module supplies only a grammar, a
-query using the `@definition.<kind>` / `@name` / `@import.path` / `@call.name`
-capture protocol, and a capture-to-kind mapping (`QueryHarness::kind_for_capture`).
-A `@definition.*` match with no `@name` counts toward `FileCoverage::Partial`
-instead of becoming an anonymous node. This was deliberate: the honesty constraint
-(provenance, the 0.5 ceiling) is a property four separate `extract()`
-implementations would each have to remember and any one could silently break.
-Centralizing makes it structural. It also made the four language workers
-genuinely disjoint and parallelizable.
+| id | family | extensions | grammar | pack |
+| --- | --- | --- | --- | --- |
+| `rust` | rust | `rs` | `tree-sitter-rust 0.24.2` | Core |
+| `typescript` / `tsx` | ecmascript | `ts,mts,cts` / `tsx` | `tree-sitter-typescript 0.23.2` | Core |
+| `javascript` | ecmascript | `js,mjs,cjs,jsx` | `tree-sitter-javascript 0.25.0` | Core |
+| `python` | python | `py,pyi` | `tree-sitter-python 0.25.0` | Core |
+| `go` | go | `go` | `tree-sitter-go 0.25.0` | Core |
+| `java` | java | `java` | `tree-sitter-java 0.23.5` | WaveB |
+| `csharp` | csharp | `cs` | `tree-sitter-c-sharp 0.23.5` | WaveB |
+| `ruby` | ruby | `rb,rake,gemspec` | `tree-sitter-ruby 0.23.1` | WaveB |
+| `php` | php | `php` | `tree-sitter-php 0.24.2` | WaveB |
+| `c` | c | `c` | `tree-sitter-c 0.24.2` | WaveC |
+| `cpp` | c | `cc,cpp,cxx,hh,hpp,hxx,h` | `tree-sitter-cpp 0.23.4` | WaveC |
+
+Resolution never binds across **families**: `ecmascript` joins TypeScript, TSX and JavaScript,
+`c` joins C and C++, every other dialect is its own family. `.h` belongs to `cpp` because the C++
+grammar accepts nearly every C header while the C grammar rejects C++ headers outright; the
+standard `#ifdef __cplusplus / extern "C" {` guard still makes a header a whole-file `ParseError`
+([Source Graph Known Gaps](../concerns/source-graph-known-gaps.md)). `NodeLanguage` has a unit
+variant per dialect with an explicit `#[serde(rename = "<id>")]`, plus `Other(String)`.
+`crate::language::DetectedLanguage` is not touched: stage and skill behaviour stays keyed to it.
+
+**Gap vs Unknown.** `Lookup::Gap` is a dialect loom knows whose extractor is absent: the file
+still gets a file-level node with `FileCoverage::LexicalOnly` and a named detail
+(`grammar pack {feature} not compiled ({dialect})` or `no extractor registered for dialect
+{dialect}`). `Unknown` (no dialect for the extension) keeps the lexical fallback. Both stamp
+`LEXICAL_PARSER_VERSION`, and every currency check treats them alike, so a base holding such a
+file is `Reused` on the next `ensure_snapshot`. `Capabilities { declarations, imports,
+import_bindings, calls, receivers, references }` feeds the coverage report; the flags are
+informational and never gate behaviour.
+
+What an extractor promises: every node it emits is a real declaration in the bytes it was
+handed, and every edge carries honest provenance. It does **not** promise an exhaustive call
+graph. Extraction is per-file, so a cross-file call is unresolved or ambiguous until
+`context::resolve` ([Source Graph Resolution](source-graph-resolution.md)) binds it. A syntax
+error is data (`FileCoverage::ParseError`), never an `Err`.
+
+**One shared harness.** The tree-sitter walk lives in `context/extract/treesitter/` (`mod.rs`
+`run_query`, `build.rs`, `collect.rs`, `binding.rs`, `ids.rs`), parameterized by the per-language
+`QueryHarness` trait. A language module supplies a grammar, a query using the capture protocol
+(`@definition.<kind>`, `@name`, `@import.path`, `@import.statement`, `@call.name`,
+`@call.receiver`, `@reference.name`, `@definition.qualifier`) and `kind_for_capture`. Identity-by-
+default hooks cover dialect quirks: `import_bindings`, `import_spec` (Ruby `require_relative` gives
+`./x`), `definition_name` (PHP `A\B` gives `A.B`), `self_receivers` (defaults from the dialect row)
+and `top_level_self` (Ruby only). A `@definition.*` match with no `@name` counts toward
+`FileCoverage::Partial`. Centralizing makes the honesty constraint (provenance, the 0.5 ceiling)
+structural instead of a rule twelve `extract()` implementations each have to remember. The compiled
+`Query` is cached per `(NodeLanguage string, query text)` for the process.
 
 ## Node and Edge Identity
 
 - File node id: the relative path, forward-slashed (`file_node_id`).
-- Symbol node id: `<relative-path>#<kind>:<scope-joined-by-::>`, scope
-  outermost-first, joined with `::` regardless of language so ids are comparable
-  across extractors. Empty scope is invalid (`source_graph/mod.rs:68-89`).
-- **The kind is part of the id because scope alone is not unique.** Rust's
-  `struct Widget` and `impl Widget` share a name, as do a TypeScript `interface
-  Foo` and a `const Foo`. Keying on scope alone let an implementation node
-  silently shadow the type it implements, collapsing two distinct nodes into one
-  and making their `Contains` edges indistinguishable, so a traversal could not
-  tell which parent a method belonged to. The `node_id` docstring carries this
-  reasoning so the kind is not dropped from the id.
-- `SourceNodeKind`: `File`, `Function`, `Type`, `Interface`, `Module`,
-  `Constant`, `Implementation`. `SourceEdgeKind`: `Contains`, `Imports`, `Calls`,
-  `References`, `Implements`, `Extends`. Both have `as_str()` giving the stable
-  lowercase name used in ids, CLI output and fixture JSON — so renaming a variant
-  breaks golden fixtures and node ids at once.
+- Symbol node id: `<relative-path>#<kind>:<scope-joined-by-::>`, scope outermost-first, joined
+  with `::` regardless of language so ids are comparable across extractors. Empty scope is invalid.
+- **The kind is part of the id because scope alone is not unique.** Rust's `struct Widget` and
+  `impl Widget` share a name, as do a TypeScript `interface Foo` and a `const Foo`. Keying on
+  scope alone let an implementation node shadow the type it implements and made their `Contains`
+  edges indistinguishable. The `node_id` docstring carries the reasoning.
+- **Duplicate declarations** get a signature suffix. After a file's definitions are collected,
+  `extract/treesitter/ids.rs::disambiguate` groups them by computed id; every member of a group of
+  two or more becomes `{base}@{sig8}` (first 8 hex of `sha256` over the signature with whitespace
+  runs collapsed), and members that still collide append `.{n}` (1-based, source order). A node
+  that collides with nothing keeps its plain id. `SourceNode.symbol_key` holds the un-suffixed
+  base id when a node was disambiguated and is empty otherwise. `@` is the delimiter because
+  `render.rs::parse_source_identity` and `pack/twins.rs::tier1_twin` split ids on `#` and `:`;
+  line numbers never enter an id. Duplicates share spellings, so a call to them is ambiguous.
+- A nested definition's scope is its parent's full scope (including the parent's
+  `@definition.qualifier`) plus its own qualifier and name, so Ruby `class A::B` with a method
+  `m` gives `[A, B, m]` and members stay addressable under the qualified type.
+- A Go method `func (w *Widget) run()` has scope `[Widget, run]` and id
+  `<file>#function:Widget::run` with no parent node; the receiver type is captured as
+  `@definition.qualifier`, as for C++ `void W::run()`. Every Go `type_spec` and `type_alias`
+  declares a `Type` node (an interface literal declares an `Interface`).
+- A namespace or package `Module` node has ONE scope segment holding the dotted name (Java
+  `package a.b;` gives `["a.b"]`, C# and PHP likewise, C++ `namespace A::B` gives `["A::B"]`).
+  C# file-scoped `namespace A.B;` and PHP statement-form `namespace A;` emit the `Module` node
+  only: their types keep no namespace scope, so the same class is `type:A.B::W` in block form and
+  `type:W` in file-scoped form.
+- Methods need a body: Java, C# and PHP methods and C++ definitions without one are not
+  definitions (abstract and interface methods are dropped). C/C++ function prototypes add no
+  node; they are `References` edges (see [Source Graph Resolution](source-graph-resolution.md)).
+- `SourceNodeKind`: `File`, `Function`, `Type`, `Interface`, `Module`, `Constant`,
+  `Implementation`. `SourceEdgeKind`: `Contains`, `Imports`, `Calls`, `References`, `Implements`,
+  `Extends`. Both have `as_str()` giving the stable lowercase name used in ids, CLI output and
+  fixture JSON, so renaming a variant breaks golden fixtures and node ids at once.
 
 ## Cache Identity
 
-`ExtractorIdentity` (`context/extract/mod.rs`) is what stops a cached extraction
-from an older build being silently reused:
+Three layers of identity stop a cached extraction from an older build being reused.
 
-| Field | Source |
-| --- | --- |
-| `grammar_version` | version of the pinned tree-sitter grammar crate |
-| `query_digest` | `sha256:<hex>` over the embedded query source |
-| `extractor_version` | `u32`, **bumped by hand** whenever the walking logic changes shape |
+**Graph schema.** `GRAPH_SCHEMA_VERSION` (`context/source_graph/mod.rs`, currently 2) is stamped
+into every `GraphLayer.schema_version`. A layer whose version differs is never current and never a
+reuse source: `layer_is_current`, `build_layer` (as a previous layer) and `build_worktree_graph`
+(treats it as absent) all refuse it. A layer file that fails to deserialize is **corrupt**, not an
+error that wedges the cache: `read_layer` returns `Ok(None)` after a `tracing::warn!` naming the
+path, so `ensure_base` rebuilds it and `load_newest_base` skips it. A stale or unparseable base is
+replaced through `GraphStore::replace_base` (atomic temp file plus rename; a write-denied cache
+falls back to memory), never by `path.exists()` then `remove_file`, which bypasses the read-only
+fallback and races concurrent snapshots.
 
-**Any change to the pinned grammar, the embedded query, or the walking logic must
-change this.** The grammar and query halves are automatic; `extractor_version` is
-not — changing how the walk builds nodes without bumping it serves stale cached
-extractions with no error anywhere. `to_parser_version()` renders a compact form —
-grammar version, the first 12 hex digits of the digest and `v<extractor_version>`,
-joined by `+` — stored on every node as `SourceNode::parser_version`, small enough
-to repeat per node.
+**Extractor.** `ExtractorIdentity` (`context/extract/mod.rs`) has `dialect`, `grammar_version`,
+`query_digest` (`sha256:<hex>` over the embedded query) and `extractor_version` (`u32`, **bumped by
+hand** whenever the walking logic changes shape). `to_parser_version()` renders
+`{dialect}:{grammar}+{digest12}+v{n}`, stored on every node as `SourceNode::parser_version`, so
+TypeScript and TSX never share one. The grammar and query halves are automatic;
+`extractor_version` is not. Changing the walk without bumping it serves stale cached extractions
+with no error anywhere. The same applies to `RESOLVER_VERSION` for resolution rules.
 
-Content identity is `body_hash(bytes)` = `sha256:<hex>`, the one definition
-(`context/source_graph/mod.rs`). `build_layer` (`refresh/source_graph/layer.rs`)
-tries two reuses before it parses a file, each against the previous layer and the
-base:
+**Currency predicate.** Gap, Unknown and `Oversized` file nodes carry `LEXICAL_PARSER_VERSION`
+(`lexical+v1`), not an extractor identity. The currency check (`entries_are_current` in
+`refresh/source_graph/layer.rs`, with `parser_version_matches`) must cover every coverage variant
+that stamps it in ONE function: comparing an Oversized node to the extractor identity made a layer
+holding a >512 KiB file never current ([Source Graph Delivery Mistakes](../mistakes/source-graph-delivery.md)).
 
-1. **By git blob id** (`reuse_by_oid`): the path is not dirty and its current blob
-   id equals the one that layer's `blob_index` recorded — no read, no hash.
-2. **By content hash** (`reuse_by_hash`): after reading and hashing the bytes, the
-   recorded `content_hash` matches.
-
-Both also require `parser_version_matches` — the entry's first node was produced
-by the extractor identity that is current now — so bumping an identity forces a
-re-parse. An unreadable file's entry and an overlay tombstone both carry an empty
-`content_hash`, which can never equal a real `body_hash`, and `reuse_by_oid` skips
-empty hashes; that is what makes keeping those entries safe.
+Content identity is `body_hash(bytes)` = `sha256:<hex>`. `build_layer` tries two reuses before it
+parses a file, each against the previous layer and the base: **by git blob id** (`reuse_by_oid`:
+path not dirty and its blob id equals the recorded `blob_index` entry, no read, no hash) and **by
+content hash** (`reuse_by_hash`). Both also require `parser_version_matches`, so bumping an
+identity forces a re-parse. An unreadable file's entry and an overlay tombstone carry an empty
+`content_hash`, which never equals a real `body_hash`, and `reuse_by_oid` skips empty hashes; that
+is what makes keeping those entries safe.
 
 ## Coverage: Nothing Ever Vanishes
 
-`FileCoverage` (`context/source_graph/node.rs`) records why a file got less than
-full treatment. No path silently disappears (the `context::extract` module doc):
+`FileCoverage` (`context/source_graph/node.rs`) records why a file got less than full
+treatment. No path silently disappears (the `context::extract` module doc):
 
 | Situation | Result |
 | --- | --- |
-| no grammar for the language | file node, `FileCoverage::LexicalOnly` |
+| no dialect for the extension (`Lookup::Unknown`) | file node, `FileCoverage::LexicalOnly` |
+| dialect known, pack not compiled or no extractor (`Lookup::Gap`) | file node, `LexicalOnly`, named detail |
 | file over `MAX_EXTRACTED_FILE_BYTES` (512 KiB) | file node, `FileCoverage::Oversized` |
-| grammar reports a syntax error | file node, `FileCoverage::ParseError` |
+| grammar reports a syntax error | file node, `FileCoverage::ParseError`, no symbol nodes |
 | a `@definition.*` match had no `@name` | named definitions still emitted, `FileCoverage::Partial` |
 | `source-graph` cargo feature disabled | file node, `FileCoverage::LexicalOnly` |
-| unreadable file | entry with no nodes and an empty `content_hash`, `FileCoverage::LexicalOnly` ("unreadable: …"), see `unreadable_entry` |
+| unreadable file | entry with no nodes and an empty `content_hash`, `LexicalOnly` ("unreadable: …"), see `unreadable_entry` |
 | file deleted in the working tree | overlay tombstone with no nodes, `FileCoverage::Deleted` |
 
-`Deleted` is the one variant that records a deletion rather than a degraded
-extraction, and only an overlay carries it — see *Building and Persisting*. That is
-the coverage contract: a degraded file is *reported as degraded*, never omitted.
-`context::coverage::CoverageReport` aggregates it. When you add an extractor, the
-degraded paths are the ones to test — the happy path fails loudly, the degraded
-paths fail silently.
+`FileCoverage::Full` means the configured syntax pass completed without unnamed definition
+matches. It does **not** mean the call graph is exhaustive. `Deleted` records a deletion rather
+than a degraded extraction, and only an overlay carries it (see [Source Graph Build](source-graph-build.md)). A
+degraded file is *reported as degraded*, never omitted; when you add an extractor, test the
+degraded paths, because the happy path fails loudly and the degraded paths fail silently.
 
-## Building and Persisting
-
-`refresh::source_graph::reconcile_source_graph(store, graph_store, project_root, scope)`
-is the builder: inspect the working tree, enumerate files through git, reuse or
-re-extract each one, and persist the resulting `GraphLayer` through `GraphStore`.
-`ensure_snapshot` (see *Lifecycle*) is the policy layer most callers go through; it
-drives the same builder.
-
-- **Working tree** (`refresh/source_graph/generation.rs::working_tree`): `HEAD` plus
-  every dirty path from `git status --porcelain=v1 -z --untracked-files=all` (a
-  rename records both paths). Its `generation` is a sha256 over `HEAD` and one
-  `<status> <path> <content-hash|deleted>` line per dirty path; a clean tree's
-  generation is `clean_generation(HEAD)`. Comparing generations is how an overlay
-  proves it is current without re-walking anything.
-- **Enumeration** (`refresh/source_graph/enumerate.rs`), path → git blob id:
-  - `SourceGraphScope::Base { revision }` lists **committed** content
-    (`git ls-tree -r -z HEAD`), and `build_layer` reads a dirty path's bytes with
-    `git show HEAD:<path>` rather than from disk. A base therefore always describes
-    committed `HEAD` and can be published from a dirty checkout.
-  - `SourceGraphScope::Overlay { plan, stage }` lists the index
-    (`git ls-files -s -z`) plus **untracked** files
-    (`git ls-files --others --exclude-standard -z`, existing and not excluded), and
-    records index paths missing from disk as deleted.
-- **Tombstones.** In an overlay, every deleted path — an index path missing from
-  disk, or a dirty path absent from disk — becomes `FileEntry::tombstone()`: no
-  nodes, empty hash, `FileCoverage::Deleted`. `persist_layer` keeps a tombstone only
-  when the base has that path, and keeps any other entry only when it differs from
-  the base's; `GraphStore::save_overlay` applies the same tombstone filter.
-  `GraphStore::resolved` REMOVES a tombstoned path from the resolved view instead of
-  shadowing it, so a file a stage deleted no longer shows up in `loom map` or the
-  source channel.
-- **`GraphLayer`**: `revision` (a base's commit; for an overlay, the `HEAD` it was
-  cut from), `generation` (the tree generation for an overlay, empty for a base),
-  `built_at`, `files` (path → `FileEntry`), and `blob_index` (path → the git blob id
-  whose bytes produced that entry). An overlay write is skipped when revision,
-  generation, files and `blob_index` all equal the previous overlay's;
-  `GraphStore::publish_base` never overwrites a revision already published.
-- **`SourceGraphOutcome { nodes, edges, freshness, counters }`** describes the layer
-  as built by THIS call; `counters.bytes_serialized` is 0 when nothing was written.
-  A working-tree or enumeration failure is **data, not a crash**: the outcome is
-  degraded, with `Freshness::never_built(detail)` and zero counts, and the stored
-  semantic layer is marked stale.
-- **`SourceGraphCounters`**: `files_enumerated`, `files_hashed`, `files_parsed`,
-  `files_reused`, `files_deleted`, `files_untracked`, `bytes_serialized`, and
-  `enumerate_ms` / `hash_ms` / `parse_ms` / `persist_ms`.
-  `SnapshotOutcome::describe` prints the parsed, reused and deleted counts on its
-  advisory line.
-- `EXCLUDED_ROOTS` = `.loom`, `.work`, `.worktrees`, `target`, `node_modules`, `.git`
-  (`refresh/source_graph.rs`), matched against the FIRST path segment only, applied to
-  enumerated, untracked and dirty paths alike. `.loom` and `.work` are two separate
-  top-level entries; there is no compound `.loom/work` entry.
-- `context` reaches `git` only through `git::runner::run_git_checked`, from
-  `enumerate.rs`, `generation.rs` and `layer.rs` under `refresh/source_graph/`. That
-  is a deliberate downward edge, not a layering violation.
+`context::coverage::CoverageReport` (`context/coverage/{mod.rs,dialects.rs}`) aggregates it and
+adds byte totals and a symbol-level share of bytes, `unsupported_files`/`unsupported_bytes`,
+`by_dialect` (per dialect: files, bytes, symbol-level files and bytes, `files_by_status`,
+`edges_by_provenance`, `unresolved_edges`, `ambiguous_edges`, the extractor status `registered` /
+`pack {feature} not compiled` / `no extractor`, and `capabilities`) and `gaps`. The `loom map`
+footer prints `52% of files, 61% of bytes symbol-level` plus a short `gaps:` clause; `footer_json`
+carries every field. `loom map --census` ([Source Graph Evaluation](source-graph-evaluation.md))
+reports the same dimensions across projects.
 
 ## Stack
 
-Six dependencies, all `optional = true`, all behind ONE default-on cargo feature
-`source-graph` (`loom/Cargo.toml:41-46`, `:63-77`), exact-pinned with `=`:
-`tree-sitter =0.27.0`, `tree-sitter-rust =0.24.2`,
-`tree-sitter-typescript =0.23.2`, `tree-sitter-python =0.25.0`,
-`tree-sitter-go =0.25.0`, `streaming-iterator =0.1.9`.
-
-- `streaming-iterator` is not incidental: `QueryCursor::matches` returns a
-  `StreamingIterator`, not a plain `Iterator`.
-- **Why one feature and not six.** `cargo add` generates one implicit feature per
-  optional dep, which would let a host disable half the grammars and leave the
-  extractor registry inconsistent. Collapsing them makes
-  `--no-default-features` the only supported degraded mode, and that mode falls
-  back to file-level lexical nodes rather than failing to build — the point is
-  that a host without a C toolchain can still build loom.
-- Core-crate upgrades carry API breakage: 0.26 → 0.27 turned
-  `QueryMatch::captures` from a public field into a method
-  (`context/extract/treesitter/collect.rs:108`). The grammar crates were
-  unaffected — they bind through `tree-sitter-language`, not the core ABI.
+The grammar crates, their exact pins, the three cargo features (`source-graph`,
+`source-graph-wave-b`, `source-graph-wave-c`) and the per-pack capability-gap rule are in
+[Stack](../stack.md#tree-sitter-source-extraction). The short form: every grammar is an optional,
+`=`-pinned dependency; a pack that is not compiled reports its dialects as named gaps
+(`Lookup::Gap`) instead of failing the build; `--no-default-features` is the degraded mode that
+yields file-level lexical nodes only.
 
 ## Lifecycle: Who Builds It, and When
 
@@ -269,14 +297,19 @@ degrade retrieval, never block a run.
 | `LocalCurrent` | ensure the base for `HEAD`; when the tree is dirty (its generation differs from `clean_generation(HEAD)`), also bring the checkout's `_local` overlay (`local_overlay_key`) current |
 | `StageOverlay { plan, stage }` | bring that stage's overlay current; no base publish |
 
-A base for `HEAD` is reused when it exists and is `layer_is_current` (every file's
-first node carries the current extractor's parser version); a base built by an
-older extractor identity is deleted and rebuilt. An overlay is reused when its
-`generation` equals the tree's and it is `layer_is_current`. The result is a
-`SnapshotOutcome { action, reason, revision, generation, overlay, counters, elapsed }`
-whose `SnapshotAction` is `Reused`, `Updated` (some files reused), `Rebuilt` or
-`Unavailable`; `describe()` renders the single `source graph: …` advisory line
-every surface prints.
+A base for `HEAD` is reused when it exists and is `layer_is_current` (current schema version
+and every entry current under `entries_are_current`); a stale or corrupt base is replaced in
+place through `replace_base`. An overlay is reused when its `generation` equals the tree's and
+it is `layer_is_current`. The result is a
+`SnapshotOutcome { action, reason, revision, generation, overlay, counters, elapsed, persisted,
+serving }` whose `SnapshotAction` is `Reused`, `Updated` (some files reused), `Rebuilt` or
+`Unavailable`. `persisted` is false when the memory fallback served the layer, when
+`state.json` refused a write, or when a view fell back to memory; `serving` names the older
+base a failed build fell back to. `state()` maps the outcome to a `GraphState`, and
+`describe()` renders the single `source graph: …` advisory line every surface prints,
+appending `; not persisted (cache read-only)` or `; serving stale base <rev8>`. After it
+publishes or reuses a layer, `ensure_snapshot` also materializes the resolved view so the
+prompt hook never builds one on its hot path ([Source Graph Resolved View](source-graph-view.md)).
 
 | When | Call site | Policy or scope |
 | --- | --- | --- |
@@ -284,7 +317,7 @@ every surface prints.
 | `loom run` (daemon) | `commands/run/mod.rs::prepare_background_run` | `BaseOnly` |
 | `loom run --foreground` | `commands/run/foreground.rs` | `BaseOnly` |
 | `loom map`, `loom knowledge sync` | `commands/map.rs`; `refresh::semantic::try_reconcile_semantic` | `LocalCurrent` |
-| prompt-hook self-heal | `loom hook reconcile-graph` (`commands/hook/reconcile_graph.rs`), spawned detached when a pack is stale or degraded | `HookTarget::snapshot_policy`: `StageOverlay` in a stage, `LocalCurrent` in a checkout |
+| prompt-hook self-heal | `loom hook reconcile-graph` (`commands/hook/reconcile_graph.rs`), spawned detached when `wants_rebuild` says so (a stale graph, or a current one with a degraded pack); guarded by a lease | `HookTarget::snapshot_policy`: `StageOverlay` in a stage, `LocalCurrent` in a checkout |
 | before a stage's signal is written, and before a merge | `MergeLifecycle::reconcile_overlay`, from `stage_executor.rs` (fresh spawn), `skip_retry.rs` (recovery), `merge_handler.rs` and `progressive_complete.rs` | `reconcile_source_graph` with `Overlay { plan, stage }` |
 | after a merge | `MergeLifecycle::reconcile_base` | `reconcile_source_graph` with `Base { revision }` of the merged revision |
 
@@ -323,6 +356,10 @@ permission-denied or read-only-filesystem write as this call's success:
   persisted, so the next process starts over.
 - Only a genuine bug (malformed path, serialization failure) propagates and produces the
   "DEGRADED: source graph base ... missing" state.
+- Resolved views fall back the same way (`view_fallback`, `fall_back_view_to_memory`), and a
+  denied `state.json` write is carried as `state_persisted = false` into
+  `SnapshotOutcome.persisted`. In a stage sandbox `loom map` therefore reports `persisted: false`
+  and `view: "built"`, and every process is cold: nothing persists.
 
 A from-scratch base build of this repository is a cold parse of every tracked file. The
 `loom map --impact` footer at `67e442d5` reported 3447 files, 25198 nodes and 117583 edges. That

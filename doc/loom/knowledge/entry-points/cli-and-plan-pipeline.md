@@ -2,7 +2,7 @@
 ---
 # Cli And Plan Pipeline
 
-> CLI dispatch, plan parse/validate/graph, verification
+> CLI dispatch, plan pipeline
 
 ## CLI Entry Point
 

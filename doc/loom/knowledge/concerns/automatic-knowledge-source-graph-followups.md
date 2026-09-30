@@ -1,6 +1,6 @@
 # Automatic Knowledge Source Graph Followups
 
-> Knowledge-plan followups: retrieval gap, stopwording
+> Knowledge-plan followups
 
 ## Open Items From the Automatic-Knowledge Plan
 
@@ -52,10 +52,9 @@ lifecycle case so the gap is measured before the threshold is tuned.
 
 ## `loom knowledge eval` Fails Its Gates
 
-Three causes:
+Two causes remain:
 
-- **The eval never refreshes the source graph.** `eval` (`commands/knowledge/eval.rs`) calls `retrieve_for_stage` for each case without first running `ensure_snapshot(.., SnapshotPolicy::LocalCurrent)`, which `loom map`'s `load_graph` does. After a commit the local overlay is stale, the source channel returns no nodes, and the three source-node cases fail, so the result swings between runs.
-- **A moved section.** `genuine-win-delivery-epoch-suppression` expects `architecture/context-retrieval.md#delivery-records-and-epoch-suppression#0`; that section now lives in `architecture/context-retrieval-state.md`.
 - **A case that needs re-judging.** `genuine-win-sandbox-settings-rules` expects two `mistakes/sandbox-and-settings.md` chunks that now rank 15th and 18th. Ahead of them are architecture sections that answer the query directly (`security-and-isolation.md` on write grants and on worktree isolation) and `sandbox/settings/policy.rs::sandbox_settings`. `architecture/context-retrieval-corpus.md#the-rescue-floor-and-the-thin-survivor-rule` quotes this query's words, so it ranks for the query too.
+- **A p@5 that needs re-measuring.** `precision_floor` (0.40) was calibrated at p@5 0.45. Re-measure with a binary built from the tree under evaluation: an older installed `loom` scores old retrieval code.
 
-`precision_floor` (0.40) was calibrated at p@5 0.45. Re-measure with a binary built from the tree under evaluation: an older installed `loom` scores old retrieval code. The `retrieval-delivery` stage owns the eval files and changes ranking, so re-judge the cases after it merges.
+The eval refreshes the source graph itself: `refresh_source_graph` in `commands/knowledge/eval.rs` runs `ensure_snapshot(LocalCurrent)` once before the cases, through a private `GraphStore`. Under a read-only cache (a stage sandbox) that store's in-memory layers are dropped before `retrieve_for_stage` reads disk, so the refresh has no effect there; run the eval from a checkout with a writable cache. `genuine-win-delivery-epoch-suppression` expects `architecture/context-retrieval-state.md` (`loom/eval/retrieval-cases.yaml`). Without `--cases`, eval reads the MAIN checkout's cases file (`main_project_root`), so a worktree edit to `retrieval-cases.yaml` is invisible to a plain `loom knowledge eval`; under a read-only cache retrieval opens its own `GraphStore` and reads the revision from `state.json`, so the refreshed layer is never seen and every source-node case misses. Re-measure on a host with a writable cache.
