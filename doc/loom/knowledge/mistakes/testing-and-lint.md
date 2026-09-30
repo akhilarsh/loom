@@ -95,6 +95,8 @@ Expect `Summary: 0 issues`. `.markdownlint.json` disables MD013/MD033/MD036/MD04
 
 **Push-time behaviour since 2026-08-31:** `.githooks/pre-push` now runs `markdownlint-cli2 --fix` before it reports, so only violations the fixer cannot repair (MD024 duplicate headings, MD025 multiple H1s) block a push; a run that changed files still stops the push and names them, because the commits being pushed still carry the unfixed markdown. It also stopped hiding the linter's output behind `2>/dev/null`, and treats a missing `markdownlint-cli2 v` banner in that output as "the linter never ran" rather than as a lint failure — `bunx` exits 1 for both, so the exit code alone cannot tell them apart.
 
+**Fix (2026-09-30):** `.githooks/pre-commit` applies the same banner test and prints a `WARNING: markdownlint-cli2 could not run` line (plus the output's last lines) instead of staying silent. It still exits 0, because pre-commit only auto-fixes.
+
 ## Growing a Function That Carries a Maintainability Baseline Entry Breaks the Gate (2026-08-10)
 
 **What happened:** A five-line fix inside `generate_index` (`src/fs/knowledge/index.rs`) pushed it from 53 to 58 lines and failed `cargo test --test maintainability`, blocking the push.

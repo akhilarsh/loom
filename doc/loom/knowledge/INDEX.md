@@ -14,7 +14,7 @@
 | [conventions.md](conventions.md) | Coding conventions discovered in the codebase | 243 |
 | [mistakes.md](mistakes.md) | Mistakes made and lessons learned - what to avoid | 250 |
 | [stack.md](stack.md) | Dependencies, frameworks, and tooling used in the project | 119 |
-| [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 250 |
+| [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 236 |
 
 ## Tier 2 — Topics
 
@@ -22,7 +22,7 @@
 
 | Topic | Blurb | Lines |
 | --- | --- | --- |
-| [adjudication-lifecycle](architecture/adjudication-lifecycle.md) | Dispute to verdict, per-kind rulings | 111 |
+| [adjudication-lifecycle](architecture/adjudication-lifecycle.md) | Dispute to verdict, per-kind rulings | 137 |
 | [codex-concurrency](architecture/codex-concurrency.md) | Codex fan-out limits, what is measured, what degrades | 128 |
 | [codex-plugin](architecture/codex-plugin.md) | Codex plugin install, identity, and forwarding | 362 |
 | [completion-recovery](architecture/completion-recovery.md) | Completion HMAC, exit_reason, handoff folds | 34 |
@@ -41,7 +41,7 @@
 | [memory-spool](architecture/memory-spool.md) | Read before touching loom memory | 188 |
 | [merge-flow](architecture/merge-flow.md) | How a completed stage reaches its target branch | 79 |
 | [orchestrator-loop](architecture/orchestrator-loop.md) | Tick order, Monitor, heartbeat liveness | 56 |
-| [owned-waits](architecture/owned-waits.md) | Worker-set waits: lease/engine, exit codes | 47 |
+| [owned-waits](architecture/owned-waits.md) | Worker-set waits: lease/engine, exit codes | 48 |
 | [plan-lifecycle-and-fields](architecture/plan-lifecycle-and-fields.md) | Plan fields v1/v2, verify checks, lints | 216 |
 | [quota-poller](architecture/quota-poller.md) | Usage-quota polling, caching, rendering | 31 |
 | [remote-control](architecture/remote-control.md) | Capability detection, preflight, naming | 82 |
@@ -89,7 +89,7 @@
 | --- | --- | --- |
 | [code-style-and-structure](conventions/code-style-and-structure.md) | Rust naming, errors, size limits, docstrings | 273 |
 | [commits](conventions/commits.md) | Grouped Conventional Commits, no trailers | 25 |
-| [dispute-and-adjudication](conventions/dispute-and-adjudication.md) | Dispute file authority, adjudicator scope, budgets | 118 |
+| [dispute-and-adjudication](conventions/dispute-and-adjudication.md) | Dispute file authority, adjudicator scope, budgets | 119 |
 | [git-and-build-workflow](conventions/git-and-build-workflow.md) | Git/worktree ops, cargo, maintainability ledger | 206 |
 | [guidance-channels-and-plugin-scope](conventions/guidance-channels-and-plugin-scope.md) | Guidance channels, verification, plugin scope | 121 |
 | [model-and-effort-config](conventions/model-and-effort-config.md) | [pressure]/[models], precedence, value types | 103 |
@@ -100,9 +100,9 @@
 
 | Topic | Blurb | Lines |
 | --- | --- | --- |
-| [adjudication-autonomy-deadlock](mistakes/adjudication-autonomy-deadlock.md) | Accepted-verdict deadlock: adoption, requeue | 190 |
+| [adjudication-autonomy-deadlock](mistakes/adjudication-autonomy-deadlock.md) | Accepted-verdict deadlock: adoption, requeue | 200 |
 | [ambient-filesystem-trust](mistakes/ambient-filesystem-trust.md) | A .git dir is not evidence of a repo | 146 |
-| [briefs-and-bug-reports](mistakes/briefs-and-bug-reports.md) | Stage bug reports; guard flags in briefs | 105 |
+| [briefs-and-bug-reports](mistakes/briefs-and-bug-reports.md) | Stage bug reports; guard flags in briefs | 116 |
 | [ci-toolchain-and-cargo](mistakes/ci-toolchain-and-cargo.md) | CI clippy drift, offline cargo audit, install.sh | 182 |
 | [codex-lane-rogue-wrapper](mistakes/codex-lane-rogue-wrapper.md) | A wrapper implemented instead of forwarding | 157 |
 | [codex-navigation](mistakes/codex-navigation.md) | Forbidding reads instead of fixing a slow reader | 52 |
@@ -110,10 +110,10 @@
 | [completion-broker-credential](mistakes/completion-broker-credential.md) | Completion broker fallback, dup naming, exit-0 | 179 |
 | [computed-values-and-hidden-couplings](mistakes/computed-values-and-hidden-couplings.md) | Values computed right but unread downstream | 215 |
 | [concurrency-and-locking](mistakes/concurrency-and-locking.md) | Locked-handle writes and read-mutate-save races | 36 |
-| [daemon-singleton](mistakes/daemon-singleton.md) | Two daemons shared .loom/work/; now flocked | 131 |
+| [daemon-singleton](mistakes/daemon-singleton.md) | Two daemons shared .loom/work/; now flocked | 141 |
 | [detached-spawn-in-tests](mistakes/detached-spawn-in-tests.md) | No process from a test may outlive the test process | 45 |
-| [doctrine-and-acceptance](mistakes/doctrine-and-acceptance.md) | Doctrine drift, setup-line grants, completion rules | 337 |
-| [hooks-shell-portability](mistakes/hooks-shell-portability.md) | gawk/bash portability, redirects, hook test env | 188 |
+| [doctrine-and-acceptance](mistakes/doctrine-and-acceptance.md) | Doctrine drift, setup-line grants, completion rules | 347 |
+| [hooks-shell-portability](mistakes/hooks-shell-portability.md) | gawk/bash portability, redirects, hook test env | 191 |
 | [knowledge-base-drift](mistakes/knowledge-base-drift.md) | How the knowledge base goes stale: frozen notes, drift | 207 |
 | [knowledge-cli-invariants](mistakes/knowledge-cli-invariants.md) | Invariants live in the fs constructor | 139 |
 | [knowledge-write-channel](mistakes/knowledge-write-channel.md) | Why distillation cannot write knowledge directly | 100 |
@@ -128,7 +128,7 @@
 | [refactor-stragglers](mistakes/refactor-stragglers.md) | What a large rename leaves behind | 136 |
 | [sandbox-and-settings](mistakes/sandbox-and-settings.md) | Sandbox path rules, permission sync, merge traps | 293 |
 | [sandbox-protected-hooks-dir](mistakes/sandbox-protected-hooks-dir.md) | A directory named hooks/ is sandbox write-protected. | 37 |
-| [sandbox-state-channels](mistakes/sandbox-state-channels.md) | Sandboxed callers vs .loom/work state | 288 |
+| [sandbox-state-channels](mistakes/sandbox-state-channels.md) | Sandboxed callers vs .loom/work state | 298 |
 | [sandbox-tooling-and-network](mistakes/sandbox-tooling-and-network.md) | Stage-sandbox tool failures: sccache, audit, loopback | 236 |
 | [sandbox-write-rules-inert](mistakes/sandbox-write-rules-inert.md) | Only Edit(path) rules are enforced | 57 |
 | [schema-reuse-and-silent-skips](mistakes/schema-reuse-and-silent-skips.md) | deny_unknown_fields with two deserialization sources | 130 |
@@ -142,7 +142,7 @@
 | [subagent-liveness-and-watch](mistakes/subagent-liveness-and-watch.md) | Subagent alive/done/dead detection; watch traps | 321 |
 | [subagent-orchestration](mistakes/subagent-orchestration.md) | Delegation model, defect reports, gotchas | 110 |
 | [test-concurrency-and-fixtures](mistakes/test-concurrency-and-fixtures.md) | Racy tests: fds, ETXTBSY, serial env, stdin hangs | 210 |
-| [testing-and-lint](mistakes/testing-and-lint.md) | Lint/test discipline: --all-targets, --no-fail-fast | 324 |
+| [testing-and-lint](mistakes/testing-and-lint.md) | Lint/test discipline: --all-targets, --no-fail-fast | 326 |
 | [tests-that-cannot-fail](mistakes/tests-that-cannot-fail.md) | Tests that pass whether the bug is present | 274 |
 | [tmux-backend](mistakes/tmux-backend.md) | tmux spawn-failure exits, cleanup-on-error | 136 |
 | [typed-config-values-process](mistakes/typed-config-values-process.md) | Verification-brief, dev-server, plan-prose gotchas | 43 |
@@ -164,7 +164,7 @@
 | [iterm2-window-teardown](concerns/iterm2-window-teardown.md) | iTerm2 window never named, so teardown cannot close it | 48 |
 | [knowledge-cli-gaps](concerns/knowledge-cli-gaps.md) | Knowledge CLI gaps and housekeeping | 101 |
 | [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 82 |
-| [runtime-and-session-safety](concerns/runtime-and-session-safety.md) | Runtime edge cases: tmux, orphan adoption | 139 |
+| [runtime-and-session-safety](concerns/runtime-and-session-safety.md) | Runtime edge cases: tmux, orphan adoption | 147 |
 | [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: no E2E canary, diverging env allowlists | 172 |
 | [state-confinement-gaps](concerns/state-confinement-gaps.md) | Shared package-manager caches stay session-writable. | 9 |
 | [token-accounting-and-proof-defects](concerns/token-accounting-and-proof-defects.md) | Token-optimization and efficiency follow-ups | 92 |

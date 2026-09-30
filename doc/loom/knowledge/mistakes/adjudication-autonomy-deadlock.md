@@ -92,7 +92,7 @@
 
 **Prevention:** Every session kind the daemon spawns needs its own liveness signal and its own idle budget, independent of the stage's worker bookkeeping.
 
-**Fix:** The session wrapper exports `LOOM_SESSION_TYPE` (`terminal/native/wrapper.rs`); the PostToolUse hook writes a judge heartbeat to `heartbeat/<stage>.adjudication.json` for `LOOM_SESSION_TYPE=adjudication`, skipping only the ownership gate; `HeartbeatWatcher` keeps judge heartbeats in a separate map (`monitor/heartbeat.rs::judge_heartbeat`); `Detection` emits one `MonitorEvent::AdjudicatorStalled` per judge whose last activity (heartbeat, else `created_at`) exceeds the stage's `subagent_timeout_secs` idle budget while the process is alive (`monitor/hung_latch.rs`); the handler (`core/event_handler/stalled_judge.rs`) closes the judge through the shared `Orchestrator::close_adjudication_session` (`core/judge_close.rs`, also used by `retire_adjudicator`) and leaves the stage in `NeedsAdjudication`, so the next tick respawns a judge or `escalate_attempt_cap` sends the stage to `NeedsHumanReview`. A vanished judge whose verdict is already on disk is now recorded as `Completed`, not crashed (`AdjudicatorRegistry::verdict_written_by`, `monitor/session_events.rs`).
+**Fix:** The session wrapper exports `LOOM_SESSION_TYPE` (`terminal/native/wrapper.rs`); the PostToolUse hook writes a judge heartbeat to `heartbeat/<stage>.adjudication.json` for `LOOM_SESSION_TYPE=adjudication`, skipping only the ownership gate; `HeartbeatWatcher` keeps judge heartbeats in a separate map (`monitor/heartbeat.rs::judge_heartbeat`); `Detection` emits one `MonitorEvent::AdjudicatorStalled` per judge whose last activity (heartbeat, else `created_at`) exceeds the stage's `subagent_timeout_secs` idle budget while the process is alive (`monitor/hung_latch.rs`); the handler (`core/event_handler/stalled_judge.rs`) closes the judge through the shared `Orchestrator::close_adjudication_session` (`core/judge_close.rs`, also used by `retire_adjudicator`) and leaves the stage in `NeedsAdjudication`, so the next tick respawns a judge or the attempt cap (`Escalation::attempt_cap`, written by `Orchestrator::escalate_dispute`) sends the stage to `NeedsHumanReview`. A vanished judge whose verdict is already on disk is now recorded as `Completed`, not crashed (`AdjudicatorRegistry::verdict_written_by`, `monitor/session_events.rs`).
 
 ## The Verdict Hold Was Logged as a Forced Transition
 
@@ -188,3 +188,13 @@ stuck on disk self-heal on the next tick); `validate_accept` decodes at record t
 a malformed patch to `NeedsMoreEvidence`, storing the canonical nested form; `apply_verdict`
 counts failures per dispute and escalates to `NeedsHumanReview` at `MAX_APPLY_ATTEMPTS`; the
 prompt spells the schema out.
+
+## Escalation Left the Disputing Agent Alive, and Approve Re-attached It (2026-09-30)
+
+**What happened:** `map-api-freshness` filed an integrity dispute. The daemon's adjudicator spawn failed (its binary path named a deleted file after `loom update`), so the dispute escalated to `NeedsHumanReview`. The operator ran `--approve`, which queued the stage. On the next tick, adoption found the disputing agent still alive and walked the stage back to `Executing` with that agent. Nothing ever judged dispute 1, and no error was reported.
+
+**Why:** `retire_disputing_agents` ran only before a verdict was applied. All four dispute-loop escalations (judge spawn failed, evidence cap, attempt cap, apply cap) wrote `NeedsHumanReview` while the agent was alive and still named in `stage.session`. Approve's precondition, that the escalating agent's session is already gone, did not hold. Separately, `start_stage` adopted into any on-disk status other than Executing or Completed.
+
+**Prevention:** every exit from `NeedsAdjudication` goes through the same retirement boundary. A path that writes a stage status must do it after the agents that no longer own that stage are gone. Adoption may only fill a stage the scheduler would start, which means Queued on disk.
+
+**Fix:** the adjudicator registry returns `Escalation` values, and `Orchestrator::escalate_dispute` retires the agent first, then always escalates, naming any survivor in `review_reason`. Escalation closes the stage's open disputes (`closed.marker`), so none shadows a later dispute. `--approve` refuses while a worker is live. `start_stage` starts or adopts only a Queued or WaitingForDeps stage and resyncs the graph for any other status. See `architecture/adjudication-lifecycle.md#Retirement and Fresh-Session Boundary`.

@@ -335,3 +335,13 @@ changed flag or behaviour (`rg -- '--web|127\.0\.0\.1' README.md doc/`) before c
 put the doc edits in the implementation brief.
 
 **Fix:** a follow-up docs pass updated README, CHANGELOG and the web-dashboard / web-terminal topics.
+
+## A Lesson Kept Only in Knowledge Did Not Stop Named Spawns (2026-09-30)
+
+**What happened:** `mistakes/verification-v2-delivery.md` said on 2026-09-24 to spawn stage workers without the Agent tool's `name` parameter. On 2026-09-30 the `map-api-freshness` stage still named three workers and a `loom-code-reviewer`. `loom subagents watch` could not bind the workers (exit 5), and the named reviewer idled as a teammate with no review round recorded, which wasted a full review.
+
+**Why:** a stage agent reads the skill and its signal, and knowledge reaches it only through a Knowledge Brief. The rule never reached `skills/loom-orchestration/SKILL.md`, `CLAUDE.md.template` or the v2 review section of the signal (`orchestrator/signals/v2_section_review.rs`).
+
+**Prevention:** when a mistake entry's prevention is a spawn or review rule, add it to the doctrine surfaces agents actually read, in the same change.
+
+**Fix:** the rule is now in SKILL.md Rule 6 (plus the coordinator preamble and review-loop step 1), in `CLAUDE.md.template` Rule 6, and in the v2 review signal section. The watch also rejects `name@session-…` ids with a message naming the rule.

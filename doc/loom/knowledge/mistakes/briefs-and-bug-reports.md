@@ -66,6 +66,7 @@ sat exactly at its baseline (70), so every new `Stage` field grows it by a line 
 available. The plan-verification stage raised its entry to 71 by an explicit, recorded decision. Any stage
 that adds a `Stage` field needs either that decision or a field-grouping refactor planned in advance.
 **Recurred (2026-09-26, outside a stage):** a doctrine brief asked for a changed exit-5 message in `subagents/wait/identity.rs` (396 lines) without naming the 400-line limit; the worker added a 10-line helper and the file failed `tests/maintainability.rs` at 406. The orchestrator replaced the helper with a message-suffix const. Every brief that edits a file within 20 lines of 400 names its current length and the limit.
+**Recurred (2026-09-30, outside a stage):** five bug-fix briefs named the 400/50 limits but not the ratchet. The workers grew six baselined entries by 1-7 lines (`#[serial]` attributes in `repair/tests.rs`, a longer `try_approve_review` doc, one line each in `DaemonServer::start` and `start_stage`). Before writing a brief, grep `loom/maintainability-baseline.txt` for every file the brief lets the worker touch, and list the matches with their current values.
 
 ## Read the Criterion Direction From the Plan, Not From the Signal (2026-09-19)
 
@@ -103,3 +104,13 @@ The pre-commit hook runs markdownlint with automatic fixes on every staged markd
 **Why:** The diagnosis traced from the blocking call backwards and never read the function every block passes through; `loom knowledge context` was not queried for the hook, and `architecture/codex-plugin.md` documents the gate. The brief framed a wrong premise as settled, which discouraged the subagent from pushing back.
 **Prevention:** Before stating that a hook blocks something, trace from the hook's entry to the block, reading every early exit on the way (the block helper's own body included), and pull `loom knowledge context --query "<hook> <behaviour>"`. A brief built on a hook diagnosis quotes the traced path. A subagent whose tree contradicts its brief's stated problem reports that before editing.
 **Fix:** The subagent was redirected, reverted every edit, and ran each registered hook with a no-stage payload: none blocks, rewrites, or records a `codex:codex-rescue` call.
+
+## A Stage Bug Report's Suspected Cause Is a Lead, Not a Diagnosis
+
+**What happened:** `BUGS-map-api-freshness-session.md` blamed a stuck integrity dispute on the dispute apply path or a lost update. The session started planning fixes from those suspicions, and the user stopped it: validate first. The orchestrator log and shell history showed a different chain. `loom update` had replaced the binary under the running daemon, so the adjudicator spawn failed. The stage was escalated to NeedsHumanReview with its disputing worker still alive. An operator `--approve` then re-queued the stage, and adoption re-attached the idle worker.
+
+**Why:** a stage session writes its report from inside a sandbox. It cannot see `orchestrator.log` timing, operator commands, or daemon restarts, so its suspected causes are guesses about code it never traced.
+
+**Prevention:** before fixing anything from a stage bug report, confirm each entry against the tree and `.loom/work/orchestrator.log` (grep the stage id around the reported timestamps). Record a verdict and root cause (file:line) per entry. Only then decide scope with the user.
+
+**Fix:** the entries were validated one by one, and their fixes were scoped from the confirmed causes.

@@ -28,18 +28,44 @@ the marker. A daemon restart can therefore resume an interrupted apply from the 
 ## Retirement and Fresh-Session Boundary
 
 Before applying a verdict, `orchestrator/core/event_handler/stage_takedown.rs::retire_disputing_agents`
-writes a `HandoffOrigin::Retired` handoff, kills and confirms the death of every non-adjudication
-agent attached to the stage, and clears `stage.session`. If any writer survives, verdict application
-is deferred. This prevents the old, idle agent from being adopted after the criteria change.
+writes a `HandoffOrigin::Retired` handoff, kills every non-adjudication agent attached to the stage and
+confirms each is dead, and clears `stage.session`. If any writer survives, verdict application
+is deferred. This keeps the old, idle agent from being adopted after the criteria change.
+
+Escalation out of the dispute loop retires first and never defers. The adjudicator registry
+(`orchestrator/adjudication/mod.rs`, `session.rs`) returns `Escalation` values (`escalation.rs`) when
+a judge spawn fails or the evidence or attempt cap is reached. `Orchestrator::escalate_dispute`
+(`orchestrator/core/orchestrator.rs`) calls `retire_disputing_agents`, then `Escalation::write`.
+`Escalation::write` moves the stage to `NeedsHumanReview` only while it is still `NeedsAdjudication`.
+When an agent survives the kill, `Escalation::with_unretired_agents` names it and
+`loom stage reset <stage> --kill-session` in `review_reason`. The apply cap (`escalate_apply_cap`) and
+the degenerate-verdict escalation (`record.rs`) also go through `Escalation::write`.
+
+Every move into `NeedsHumanReview` from the dispute loop closes every dispute of the stage that has no
+`applied.marker`. That covers `Escalation::write`, the degenerate verdict in `record.rs`, and
+`persist_verdict_result` in `apply.rs` for Reject, the amendment cap and exhausted evidence rounds. Closing
+writes `closed.marker` into each such dispute directory (`close_open_disputes`,
+`orchestrator/adjudication/closed_disputes.rs`) under the `disputes/<stage>/.lock` flock the filing path
+takes. No caller holds the stage-file lock while closing. `is_closed` makes the scans
+(`scan_pending_requests`, `scan_pending_verdicts`), `apply_verdict_once` and `ensure_recordable` treat a
+closed dispute as settled.
+
+`loom stage human-review <stage> --approve` refuses while `orchestrator::coherence::live_worker_sessions`
+finds a live worker, and names `loom stage reset <stage> --kill-session`. Adoption uses the same predicate,
+so approval never queues a stage onto a live agent. Approve closes the stage's open disputes again before
+queueing it, which repairs a crash between a status write and its close. An abandoned dispute therefore
+never shadows a dispute filed after approval.
 
 Once all sibling disputes have verdicts, an `Accept` or `NeedsMoreEvidence` result moves the stage
-to `Queued`. The normal executor then creates a fresh session in the existing worktree. Its signal
+to `Queued`. The normal executor then creates a fresh session in the existing worktree. `start_stage`
+starts or adopts only a stage that is `Queued` or `WaitingForDeps` on disk. For any other status on
+disk it resyncs the graph node (`session_adoption.rs::sync_unstartable_node`) and returns. Its signal
 contains the updated `Stage`, the eligible predecessor handoff from `handoffs/`, the latest stage
-memory, and—when present—`disputes/<stage>/feedback.md`.
+memory, and, when present, `disputes/<stage>/feedback.md`.
 
 The successor does **not** load `disputes/<stage>/<n>/request.md` or `disputes/<stage>/<n>/verdict.md`
-directly, and it does not inherit the judge's conversation. Verdict application must materialize
-every fact the successor needs into one of the signal inputs above.
+directly, and it does not inherit the judge's conversation. Verdict application must write every fact
+the successor needs into one of the signal inputs above.
 
 ## What Each Verdict Delivers
 

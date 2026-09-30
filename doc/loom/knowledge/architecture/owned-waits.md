@@ -30,12 +30,13 @@ A background `loom subagents watch --worker ... | tail -20` "completes" immediat
 
 `loom knowledge update`/`replace-section` resolve `doc/loom/knowledge/` from the shell's working directory: run from `loom/` they scaffold a second tree under `loom/doc/` and write there. Run them from the repository root.
 
-**Named-agent spawns break `watch`'s id parsing (2026-09-16):** when an `Agent` spawn passes a
-`name`, the Agent tool returns an id of the form `name@session-<8hex>`. `loom subagents watch`
-rejects it: `WorkerSpec::from_str` calls `forward_receipt::is_safe_id`, which disallows `@`, so the
-watch exits 5 ("worker id is empty or unsafe") before binding anything — even though the same spawn
-reports success via the harness's own task notification. Spawn Claude workers you intend to watch
-without a `name`, or bind the watch on the session id form the tool actually returns.
+**Named spawns are refused.** An `Agent` spawn that passes `name` runs as a teammate whose id is
+`name@session-<8hex>`. It idles instead of stopping, and `subagent-start.sh`/`subagent-stop.sh`
+drop ids containing `@`, so no starts row or terminal record exists for it. `WorkerSpec::from_str`
+(`commands/subagents/wait/model.rs`) rejects any `claude:` id containing `@` with "named spawns
+cannot be watched: spawn the subagent without `name`, or wait for its Agent-tool completion
+notice". Rule 6 of the skill and of `CLAUDE.md.template` forbids `name` on subagent spawns (agent
+teams excepted).
 
 **A companion liveness check can false-positive across the forwarder's sandbox PID namespace
 (2026-09-16):** `loom subagents watch` exited 3 claiming a codex companion job's process was "gone

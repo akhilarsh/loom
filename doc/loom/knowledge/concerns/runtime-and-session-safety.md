@@ -137,3 +137,11 @@ useful as a test fixture (a non-ancestor `LOOM_MAIN_AGENT_PID` of `"1"` can neve
 it is also a real edge-case correctness gap for any deployment where the loom main agent's PID
 could legitimately be 1. Not fixed — recorded because the test-fixture use depends on the same
 behaviour that makes it a latent bug elsewhere.
+
+## Dispute Bookkeeping Gaps Around Escalation (2026-09-30)
+
+`--approve` refuses while a worker session is live, so no path into `NeedsHumanReview` can queue a stage onto a live agent. Dispute bookkeeping still has three gaps:
+
+- **Refused filings leave an open dispute.** `daemon/server/dispute.rs` (and likely `dispute_kinds.rs`) writes `disputes/<stage>/<n>/request.md` before checking the status transition. A filing refused because the stage is already `NeedsHumanReview` leaves an open dispute. Only a surviving agent can file then, and a filing that lands after `close_open_disputes` stays open. Fix: dry-run `try_request_adjudication` on a clone before `write_request`, or remove the directory when the transition is refused.
+- **`loom stage reset` leaves disputes open.** Resetting a `NeedsAdjudication` or `NeedsHumanReview` stage (`commands/stage/state.rs::apply_reset`) closes nothing, so an unanswered dispute can shadow the next dispute the fresh session files. Every other route out of the dispute loop closes them (see `architecture/adjudication-lifecycle.md#Retirement and Fresh-Session Boundary`).
+- **Unverified: a survivor may block the fresh spawn.** A surviving session with no PID identity reads as dead, so approve succeeds. It stays in `active_sessions` and `stage.session`, though, and `insert_active_session` may then refuse the fresh session.

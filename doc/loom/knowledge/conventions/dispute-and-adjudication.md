@@ -46,9 +46,9 @@ Never amends: `before_stage`, `after_stage`, `artifacts`, `dependencies`, `id`, 
 
 Per-stage caps to bound the autonomy loop:
 
-- `dispute_count`: max 3 per stage (default)
-- `evidence_rounds` (NeedsMoreEvidence iterations): max 2 before escalation to NeedsHumanReview
-- `amendments_applied`: max 3 per stage (absolute, not percentage)
+- `dispute_count`: max 3 criterion disputes per stage (`MAX_DISPUTES_PER_KIND` via `Stage::max_disputes_per_stage`, `models/stage/dispute_budgets.rs`); further dispute requests are refused
+- `evidence_rounds` (NeedsMoreEvidence iterations): max 5 (`MAX_EVIDENCE_ROUNDS`, `orchestrator/adjudication/mod.rs`) before escalation to NeedsHumanReview
+- `amendments_applied`: bounded by the plan-level `adjudication.max_amendments_per_stage`, default 10 (`default_max_amendments_per_stage`, `plan/schema/types.rs`); past it the stage escalates to NeedsHumanReview
 - `adjudicator_attempt_count` (worker crash retries): max 3
 - `finding_disputes`, `contract_disputes`, `integrity_disputes`: max 3 each (`MAX_DISPUTES_PER_KIND`), kept beside `evidence_rounds` and `amendments_applied` in `stage.tally`; see `architecture/adjudication-lifecycle.md`
 - contract writer respawns: max 3 (`MAX_CONTRACT_RESPAWNS`, `.loom/work/contracts/<stage>/attempts`), spent when a replacement writer is handed out; see `architecture/contract-phase.md`
@@ -91,7 +91,8 @@ run things.
 
 - **Spawn:** `adjudication::session::start_pending_adjudications` builds a `SessionType::Adjudication`
   session and spawns it through the same `TerminalBackend` every other session goes through. It runs
-  in the MAIN REPO, not a worktree — `SessionType::Knowledge` is the closest precedent.
+  in the stage's worktree when that exists, else in the main repo (`judge_cwd`, `adjudication/session.rs`),
+  and never gets a worktree of its own.
 - **Model:** `resolve_model` reads `.loom/work/config.toml::[adjudication].model`, defaulting to `opus`.
 - **Briefing:** `orchestrator/signals/adjudication.rs` writes a signal whose body comes from
   `adjudication::prompt`, carrying the dispute, the stage's criteria, the evidence commit diff and

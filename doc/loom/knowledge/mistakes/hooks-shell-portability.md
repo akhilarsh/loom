@@ -178,6 +178,9 @@ The pre-commit hook's "Linting markdown files" step fetches from `registry.npmjs
 network, the sandbox denies the fetch, and the commit still succeeds, so markdown lint never runs for `.md`
 commits made in a stage. Detection: a `<sandbox_violations>` deny for `registry.npmjs.org` right after
 `git commit`. Run the markdown lint from a networked session before merge.
+**Fix (2026-09-30):** `loom/.githooks/pre-commit` captures the linter output and, when the `markdownlint-cli2 v`
+banner is missing, prints `WARNING: markdownlint-cli2 could not run - markdown was NOT linted` with the output's
+last lines. The commit still succeeds; `pre-push` stays the gate.
 
 ## zsh Reads `$VAR:path` as a Modifier, and `>` Truncates Before the Command Fails (2026-09-19)
 

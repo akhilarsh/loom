@@ -174,20 +174,6 @@ caches stay session-writable.
 
 → [State Confinement Gaps](concerns/state-confinement-gaps.md)
 
-## `loom request status` Fails in Every Stage Worktree (2026-09-14)
-
-`loom request status <id>` — the follow-up command every relay ticket's stderr tells the caller to
-run (`loom/src/relay/emit/stderr_text.rs:17`) — fails inside every stage worktree with `Failed to
-open dirfd at <worktree>/.loom/work: Not a directory`. `commands/request/status.rs:15` calls
-`resolve_work_dir()` and anchors on it with `safe_fs::safe_open_dirfd`, which opens the root with
-`O_NOFOLLOW` and by design refuses a symlinked root (`fs/safe_fs.rs:57-61`) — but a worktree's
-`.loom/work` is ALWAYS a symlink to the main repo's state. This belongs to the session-relay feature
-from earlier state-confinement work, not to any completion/recovery path; it was left unfixed rather
-than folded into an unrelated plan's stage, since the fix touches a security-sensitive no-follow root
-policy that deserves its own reviewed change. **Fix direction:** canonicalize the trusted work-dir
-root once before anchoring (as the commands that already work correctly inside worktrees do), keeping
-no-follow enforcement for everything beneath it; add a worktree-shaped regression test.
-
 ## Agent Rule-Bending Hardening (2026-09-16)
 
 An env-var gate an agent can unset is class 1 of three enforcement classes; only the OS sandbox, the capsule deny layers and the daemon ancestry checks carry authority. Seven gaps follow, led by commits policed by text matching, an undenied worktree `.git` surface, and no CI proof that any denial holds.

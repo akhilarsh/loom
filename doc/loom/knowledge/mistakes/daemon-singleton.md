@@ -129,3 +129,13 @@ Orchestrator started, spawning ready stages...
 ```
 
 First dated log line is `2026-05-13T16:13:18.544430Z` — within 1s of the lock file's mtime. The 06:30 daemon's earlier log entries (10 hours of operation) are not present in this file; either the log was truncated at the second startup, or the first daemon was writing to a different sink (e.g., it had `eprintln!` redirected on stdout but the new daemon repointed the log fd).
+
+## `loom update` Replaced the Binary Under a Running Daemon (2026-09-30)
+
+**What happened:** `loom update` ran at 14:38 while a daemon was running. Every session spawn after that failed with `cannot resolve the loom binary ~/.local/bin/.tmpXXXXXX (deleted)`, including the adjudicator for a filed dispute, and the stage escalated to human review.
+
+**Why:** `self_update::install_binary` renames the running binary to a `NamedTempFile` backup, installs the new one, and the backup's drop deletes it. The daemon's `/proc/self/exe` then names the deleted backup. `host_facts` called `std::env::current_exe()` on every spawn, and `accepted_loom_bin` cannot canonicalize a deleted path. `dev-install.sh` is unaffected because it kills the daemon first.
+
+**Prevention:** a long-lived process must not re-derive its own binary path from `current_exe()` after start. Record the path once and re-validate it at use. An installer that replaces a binary must name any running process still on the old one.
+
+**Fix:** `DaemonServer::start` (`daemon/server/lifecycle.rs`) calls `record_daemon_binary`, which stores the canonical path in a `OnceLock` (`orchestrator/terminal/native/launch/host.rs`). `host_facts` uses that path, and `accepted_loom_bin` still checks it on every spawn. `loom update` warns when the current workspace's daemon is alive (`commands/self_update/daemon_notice.rs`). A daemon started before this fix still needs a restart after an update.

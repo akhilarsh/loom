@@ -286,3 +286,13 @@ bug by patching view differences one artifact at a time.
 (`fingerprint::compute_local`) computes directly, with git pinned to the stage's registered git
 directory. A sandboxed `loom stage complete` skips the test-integrity and review gates locally;
 the daemon runs both before it applies the `CompleteStage` transition.
+
+## `loom request status` Refused the Worktree's Symlinked `.loom/work` (2026-09-14)
+
+**What happened:** inside every stage worktree, `loom request status <id>` failed with `Failed to open dirfd at <worktree>/.loom/work: Not a directory`. Every relay ticket's stderr tells the agent to run that command.
+
+**Why:** `commands/request/status.rs` anchored its inbox reads on the uncanonicalized `resolve_work_dir()` root. `safe_fs::safe_open_dirfd` opens with `O_NOFOLLOW`, and a worktree's `.loom/work` is always a symlink to the main repository's state.
+
+**Prevention:** a command that reads `.loom/work` through the no-follow helpers must canonicalize the work-dir root once before anchoring. Everything beneath the root stays no-follow. `commands/stage/control_complete.rs` and `commands/request/status.rs` (`canonical_root`) follow this pattern. Test such a command with a worktree-shaped fixture: `wt/.loom/work` symlinked to a real work dir.
+
+**Fix:** `status.rs` canonicalizes the root before `resolve_status`; `a_work_dir_symlink_resolves_once_canonicalized` pins it.
