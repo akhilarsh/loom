@@ -6,7 +6,7 @@ use serial_test::serial;
 use std::time::Duration;
 use tempfile::TempDir;
 
-fn git_ok(root: &Path, args: &[&str]) {
+pub(super) fn git_ok(root: &Path, args: &[&str]) {
     let output = std::process::Command::new("git")
         .args(args)
         .current_dir(root)
@@ -22,7 +22,7 @@ fn git_ok(root: &Path, args: &[&str]) {
     );
 }
 
-fn init_repo() -> TempDir {
+pub(super) fn init_repo() -> TempDir {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
     git_ok(root, &["init", "-b", "main"]);
@@ -34,7 +34,7 @@ fn init_repo() -> TempDir {
     temp
 }
 
-fn stores(temp: &TempDir) -> (ContextStore, GraphStore) {
+pub(super) fn stores(temp: &TempDir) -> (ContextStore, GraphStore) {
     let state_root = temp.path().join(".loom");
     let store = ContextStore::with_root(state_root.join("cache/context-v1"));
     let graph_store = GraphStore::new(store.root(), &state_root.join("work"));
@@ -119,7 +119,7 @@ fn a_directory_without_git_is_unavailable_instead_of_erroring() {
 /// entirely, mirroring `context::refresh::tests_source_graph::enumeration`'s
 /// unreadable-file skip and
 /// `commands::knowledge::tests_sync::sync_does_not_fail_when_the_index_write_fails`.
-fn lock_base_dir_read_only(graph_store: &GraphStore) -> (std::path::PathBuf, bool) {
+pub(super) fn lock_base_dir_read_only(graph_store: &GraphStore) -> (std::path::PathBuf, bool) {
     use std::os::unix::fs::PermissionsExt;
 
     let base_dir = graph_store.base_dir();
@@ -137,16 +137,20 @@ fn lock_base_dir_read_only(graph_store: &GraphStore) -> (std::path::PathBuf, boo
 /// Restores write access to `base_dir` before any later assertion can panic
 /// and leave a read-only directory behind for `TempDir`'s `Drop` to choke
 /// on, then reports whether this environment's persist-failure path was
-/// actually exercised (a `true` return means the caller must skip).
-fn restore_after_persist_probe(base_dir: &Path, still_writable: bool) -> bool {
+/// actually exercised (a `true` return means the caller, `test`, must skip).
+pub(super) fn restore_after_persist_probe(
+    base_dir: &Path,
+    still_writable: bool,
+    test: &str,
+) -> bool {
     use std::os::unix::fs::PermissionsExt;
 
     std::fs::set_permissions(base_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
     if still_writable {
         eprintln!(
-            "SKIP a_snapshot_that_cannot_persist_still_serves_results_from_memory: this \
-             environment does not enforce 0o555 directory permissions (running as root, or a \
-             sandbox that ignores mode bits), so the persist-failure path was never exercised"
+            "SKIP {test}: this environment does not enforce 0o555 directory permissions \
+             (running as root, or a sandbox that ignores mode bits), so the persist-failure \
+             path was never exercised"
         );
     }
     still_writable
@@ -162,7 +166,11 @@ fn a_snapshot_that_cannot_persist_still_serves_results_from_memory() {
 
     let outcome = ensure_snapshot(&store, &graph_store, root, SnapshotPolicy::BaseOnly);
 
-    if restore_after_persist_probe(&base_dir, still_writable) {
+    if restore_after_persist_probe(
+        &base_dir,
+        still_writable,
+        "a_snapshot_that_cannot_persist_still_serves_results_from_memory",
+    ) {
         return;
     }
 

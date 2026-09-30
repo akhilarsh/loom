@@ -15,15 +15,17 @@
 //!
 //! **This graph is never claimed to be complete.** Every [`SourceEdge`] carries
 //! an [`EdgeProvenance`] and an explicit confidence, and a call whose target
-//! cannot be resolved is emitted as an *inferred* edge or as
-//! [`UNRESOLVED_TARGET`] — never as an authoritative parser edge. Consumers that
-//! render or traverse the graph must surface that confidence rather than
-//! flattening it away.
+//! cannot be resolved is emitted as a `Syntax` edge to [`UNRESOLVED_TARGET`] —
+//! never as a bound edge. Only containment is certain. Consumers that render or
+//! traverse the graph must surface that confidence rather than flattening it
+//! away.
 
 mod edge;
+mod imports;
 mod node;
 
-pub use edge::{EdgeProvenance, SourceEdge, SourceEdgeKind};
+pub use edge::{site_id, EdgeProvenance, SourceEdge, SourceEdgeKind};
+pub use imports::ImportBinding;
 pub use node::{FileCoverage, NodeLanguage, SourceNode, SourceNodeKind, Span};
 
 /// Placeholder [`SourceEdge::to`] for a call or import whose target could not be
@@ -31,24 +33,56 @@ pub use node::{FileCoverage, NodeLanguage, SourceNode, SourceNodeKind, Span};
 /// instead of silently dropping the edge or inventing a destination.
 pub const UNRESOLVED_TARGET: &str = "<unresolved>";
 
-/// Confidence ceiling for an edge whose target was not resolved within the file.
-/// Extractors must not exceed it for [`EdgeProvenance::Inferred`] edges.
-///
-/// An extractor sees exactly one file, so it cannot tell a name it does not
-/// recognize from a name that is defined next door. Half confidence is the
-/// most that view can honestly support.
-pub const MAX_INFERRED_CONFIDENCE: f32 = 0.5;
+/// Version of the persisted graph layer format. A layer written under another
+/// version is never current and never a reuse source, so an old cache is
+/// rebuilt instead of read.
+pub const GRAPH_SCHEMA_VERSION: u32 = 2;
 
-/// Confidence ceiling for an inferred edge that whole-graph resolution matched
-/// to exactly one definition.
-///
-/// Deliberately below `1.0`: cross-file uniqueness is real evidence an
-/// extractor never had, but a unique *name* match is still not a parse. Two
-/// unrelated crates can define one name, and a graph that omits a file omits
-/// its definitions too — so "the only match I can see" is not "the only match".
-/// Reserving `1.0` for [`EdgeProvenance::Parser`] keeps the strongest claim
-/// attached to the only evidence that actually proves it.
-pub const MAX_RESOLVED_INFERRED_CONFIDENCE: f32 = 0.9;
+/// Confidence of a [`EdgeProvenance::Structural`] edge. Numeric confidence is
+/// an evidence ranking, not a calibrated probability; only structural (and the
+/// reserved compiler) edges may carry `1.0`.
+pub const STRUCTURAL_CONFIDENCE: f32 = 1.0;
+
+/// Confidence of a [`EdgeProvenance::Receiver`] edge: a `self`/`this` call bound
+/// to a member of the enclosing type. An evidence ranking, not a probability.
+pub const RECEIVER_CONFIDENCE: f32 = 0.85;
+
+/// Confidence of an [`EdgeProvenance::Import`] edge: bound through an import,
+/// alias, qualified path, or package scope. An evidence ranking, not a
+/// probability.
+pub const IMPORT_CONFIDENCE: f32 = 0.85;
+
+/// Confidence of a [`EdgeProvenance::LocalName`] edge: a same-file spelling with
+/// exactly one in-scope definition. An evidence ranking, not a probability.
+pub const LOCAL_NAME_CONFIDENCE: f32 = 0.8;
+
+/// Confidence of a [`EdgeProvenance::UniqueName`] edge: the only same-family
+/// definition of the name in the graph. Deliberately low: two unrelated crates
+/// can define one name, and a graph that omits a file omits its definitions
+/// too. An evidence ranking, not a probability.
+pub const UNIQUE_NAME_CONFIDENCE: f32 = 0.6;
+
+/// Confidence ceiling of a [`EdgeProvenance::Syntax`] edge. An extractor sees
+/// one file, so half confidence is the most that view can support.
+pub const MAX_SYNTAX_CONFIDENCE: f32 = 0.5;
+
+/// Trust of a traversal step through one member of an ambiguous edge's candidate
+/// set. An evidence ranking, not a probability.
+pub const AMBIGUOUS_CANDIDATE_CONFIDENCE: f32 = 0.2;
+
+/// Most ids an ambiguous edge keeps in `candidates`. Beyond this the list stays
+/// empty and the edge is plain unresolved.
+pub const MAX_CANDIDATES: usize = 8;
+
+/// Confidence of a `Syntax` edge of `kind`: `0.3` for a call, `0.5` for an
+/// import or reference. Every `SourceEdge::syntax` caller and
+/// [`SourceEdge::unbind`] take their confidence from here.
+pub fn syntax_confidence(kind: SourceEdgeKind) -> f32 {
+    match kind {
+        SourceEdgeKind::Calls => 0.3,
+        _ => MAX_SYNTAX_CONFIDENCE,
+    }
+}
 
 /// Files larger than this are recorded at file level only, never parsed.
 ///

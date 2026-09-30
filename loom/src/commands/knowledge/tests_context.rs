@@ -131,6 +131,7 @@ fn graph_with_one_node(id: &str) -> ResolvedGraph {
         language: NodeLanguage::Rust,
         parser_version: "test+v1".to_string(),
         coverage: FileCoverage::Full,
+        symbol_key: String::new(),
     };
     let mut files = BTreeMap::new();
     files.insert(
@@ -140,6 +141,7 @@ fn graph_with_one_node(id: &str) -> ResolvedGraph {
             nodes: vec![node],
             edges: Vec::new(),
             coverage: FileCoverage::Full,
+            imports: Vec::new(),
         },
     );
     ResolvedGraph {

@@ -288,6 +288,8 @@ pub fn render_impact(
 /// `scope::symbol` path lifted from the parsed source), so both are
 /// flattened for display; the graph traversal itself still runs on the raw
 /// `start_id`.
+// Later stages add fields; the struct update keeps this literal compiling.
+#[allow(clippy::needless_update)]
 fn render_impact_for(
     graph: &ResolvedGraph,
     start_id: &str,
@@ -310,6 +312,7 @@ fn render_impact_for(
             limit: args.limit,
             path_prefix: args.path_prefix.clone(),
             min_confidence: args.min_confidence,
+            ..Default::default()
         },
     );
     if result.hits.is_empty() {

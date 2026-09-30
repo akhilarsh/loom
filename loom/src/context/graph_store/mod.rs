@@ -23,16 +23,14 @@
 //! module owns only the layout, the layering rule, and canonical serialization.
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::context::source_graph::{FileCoverage, SourceEdge, SourceNode};
+use crate::context::source_graph::{FileCoverage, GRAPH_SCHEMA_VERSION};
 use crate::context::store::canonical_json;
 
 /// Graph directory, relative to the context cache root.
@@ -43,127 +41,6 @@ pub const BASE_RELATIVE_DIR: &str = "base";
 pub const OVERLAY_RELATIVE_DIR: &str = "context";
 /// File name of a persisted layer.
 pub const LAYER_FILE: &str = "graph.json";
-
-/// One file's contribution to a layer.
-///
-/// Stored per-file rather than as two flat lists so an overlay can shadow
-/// exactly the files a stage touched, and so a single changed file can be
-/// re-extracted without rebuilding the layer.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FileEntry {
-    /// `sha256:<hex>` over the file's exact bytes, for incremental rebuilds.
-    pub content_hash: String,
-    #[serde(default)]
-    pub nodes: Vec<SourceNode>,
-    #[serde(default)]
-    pub edges: Vec<SourceEdge>,
-    pub coverage: FileCoverage,
-}
-
-impl Default for FileEntry {
-    /// An entry nothing has been extracted into yet. The coverage says so
-    /// rather than claiming `Full`, so a half-built layer can never read as
-    /// complete.
-    fn default() -> Self {
-        FileEntry {
-            content_hash: String::new(),
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            coverage: FileCoverage::LexicalOnly {
-                detail: "not extracted".to_string(),
-            },
-        }
-    }
-}
-
-impl FileEntry {
-    /// A deletion marker carried only by an overlay.
-    pub fn tombstone() -> Self {
-        Self {
-            content_hash: String::new(),
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            coverage: FileCoverage::Deleted,
-        }
-    }
-}
-
-/// One persisted layer: base or overlay.
-///
-/// `files` is a `BTreeMap` and every collection inside is sorted, so two runs
-/// over identical bytes serialize byte-identically (see [`canonical_json`]).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct GraphLayer {
-    /// Source revision this layer describes: a git commit for a base layer,
-    /// and the base revision the overlay was cut from for an overlay.
-    #[serde(default)]
-    pub revision: String,
-    /// Snapshot generation identifier; empty means unknown until
-    /// `source-graph-snapshot` fills it.
-    #[serde(default)]
-    pub generation: String,
-    /// When this layer was written.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub built_at: Option<DateTime<Utc>>,
-    /// Extraction results keyed by project-relative, forward-slashed path.
-    #[serde(default)]
-    pub files: BTreeMap<String, FileEntry>,
-    /// Path to the git blob object id whose bytes produced its
-    /// [`FileEntry::content_hash`].
-    #[serde(default)]
-    pub blob_index: BTreeMap<String, String>,
-}
-
-impl GraphLayer {
-    /// Every node in this layer, in path order.
-    pub fn nodes(&self) -> impl Iterator<Item = &SourceNode> {
-        self.files.values().flat_map(|entry| entry.nodes.iter())
-    }
-
-    /// Every edge in this layer, in path order.
-    pub fn edges(&self) -> impl Iterator<Item = &SourceEdge> {
-        self.files.values().flat_map(|entry| entry.edges.iter())
-    }
-}
-
-/// A base layer with an overlay applied — the view every reader sees.
-///
-/// Built by [`GraphStore::resolved`]. Holds owned data because the two layers
-/// it draws from have different lifetimes and a reader should not have to care
-/// which layer an entry came from.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct ResolvedGraph {
-    /// Revision of the base layer underneath, empty when there is none.
-    pub base_revision: String,
-    /// Paths the overlay shadowed. Non-empty means this view is stage-local.
-    pub overlaid: BTreeSet<String>,
-    pub files: BTreeMap<String, FileEntry>,
-}
-
-impl ResolvedGraph {
-    pub fn nodes(&self) -> impl Iterator<Item = &SourceNode> {
-        self.files.values().flat_map(|entry| entry.nodes.iter())
-    }
-
-    pub fn edges(&self) -> impl Iterator<Item = &SourceEdge> {
-        self.files.values().flat_map(|entry| entry.edges.iter())
-    }
-
-    /// Look up a node by its [`SourceNode::id`].
-    pub fn node(&self, id: &str) -> Option<&SourceNode> {
-        self.nodes().find(|node| node.id == id)
-    }
-
-    /// Total node count, for coverage reporting.
-    pub fn node_count(&self) -> usize {
-        self.files.values().map(|entry| entry.nodes.len()).sum()
-    }
-
-    /// Total edge count, for coverage reporting.
-    pub fn edge_count(&self) -> usize {
-        self.files.values().map(|entry| entry.edges.len()).sum()
-    }
-}
 
 /// Resolves layer paths and reads/writes layers. Holds no graph state itself.
 #[derive(Debug, Clone)]
@@ -211,7 +88,9 @@ impl GraphStore {
         self.overlay_dir(plan, stage).join(LAYER_FILE)
     }
 
-    /// Read the base layer for `revision`, or `None` when it was never built.
+    /// Read the base layer for `revision`, or `None` when it was never built or
+    /// its file does not parse. The schema is not checked here: callers that
+    /// reuse the layer test `GraphLayer::has_current_schema`.
     pub fn load_base(&self, revision: &str) -> Result<Option<GraphLayer>> {
         self.read_layer_or_memory(&self.base_path(revision))
     }
@@ -227,7 +106,7 @@ impl GraphStore {
                     .with_context(|| format!("Failed to list base graphs: {}", dir.display()));
             }
         };
-        let mut newest: Option<(PathBuf, SystemTime)> = None;
+        let mut candidates: Vec<(SystemTime, PathBuf)> = Vec::new();
         for entry in entries {
             let entry =
                 entry.with_context(|| format!("Failed to read entry in {}", dir.display()))?;
@@ -239,20 +118,19 @@ impl GraphStore {
                 .metadata()
                 .and_then(|metadata| metadata.modified())
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            let replace = match &newest {
-                None => true,
-                Some((current_path, current)) => {
-                    modified > *current || (modified == *current && path > *current_path)
-                }
-            };
-            if replace {
-                newest = Some((path, modified));
+            candidates.push((modified, path));
+        }
+        // Newest first; ties break on the larger path.
+        candidates.sort();
+        candidates.reverse();
+        for (_, path) in candidates {
+            // An unparseable or stale-schema base is skipped, never served: it
+            // is a reuse source only when it describes the current schema.
+            if let Some(layer) = read_layer(&path)?.filter(GraphLayer::has_current_schema) {
+                return Ok(Some(layer));
             }
         }
-        match newest {
-            Some((path, _)) => read_layer(&path),
-            None => Ok(None),
-        }
+        Ok(None)
     }
 
     /// Publish a base layer for `revision`.
@@ -269,6 +147,9 @@ impl GraphStore {
     /// is the one place base-layer retention is enforced (see
     /// `doc/PROPOSAL-retrieval-precision.md` §A.14) — `graph/base/`
     /// otherwise accretes one file per published commit forever.
+    ///
+    /// A base that is stale or does not parse is not a published base: it is
+    /// overwritten through [`Self::replace_base`] instead.
     pub fn publish_base(&self, revision: &str, layer: &GraphLayer) -> Result<bool> {
         let path = self.base_path(revision);
         if path.exists() {
@@ -279,6 +160,23 @@ impl GraphStore {
             Err(error) => self.fall_back_to_memory(&path, layer, error)?,
         }
         Ok(true)
+    }
+
+    /// Overwrite the base layer for `revision`, for a caller that found the
+    /// one on disk stale or unparseable.
+    ///
+    /// The write is a temp-file-and-rename over the old file, never a delete
+    /// followed by a write: a reader sees the old layer or the new one, a
+    /// racer rebuilding the same revision at worst overwrites it with an
+    /// equally current layer, and a file that vanished meanwhile is simply
+    /// written. A denied write keeps `layer` in memory, as in
+    /// [`Self::publish_base`].
+    pub fn replace_base(&self, revision: &str, layer: &GraphLayer) -> Result<()> {
+        let path = self.base_path(revision);
+        if let Err(error) = write_layer(&path, layer) {
+            return self.fall_back_to_memory(&path, layer, error);
+        }
+        Ok(())
     }
 
     /// Read a stage's overlay, or `None` when it has none.
@@ -362,7 +260,9 @@ impl GraphStore {
     }
 }
 
-/// Read one layer file, treating absence as "never written".
+/// Read one layer file, treating absence as "never written" and a file that
+/// does not parse as absent too: a truncated or foreign-format layer must be
+/// rebuilt, never wedge the cache.
 fn read_layer(path: &Path) -> Result<Option<GraphLayer>> {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
@@ -373,9 +273,25 @@ fn read_layer(path: &Path) -> Result<Option<GraphLayer>> {
         }
     };
 
-    serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse source graph: {}", path.display()))
-        .map(Some)
+    match serde_json::from_str(&content) {
+        Ok(layer) => Ok(Some(layer)),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "discarding unparseable source graph layer"
+            );
+            Ok(None)
+        }
+    }
+}
+
+impl GraphLayer {
+    /// True when the layer was written under the current [`GRAPH_SCHEMA_VERSION`];
+    /// any other layer is never served or reused.
+    pub(crate) fn has_current_schema(&self) -> bool {
+        self.schema_version == GRAPH_SCHEMA_VERSION
+    }
 }
 
 /// Write one layer file with a locked, crash-atomic replacement.
@@ -394,7 +310,12 @@ fn write_layer(path: &Path, layer: &GraphLayer) -> Result<()> {
 }
 
 mod fallback;
+mod layer_types;
 mod prune;
+
+pub use layer_types::{FileEntry, GraphLayer, ResolvedGraph};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_corrupt;

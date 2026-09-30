@@ -1,6 +1,6 @@
 use super::*;
 use crate::context::resolve::fixtures::*;
-use crate::context::source_graph::{SourceEdge, UNRESOLVED_TARGET};
+use crate::context::source_graph::{LOCAL_NAME_CONFIDENCE, UNRESOLVED_TARGET};
 
 fn ids(neighbors: &[Neighbor]) -> Vec<&str> {
     neighbors
@@ -17,7 +17,7 @@ fn callers_and_callees_follow_opposite_directions() {
         (
             "src/caller.rs",
             &["caller"],
-            vec![SourceEdge::parser(
+            vec![local_edge(
                 &caller,
                 &callee,
                 SourceEdgeKind::Calls,
@@ -43,15 +43,15 @@ fn unresolved_edges_and_file_endpoints_are_excluded() {
             "src/source.rs",
             &["source"],
             vec![
-                SourceEdge::parser(&source, &target, SourceEdgeKind::Calls, "target"),
-                SourceEdge::unresolved(&source, SourceEdgeKind::Calls, "missing"),
-                SourceEdge::parser(
+                local_edge(&source, &target, SourceEdgeKind::Calls, "target"),
+                unresolved_edge(&source, SourceEdgeKind::Calls, "missing"),
+                local_edge(
                     "src/source.rs",
                     &target,
                     SourceEdgeKind::References,
                     "target",
                 ),
-                SourceEdge::parser(
+                local_edge(
                     &source,
                     "src/target.rs",
                     SourceEdgeKind::References,
@@ -82,8 +82,8 @@ fn neighbors_are_ordered_by_confidence_then_id() {
                 &func_id("src/a.rs", "a"),
                 &target,
                 SourceEdgeKind::Calls,
-                EdgeProvenance::Parser,
-                1.0,
+                EdgeProvenance::LocalName,
+                LOCAL_NAME_CONFIDENCE,
             )],
         ),
         (
@@ -93,8 +93,8 @@ fn neighbors_are_ordered_by_confidence_then_id() {
                 &func_id("src/b.rs", "b"),
                 &target,
                 SourceEdgeKind::References,
-                EdgeProvenance::Parser,
-                1.0,
+                EdgeProvenance::LocalName,
+                LOCAL_NAME_CONFIDENCE,
             )],
         ),
         (
@@ -104,7 +104,7 @@ fn neighbors_are_ordered_by_confidence_then_id() {
                 &func_id("src/c.rs", "c"),
                 &target,
                 SourceEdgeKind::Calls,
-                EdgeProvenance::Inferred,
+                EdgeProvenance::Syntax,
                 0.5,
             )],
         ),
@@ -130,7 +130,7 @@ fn a_neighbor_limit_reports_suppressed_count() {
         (
             "src/a.rs",
             &["a"],
-            vec![SourceEdge::parser(
+            vec![local_edge(
                 func_id("src/a.rs", "a"),
                 &target,
                 SourceEdgeKind::Calls,
@@ -140,7 +140,7 @@ fn a_neighbor_limit_reports_suppressed_count() {
         (
             "src/b.rs",
             &["b"],
-            vec![SourceEdge::parser(
+            vec![local_edge(
                 func_id("src/b.rs", "b"),
                 &target,
                 SourceEdgeKind::Calls,

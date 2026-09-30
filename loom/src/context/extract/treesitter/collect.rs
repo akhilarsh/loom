@@ -3,21 +3,25 @@
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Query, QueryCursor, QueryMatch};
 
-use super::QueryHarness;
-use crate::context::source_graph::{SourceNodeKind, Span};
+use super::{default_import_binding, QueryHarness};
+use crate::context::source_graph::{ImportBinding, SourceNodeKind, Span};
 
 /// A definition captured by the query, before scoping.
 struct RawDefinition<'tree> {
     node: Node<'tree>,
-    name: String,
     kind: SourceNodeKind,
 }
 
 /// Everything one query pass found, in source order.
+#[derive(Default)]
 pub(super) struct Collected {
     pub(super) definitions: Vec<Definition>,
     pub(super) imports: Vec<Reference>,
+    /// Names the file's import statements bind.
+    pub(super) bindings: Vec<ImportBinding>,
     pub(super) calls: Vec<Reference>,
+    /// `@reference.name` uses, which become `References` edges.
+    pub(super) references: Vec<Reference>,
     /// `@definition.*` matches that could not become nodes.
     pub(super) skipped: usize,
 }
@@ -25,16 +29,51 @@ pub(super) struct Collected {
 /// A definition with its byte range resolved, independent of the tree.
 pub(super) struct Definition {
     pub(super) name: String,
+    /// Segments of a `@definition.qualifier` written on the definition itself
+    /// (`W` in C++ `void W::run()`); empty for most definitions.
+    pub(super) qualifier: Vec<String>,
     pub(super) kind: SourceNodeKind,
     pub(super) span: Span,
     pub(super) body: Vec<u8>,
     pub(super) signature: String,
 }
 
-/// An import path or a callee identifier, with the byte offset it appeared at.
+/// An import path, a callee, or a referenced name, at the site it was written.
 pub(super) struct Reference {
     pub(super) symbol: String,
-    pub(super) at_byte: usize,
+    pub(super) site: Span,
+    /// Receiver text of a member call (`self`, `obj`); `None` otherwise.
+    pub(super) receiver: Option<String>,
+}
+
+/// One match's captures, gathered before any is interpreted: the captures
+/// that belong together (a callee and its receiver, an import path and its
+/// statement, a definition and its name) arrive in no guaranteed order.
+#[derive(Default)]
+struct MatchCaptures<'tree> {
+    definition: Option<RawDefinition<'tree>>,
+    name: Option<String>,
+    qualifier: Vec<String>,
+    import_statement: Option<String>,
+    import_paths: Vec<(String, Span)>,
+    call_names: Vec<(String, Span)>,
+    receiver: Option<String>,
+    reference_names: Vec<(String, Span)>,
+    /// `@definition.*` captures whose suffix names no node kind.
+    skipped: usize,
+}
+
+impl<'tree> MatchCaptures<'tree> {
+    /// Record a `@definition.<suffix>` capture; any other name is ignored.
+    fn definition_capture(&mut self, harness: &dyn QueryHarness, name: &str, node: Node<'tree>) {
+        let Some(suffix) = name.strip_prefix("definition.") else {
+            return;
+        };
+        match harness.kind_for_capture(suffix) {
+            Some(kind) => self.definition = Some(RawDefinition { node, kind }),
+            None => self.skipped += 1,
+        }
+    }
 }
 
 /// Walk every query match once, materializing owned data so the tree can be
@@ -49,105 +88,162 @@ pub(super) fn collect(
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, root, bytes);
 
-    let mut definitions = Vec::new();
-    let mut imports = Vec::new();
-    let mut calls = Vec::new();
-    let mut skipped = 0usize;
-
+    let mut walk = Collected::default();
     while let Some(matched) = matches.next() {
-        let (definition, name, match_skipped) = process_match(
-            harness,
-            capture_names,
-            matched,
-            bytes,
-            &mut imports,
-            &mut calls,
-        );
-        skipped += match_skipped;
-
-        if let Some(mut raw) = definition {
-            match name {
-                Some(name) => {
-                    raw.name = name;
-                    definitions.push(materialize(raw, bytes));
-                }
-                // An unnamed definition cannot get a stable id, so it is a
-                // coverage gap, not a node.
-                None => skipped += 1,
-            }
-        }
+        let found = gather(harness, capture_names, matched, bytes);
+        record(harness, found, bytes, &mut walk);
     }
+    walk.sort();
+    walk
+}
 
-    definitions.sort_by_key(|definition| (definition.span.start_byte, definition.span.end_byte));
-    imports.sort_by(|a, b| (a.at_byte, &a.symbol).cmp(&(b.at_byte, &b.symbol)));
-    calls.sort_by(|a, b| (a.at_byte, &a.symbol).cmp(&(b.at_byte, &b.symbol)));
-
-    Collected {
-        definitions,
-        imports,
-        calls,
-        skipped,
+impl Collected {
+    /// Canonical order: definitions by span, sites by `(start_byte, symbol)`,
+    /// bindings by site and content, with exact duplicate bindings dropped.
+    fn sort(&mut self) {
+        self.definitions
+            .sort_by_key(|definition| (definition.span.start_byte, definition.span.end_byte));
+        for references in [&mut self.imports, &mut self.calls, &mut self.references] {
+            references.sort_by(|a, b| {
+                (a.site.start_byte, &a.symbol).cmp(&(b.site.start_byte, &b.symbol))
+            });
+        }
+        self.bindings.sort_by(|a, b| {
+            (a.site.start_byte, &a.path, &a.name, &a.alias, a.glob).cmp(&(
+                b.site.start_byte,
+                &b.path,
+                &b.name,
+                &b.alias,
+                b.glob,
+            ))
+        });
+        self.bindings.dedup();
     }
 }
 
-/// Process one match's captures: imports and calls are complete as soon as
-/// they are seen, so they are recorded directly, while a definition capture
-/// is only resolved once the whole match's `@name` (if any) is known.
-fn process_match<'tree>(
+/// Read one match's captures into owned text and spans.
+fn gather<'tree>(
     harness: &dyn QueryHarness,
     capture_names: &[&str],
     matched: &QueryMatch<'_, 'tree>,
     bytes: &[u8],
-    imports: &mut Vec<Reference>,
-    calls: &mut Vec<Reference>,
-) -> (Option<RawDefinition<'tree>>, Option<String>, usize) {
-    let mut definition: Option<RawDefinition> = None;
-    let mut name: Option<String> = None;
-    let mut skipped = 0usize;
-
+) -> MatchCaptures<'tree> {
+    let mut found = MatchCaptures::default();
     for capture in matched.captures() {
         let capture_name = capture_names
             .get(capture.index as usize)
             .copied()
             .unwrap_or("");
-        let text = node_text(capture.node, bytes);
+        let node = capture.node;
+        let text = node_text(node, bytes);
 
         match capture_name {
-            "name" => name = Some(text),
-            "import.path" => imports.push(Reference {
-                symbol: normalize_import(&text),
-                at_byte: capture.node.byte_range().start,
-            }),
-            "call.name" => calls.push(Reference {
-                symbol: normalize_call(&text),
-                at_byte: capture.node.byte_range().start,
-            }),
-            other => {
-                if let Some(suffix) = other.strip_prefix("definition.") {
-                    match harness.kind_for_capture(suffix) {
-                        Some(kind) => {
-                            definition = Some(RawDefinition {
-                                node: capture.node,
-                                name: String::new(),
-                                kind,
-                            })
-                        }
-                        None => skipped += 1,
-                    }
-                }
-            }
+            "name" => found.name = Some(text),
+            "definition.qualifier" => found.qualifier.extend(qualifier_segments(&text)),
+            "import.statement" => found.import_statement = Some(text),
+            "import.path" => found
+                .import_paths
+                .push((normalize_import(&text), span_of(node))),
+            "call.name" => found
+                .call_names
+                .push((normalize_call(&text), span_of(node))),
+            "call.receiver" => found.receiver = Some(text.trim().to_string()),
+            "reference.name" => found
+                .reference_names
+                .push((normalize_call(&text), span_of(node))),
+            other => found.definition_capture(harness, other, node),
+        }
+    }
+    found
+}
+
+/// Turn one match's captures into collected definitions, imports, bindings,
+/// calls and references. A receiver without a `@call.name` in its match is
+/// dropped with the match.
+fn record(
+    harness: &dyn QueryHarness,
+    found: MatchCaptures<'_>,
+    bytes: &[u8],
+    walk: &mut Collected,
+) {
+    walk.skipped += found.skipped;
+    if let Some(raw) = found.definition {
+        match found.name {
+            Some(name) => walk
+                .definitions
+                .push(materialize(raw, name, found.qualifier, bytes)),
+            // An unnamed definition cannot get a stable id, so it is a
+            // coverage gap, not a node.
+            None => walk.skipped += 1,
         }
     }
 
-    (definition, name, skipped)
+    record_imports(
+        harness,
+        found.import_paths,
+        found.import_statement.as_deref(),
+        walk,
+    );
+
+    let receiver = found.receiver;
+    walk.calls.extend(
+        found
+            .call_names
+            .into_iter()
+            .map(|(symbol, site)| Reference {
+                symbol,
+                site,
+                receiver: receiver.clone(),
+            }),
+    );
+    walk.references.extend(
+        found
+            .reference_names
+            .into_iter()
+            .map(|(symbol, site)| Reference {
+                symbol,
+                site,
+                receiver: None,
+            }),
+    );
+}
+
+/// Record each import path of a match as an `Imports` reference plus its
+/// bindings: the statement's own when the match captured one, else the whole
+/// module.
+fn record_imports(
+    harness: &dyn QueryHarness,
+    import_paths: Vec<(String, Span)>,
+    import_statement: Option<&str>,
+    walk: &mut Collected,
+) {
+    for (path, site) in import_paths {
+        match import_statement {
+            Some(statement) => walk
+                .bindings
+                .extend(harness.import_bindings(statement, &path, site)),
+            None => walk.bindings.push(default_import_binding(&path, site)),
+        }
+        walk.imports.push(Reference {
+            symbol: path,
+            site,
+            receiver: None,
+        });
+    }
 }
 
 /// Copy a captured definition out of the tree.
-fn materialize(raw: RawDefinition<'_>, bytes: &[u8]) -> Definition {
+fn materialize(
+    raw: RawDefinition<'_>,
+    name: String,
+    qualifier: Vec<String>,
+    bytes: &[u8],
+) -> Definition {
     let range = raw.node.byte_range();
     let body = bytes[range.start..range.end].to_vec();
     Definition {
-        name: raw.name,
+        name,
+        qualifier,
         kind: raw.kind,
         span: span_of(raw.node),
         signature: first_line(&body),
@@ -208,6 +304,16 @@ fn normalize_call(text: &str) -> String {
         .filter(|segment| !segment.is_empty())
         .collect();
     segments.join("::")
+}
+
+/// Segments of a `@definition.qualifier`: the text cleaned like a callee, then
+/// split on `::` and `.`, so `W<T>::` and `A.B` both become scope segments.
+fn qualifier_segments(text: &str) -> Vec<String> {
+    normalize_call(text)
+        .split([':', '.'])
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Strip the quotes a grammar keeps around a string-literal import path.

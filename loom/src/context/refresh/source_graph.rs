@@ -19,9 +19,8 @@ mod layer;
 use enumerate::enumerate;
 pub(crate) use enumerate::Enumeration;
 pub(crate) use generation::{clean_generation, working_tree, WorkingTree};
-#[cfg(test)]
-pub(super) use layer::parser_version_matches;
-use layer::{build_layer, persist_layer};
+pub(crate) use layer::parser_version_matches;
+use layer::{build_layer, persist_layer, BaseWrite};
 
 /// Which source-graph snapshot to build.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +111,45 @@ pub(super) fn reconcile_with_working_tree(
     scope: SourceGraphScope,
     tree: &WorkingTree,
 ) -> Result<SourceGraphOutcome> {
+    reconcile_scope(
+        store,
+        graph_store,
+        project_root,
+        scope,
+        tree,
+        BaseWrite::Publish,
+    )
+}
+
+/// Rebuild the base for `tree.head` over one on disk that is stale or does
+/// not parse, through [`GraphStore::replace_base`].
+pub(super) fn replace_base_with_working_tree(
+    store: &ContextStore,
+    graph_store: &GraphStore,
+    project_root: &Path,
+    tree: &WorkingTree,
+) -> Result<SourceGraphOutcome> {
+    let scope = SourceGraphScope::Base {
+        revision: tree.head.clone(),
+    };
+    reconcile_scope(
+        store,
+        graph_store,
+        project_root,
+        scope,
+        tree,
+        BaseWrite::Replace,
+    )
+}
+
+fn reconcile_scope(
+    store: &ContextStore,
+    graph_store: &GraphStore,
+    project_root: &Path,
+    scope: SourceGraphScope,
+    tree: &WorkingTree,
+    write: BaseWrite,
+) -> Result<SourceGraphOutcome> {
     let enumerate_started = Instant::now();
     let enumeration = match enumerate(project_root, &scope) {
         Ok(enumeration) => enumeration,
@@ -145,6 +183,7 @@ pub(super) fn reconcile_with_working_tree(
         base.as_ref(),
         built,
         revision,
+        write,
     )
 }
 
@@ -164,12 +203,13 @@ fn persist_and_stamp(
     base: Option<&GraphLayer>,
     mut built: layer::LayerBuild,
     revision: String,
+    write: BaseWrite,
 ) -> Result<SourceGraphOutcome> {
     let (nodes, edges) = (built.layer.nodes().count(), built.layer.edges().count());
 
     let persist_started = Instant::now();
     built.counters.bytes_serialized =
-        persist_layer(graph_store, scope, &built.layer, previous, base)?;
+        persist_layer(graph_store, scope, &built.layer, previous, base, write)?;
     built.counters.persist_ms = elapsed_ms(persist_started);
     let freshness = persist_semantic_freshness(store, revision)?;
 
@@ -181,6 +221,12 @@ fn persist_and_stamp(
     })
 }
 
+/// A layer written under another schema is never a reuse source: treating it
+/// as absent makes every file re-extract.
+fn current_schema(layer: Option<GraphLayer>) -> Option<GraphLayer> {
+    layer.filter(GraphLayer::has_current_schema)
+}
+
 fn resolve_scope_layers(
     scope: &SourceGraphScope,
     graph_store: &GraphStore,
@@ -189,12 +235,13 @@ fn resolve_scope_layers(
 ) -> Result<(Option<GraphLayer>, Option<GraphLayer>)> {
     match scope {
         SourceGraphScope::Overlay { plan, stage } => Ok((
-            graph_store.load_overlay(plan, stage)?,
-            graph_store.load_base(head)?,
+            current_schema(graph_store.load_overlay(plan, stage)?),
+            current_schema(graph_store.load_base(head)?),
         )),
         SourceGraphScope::Base { .. } => {
             let (plan, stage) = local_overlay_key(project_root);
-            let local = graph_store.load_overlay(&plan, &stage)?;
+            let local = current_schema(graph_store.load_overlay(&plan, &stage)?);
+            // `load_newest_base` already skips stale-schema and unparseable bases.
             let newest = graph_store.load_newest_base()?;
             Ok(match local {
                 Some(local) => (Some(local), newest),

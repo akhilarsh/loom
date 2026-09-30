@@ -5,14 +5,16 @@
 //! into a sibling wired the same way `brief.rs` wires `brief_tests.rs`:
 //! `#[path = "rank_source_expand_fusion.rs"] mod fusion_tests;`.
 
-use super::{candidate, expand, full_node, function, graph_with_edges, NEIGHBOUR, SEED};
+use super::{
+    candidate, expand, full_node, function, graph_with_edges, local_edge, NEIGHBOUR, SEED,
+};
 use crate::context::config::RetrievalConfig;
 use crate::context::fuse::fuse;
 use crate::context::graph_store::ResolvedGraph;
 use crate::context::rank::{RankQuery, BOOST_EXACT_SYMBOL};
 use crate::context::rank_source::rank_source;
 use crate::context::schema::SelectionReason;
-use crate::context::source_graph::{SourceEdge, SourceEdgeKind};
+use crate::context::source_graph::SourceEdgeKind;
 
 #[test]
 fn a_graph_neighbour_fuses_in_tier_two_below_every_exact_rung_candidate() {
@@ -23,7 +25,7 @@ fn a_graph_neighbour_fuses_in_tier_two_below_every_exact_rung_candidate() {
             function(low_exact, "src/exact.rs"),
             function(NEIGHBOUR, "src/neighbour.rs"),
         ],
-        vec![SourceEdge::parser(
+        vec![local_edge(
             SEED,
             NEIGHBOUR,
             SourceEdgeKind::Calls,
@@ -61,7 +63,7 @@ fn hub_neighbour_and_test_exact_fixture() -> (ResolvedGraph, RankQuery, &'static
                 "fn ExactThing()",
             ),
         ],
-        vec![SourceEdge::parser(
+        vec![local_edge(
             hub,
             NEIGHBOUR,
             SourceEdgeKind::Calls,
@@ -114,7 +116,7 @@ fn a_neighbour_of_a_high_scoring_seed_never_reaches_the_weakest_exact_rung() {
             function(SEED, "src/seed.rs"),
             function(NEIGHBOUR, "src/neighbour.rs"),
         ],
-        vec![SourceEdge::parser(
+        vec![local_edge(
             SEED,
             NEIGHBOUR,
             SourceEdgeKind::Calls,
@@ -144,7 +146,7 @@ fn a_neighbour_of_a_high_scoring_seed_still_fuses_below_a_weak_exact_rung_candid
             function(low_exact, "src/exact.rs"),
             function(NEIGHBOUR, "src/neighbour.rs"),
         ],
-        vec![SourceEdge::parser(
+        vec![local_edge(
             SEED,
             NEIGHBOUR,
             SourceEdgeKind::Calls,

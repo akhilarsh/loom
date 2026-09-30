@@ -199,9 +199,11 @@ fn test_preflight_silent_when_base_exists() {
     graph_store
         .publish_base(
             &head,
-            // Only `revision` matters to this test; the rest default.
+            // Only `revision` and the current schema matter to this test; the
+            // rest default. A stale schema would make the base non-current.
             &GraphLayer {
                 revision: head.clone(),
+                schema_version: crate::context::source_graph::GRAPH_SCHEMA_VERSION,
                 ..Default::default()
             },
         )

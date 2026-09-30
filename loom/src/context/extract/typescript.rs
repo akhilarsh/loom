@@ -2,15 +2,19 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use crate::context::extract::dialect::{dialect_by_id, DialectSpec};
 use crate::context::extract::{
-    run_query, ExtractorIdentity, FileExtraction, QueryHarness, SourceGraphExtractor,
+    run_query, Capabilities, ExtractorIdentity, FileExtraction, QueryHarness, SourceGraphExtractor,
 };
-use crate::context::source_graph::{NodeLanguage, SourceNodeKind};
-use crate::language::DetectedLanguage;
+use crate::context::source_graph::{ImportBinding, NodeLanguage, SourceNodeKind, Span};
+
+mod imports;
 
 /// Extracts definitions, imports, and calls from `.ts`, `.mts`, and `.cts`
-/// files. It deliberately excludes `.tsx`: that needs the separately pinned
-/// `LANGUAGE_TSX` grammar, so `.tsx` files fall through to the file-level lexical node.
+/// files. It excludes `.tsx`: that needs the separately pinned `LANGUAGE_TSX`
+/// grammar, and no extractor is registered for dialect `tsx`. A `.tsx` path
+/// resolves to a `Lookup::Gap` for that dialect and yields a file-level node
+/// with `LexicalOnly` coverage.
 pub struct TypeScriptExtractor;
 
 impl TypeScriptExtractor {
@@ -64,16 +68,17 @@ const QUERY: &str = r#"
 )
 
 (import_statement
-  source: (string) @import.path)
+  source: (string) @import.path) @import.statement
 
 (export_statement
-  source: (string) @import.path)
+  source: (string) @import.path) @import.statement
 
 (call_expression
   function: (identifier) @call.name)
 
 (call_expression
   function: (member_expression
+    object: (_) @call.receiver
     property: (property_identifier) @call.name))
 "#;
 
@@ -88,9 +93,10 @@ impl QueryHarness for TypeScriptExtractor {
 
     fn identity(&self) -> ExtractorIdentity {
         ExtractorIdentity {
+            dialect: "typescript",
             grammar_version: "0.23.2",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 1,
+            extractor_version: 2,
         }
     }
 
@@ -108,28 +114,40 @@ impl QueryHarness for TypeScriptExtractor {
             _ => None,
         }
     }
+
+    fn import_bindings(&self, statement: &str, path: &str, site: Span) -> Vec<ImportBinding> {
+        imports::statement_bindings(statement, path, site)
+    }
 }
 
 impl SourceGraphExtractor for TypeScriptExtractor {
-    fn language(&self) -> DetectedLanguage {
-        DetectedLanguage::TypeScript
+    fn dialect(&self) -> &'static DialectSpec {
+        dialect_by_id("typescript").expect("the dialect table names every registered extractor")
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            declarations: true,
+            imports: true,
+            import_bindings: true,
+            calls: true,
+            receivers: true,
+            references: false,
+        }
     }
 
     fn cache_identity(&self) -> ExtractorIdentity {
         QueryHarness::identity(self)
     }
 
-    fn supports(&self, path: &Path) -> bool {
-        matches!(
-            path.extension().and_then(|extension| extension.to_str()),
-            Some("ts") | Some("mts") | Some("cts")
-        )
-    }
-
     fn extract(&self, path: &Path, bytes: &[u8]) -> Result<FileExtraction> {
         run_query(self, path, bytes)
     }
 }
+
+#[cfg(test)]
+#[path = "typescript/tests_imports.rs"]
+mod tests_imports;
 
 #[cfg(test)]
 mod tests {
@@ -189,55 +207,55 @@ export const run = () => importedName();
     /// short — the maintainability scanner budgets function bodies, not
     /// `const` declarations.
     const EXPECTED_EDGES: &[(&str, &str, &str, &str)] = &[
-        ("src/fixture.ts", "<unresolved>", "imports", "inferred"),
-        ("src/fixture.ts", "<unresolved>", "imports", "inferred"),
+        ("src/fixture.ts", "<unresolved>", "imports", "syntax"),
+        ("src/fixture.ts", "<unresolved>", "imports", "syntax"),
         (
             "src/fixture.ts",
             "src/fixture.ts#constant:VERSION",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.ts",
             "src/fixture.ts#function:run",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.ts",
             "src/fixture.ts#interface:Greeter",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.ts",
             "src/fixture.ts#type:Service",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.ts#function:Service::first",
             "src/fixture.ts#function:Service::second",
             "calls",
-            "parser",
+            "receiver",
         ),
         (
             "src/fixture.ts#function:run",
             "<unresolved>",
             "calls",
-            "inferred",
+            "syntax",
         ),
         (
             "src/fixture.ts#type:Service",
             "src/fixture.ts#function:Service::first",
             "contains",
-            "parser",
+            "structural",
         ),
         (
             "src/fixture.ts#type:Service",
             "src/fixture.ts#function:Service::second",
             "contains",
-            "parser",
+            "structural",
         ),
     ];
 
@@ -274,7 +292,7 @@ export const run = () => importedName();
             .find(|edge| edge.kind == SourceEdgeKind::Calls && edge.symbol == "importedName")
             .unwrap();
 
-        assert_eq!(edge.provenance, EdgeProvenance::Inferred);
+        assert_eq!(edge.provenance, EdgeProvenance::Syntax);
         assert!(edge.confidence <= 0.5);
         assert!(edge.is_unresolved());
     }

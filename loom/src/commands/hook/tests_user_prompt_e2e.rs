@@ -68,6 +68,7 @@ fn write_overlay(root: &Path, plan: &str, stage: &str, symbol: &str, path: &str)
         language: NodeLanguage::Rust,
         parser_version: "test+v1".to_string(),
         coverage: FileCoverage::Full,
+        symbol_key: String::new(),
     };
 
     let work_dir = WorkDir::new(root).unwrap();
@@ -82,6 +83,7 @@ fn write_overlay(root: &Path, plan: &str, stage: &str, symbol: &str, path: &str)
             nodes: vec![node],
             edges: Vec::new(),
             coverage: FileCoverage::Full,
+            imports: Vec::new(),
         },
     );
     graph_store
@@ -94,6 +96,7 @@ fn write_overlay(root: &Path, plan: &str, stage: &str, symbol: &str, path: &str)
                 built_at: None,
                 files,
                 blob_index: BTreeMap::new(),
+                schema_version: crate::context::source_graph::GRAPH_SCHEMA_VERSION,
             },
         )
         .unwrap();

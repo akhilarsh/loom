@@ -8,6 +8,7 @@
 
 use std::path::Path;
 
+use super::dialect::dialect_for_path;
 use super::FileExtraction;
 use crate::context::source_graph::{FileCoverage, NodeLanguage};
 
@@ -16,23 +17,18 @@ pub const LEXICAL_PARSER_VERSION: &str = "lexical+v1";
 
 /// Language tag for a path, by extension.
 ///
-/// Returns the [`NodeLanguage`] arm matching one of loom's supported languages
-/// when the extension is recognized, and `Other(<extension>)` otherwise so
-/// output can still name what the file was.
+/// Returns the dialect's [`NodeLanguage`] when the extension is recognized, and
+/// `Other(<extension>)` otherwise so output can still name what the file was.
 pub fn language_for_path(path: &Path) -> NodeLanguage {
+    if let Some(dialect) = dialect_for_path(path) {
+        return dialect.language.clone();
+    }
     let extension = path
         .extension()
         .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-
-    match extension.as_str() {
-        "rs" => NodeLanguage::Rust,
-        "ts" | "tsx" | "mts" | "cts" => NodeLanguage::TypeScript,
-        "py" | "pyi" => NodeLanguage::Python,
-        "go" => NodeLanguage::Go,
-        "" => NodeLanguage::Other("unknown".to_string()),
-        other => NodeLanguage::Other(other.to_string()),
-    }
+        .filter(|extension| !extension.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    NodeLanguage::Other(extension)
 }
 
 /// Build the file-level-only extraction for `path`.

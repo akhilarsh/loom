@@ -87,6 +87,7 @@ fn write_overlay(root: &Path) {
                 nodes: vec![node],
                 edges: Vec::new(),
                 coverage: FileCoverage::Full,
+                imports: Vec::new(),
             },
         );
     }
@@ -100,6 +101,7 @@ fn write_overlay(root: &Path) {
                 built_at: None,
                 files,
                 blob_index: BTreeMap::new(),
+                schema_version: crate::context::source_graph::GRAPH_SCHEMA_VERSION,
             },
         )
         .unwrap();
@@ -122,6 +124,7 @@ fn source_node(path: &str, symbol: &str) -> SourceNode {
         language: NodeLanguage::Rust,
         parser_version: "test+v1".to_string(),
         coverage: FileCoverage::Full,
+        symbol_key: String::new(),
     }
 }
 

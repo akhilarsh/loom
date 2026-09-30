@@ -2,17 +2,18 @@
 
 use super::*;
 use crate::context::resolve::fixtures::*;
-use crate::context::resolve::UNIQUE_MATCH_CONFIDENCE;
-use crate::context::source_graph::UNRESOLVED_TARGET;
+use crate::context::source_graph::{
+    IMPORT_CONFIDENCE, LOCAL_NAME_CONFIDENCE, UNIQUE_NAME_CONFIDENCE, UNRESOLVED_TARGET,
+};
 
-/// A fully-parsed call edge, the trustworthy baseline for traversal tests.
+/// A same-file call edge, the trustworthy baseline for traversal tests.
 fn call(from: &str, to: &str) -> Vec<SourceEdge> {
     vec![edge_at(
         from,
         to,
         SourceEdgeKind::Calls,
-        EdgeProvenance::Parser,
-        1.0,
+        EdgeProvenance::LocalName,
+        LOCAL_NAME_CONFIDENCE,
     )]
 }
 
@@ -20,7 +21,7 @@ fn ids(hits: &[ImpactHit]) -> Vec<&str> {
     hits.iter().map(|hit| hit.id.as_str()).collect()
 }
 
-/// `a -> b -> c -> d` as parser call edges, each stored with its caller. Every
+/// `a -> b -> c -> d` as local-name call edges, each stored with its caller. Every
 /// file holds one function named after it, so `b` lives in `src/b.rs`.
 fn chain() -> ResolvedGraph {
     let link = |from: &str, to: &str| {
@@ -62,7 +63,7 @@ fn impact_of_depth_zero_reaches_nothing() {
 }
 
 /// `w -> x -> y -> z`, with the three hops at descending confidence
-/// 0.75, 0.5, 1.0 — deliberately NOT monotonic, so a path-confidence rule that
+/// 0.6, 0.5, 0.8 — deliberately NOT monotonic, so a path-confidence rule that
 /// took the last hop or multiplied the chain would give a different answer from
 /// the minimum at every node.
 fn descending_confidence_chain() -> crate::context::graph_store::ResolvedGraph {
@@ -80,8 +81,8 @@ fn descending_confidence_chain() -> crate::context::graph_store::ResolvedGraph {
                 "src/w.rs#function:w",
                 "src/x.rs#function:x",
                 SourceEdgeKind::References,
-                EdgeProvenance::Inferred,
-                UNIQUE_MATCH_CONFIDENCE,
+                EdgeProvenance::UniqueName,
+                UNIQUE_NAME_CONFIDENCE,
             ),
         ),
         (
@@ -91,7 +92,7 @@ fn descending_confidence_chain() -> crate::context::graph_store::ResolvedGraph {
                 "src/x.rs#function:x",
                 "src/y.rs#function:y",
                 SourceEdgeKind::Imports,
-                EdgeProvenance::Inferred,
+                EdgeProvenance::Syntax,
                 0.5,
             ),
         ),
@@ -102,8 +103,8 @@ fn descending_confidence_chain() -> crate::context::graph_store::ResolvedGraph {
                 "src/y.rs#function:y",
                 "src/z.rs#function:z",
                 SourceEdgeKind::Calls,
-                EdgeProvenance::Parser,
-                1.0,
+                EdgeProvenance::LocalName,
+                LOCAL_NAME_CONFIDENCE,
             ),
         ),
         ("src/z.rs", &["z"], vec![]),
@@ -118,8 +119,8 @@ fn path_confidence_is_the_minimum_not_the_product() {
 
     assert_eq!(hits.len(), 3);
     assert_eq!(hits[0].id, "src/y.rs#function:y");
-    assert_eq!(hits[0].min_confidence, 1.0);
-    assert_eq!(hits[0].weakest_provenance, EdgeProvenance::Parser);
+    assert_eq!(hits[0].min_confidence, LOCAL_NAME_CONFIDENCE);
+    assert_eq!(hits[0].weakest_provenance, EdgeProvenance::LocalName);
 
     assert_eq!(hits[1].id, "src/x.rs#function:x");
     assert_eq!(hits[1].min_confidence, 0.5);
@@ -128,9 +129,9 @@ fn path_confidence_is_the_minimum_not_the_product() {
     assert_eq!(farthest.id, "src/w.rs#function:w");
     assert_eq!(
         farthest.min_confidence, 0.5,
-        "0.5 is the weakest step; 0.375 would be a product and 0.75 the last hop"
+        "0.5 is the weakest step; 0.24 would be a product and 0.6 the last hop"
     );
-    assert_eq!(farthest.weakest_provenance, EdgeProvenance::Inferred);
+    assert_eq!(farthest.weakest_provenance, EdgeProvenance::Syntax);
     assert_eq!(farthest.weakest_kind, SourceEdgeKind::Imports);
 }
 
@@ -157,13 +158,13 @@ fn impact_ignores_unresolved_edges_and_absent_origins() {
         "src/app.rs",
         &[],
         vec![
-            SourceEdge::unresolved("src/app.rs", SourceEdgeKind::Calls, "mystery"),
+            unresolved_edge("src/app.rs", SourceEdgeKind::Calls, "mystery"),
             edge_at(
                 "src/deleted.rs",
                 "src/app.rs",
                 SourceEdgeKind::Calls,
-                EdgeProvenance::Parser,
-                1.0,
+                EdgeProvenance::LocalName,
+                LOCAL_NAME_CONFIDENCE,
             ),
         ],
     )]);
@@ -192,8 +193,8 @@ fn default_options_skip_contains_and_imports_edges() {
                 &called,
                 &target,
                 SourceEdgeKind::Calls,
-                EdgeProvenance::Parser,
-                1.0,
+                EdgeProvenance::LocalName,
+                LOCAL_NAME_CONFIDENCE,
             )],
         ),
         (
@@ -203,7 +204,7 @@ fn default_options_skip_contains_and_imports_edges() {
                 &contained,
                 &target,
                 SourceEdgeKind::Contains,
-                EdgeProvenance::Parser,
+                EdgeProvenance::Structural,
                 1.0,
             )],
         ),
@@ -214,8 +215,8 @@ fn default_options_skip_contains_and_imports_edges() {
                 &imported,
                 &target,
                 SourceEdgeKind::Imports,
-                EdgeProvenance::Parser,
-                1.0,
+                EdgeProvenance::Import,
+                IMPORT_CONFIDENCE,
             )],
         ),
         ("src/target.rs", &["target"], vec![]),
@@ -239,7 +240,7 @@ fn a_kind_filter_is_applied_while_traversing_not_after() {
                 &far,
                 &bridge,
                 SourceEdgeKind::Calls,
-                EdgeProvenance::Inferred,
+                EdgeProvenance::Syntax,
                 0.5,
             )],
         ),
@@ -250,8 +251,8 @@ fn a_kind_filter_is_applied_while_traversing_not_after() {
                 &bridge,
                 &target,
                 SourceEdgeKind::References,
-                EdgeProvenance::Parser,
-                1.0,
+                EdgeProvenance::LocalName,
+                LOCAL_NAME_CONFIDENCE,
             )],
         ),
         ("src/target.rs", &["target"], vec![]),
@@ -326,7 +327,7 @@ fn a_min_confidence_stops_traversal_through_weak_edges() {
                 &bridge,
                 &target,
                 SourceEdgeKind::Calls,
-                EdgeProvenance::Inferred,
+                EdgeProvenance::Syntax,
                 0.4,
             )],
         ),

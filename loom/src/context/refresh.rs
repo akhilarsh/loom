@@ -28,14 +28,7 @@ pub use source_graph::{
     SourceGraphScope,
 };
 
-/// One entry of the extractor registry the semantic refresh drives.
-///
-/// Named here rather than in `context::extract` because the boxing is the
-/// refresh driver's requirement, not the trait's: the driver builds the whole
-/// registry once and hands slices of it down its own call chain, which needs
-/// `Send + Sync` for no reason a single extractor implementation cares about.
-pub(crate) type BoxedExtractor =
-    Box<dyn crate::context::extract::SourceGraphExtractor + Send + Sync>;
+pub(crate) use crate::context::extract::BoxedExtractor;
 
 struct Evaluated {
     state: StoreState,
@@ -326,3 +319,7 @@ mod tests_freshness;
 #[cfg(test)]
 #[path = "refresh/tests_snapshot.rs"]
 mod tests_snapshot;
+
+#[cfg(test)]
+#[path = "refresh/tests_schema.rs"]
+mod tests_schema;

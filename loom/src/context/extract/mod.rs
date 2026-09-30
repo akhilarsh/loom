@@ -11,8 +11,8 @@
 //! declaration in the bytes it was handed, and that every edge it emits carries
 //! honest [`crate::context::source_graph::EdgeProvenance`]. It does **not**
 //! promise a complete call graph: extraction is per-file, so a call to a symbol
-//! defined in another file is emitted as an inferred edge (or as unresolved),
-//! never as a parser edge. Cross-file resolution is `crate::context::resolve`'s
+//! defined in another file is emitted as an unresolved syntax edge, never as
+//! a bound edge. Cross-file resolution is `crate::context::resolve`'s
 //! job, and it too only ever raises confidence with evidence.
 //!
 //! ## Degraded modes
@@ -21,7 +21,8 @@
 //!
 //! | Situation                              | Result                                      |
 //! | -------------------------------------- | ------------------------------------------- |
-//! | No grammar for the language            | file node, `FileCoverage::LexicalOnly`      |
+//! | No dialect claims the extension        | file node, `FileCoverage::LexicalOnly`      |
+//! | Dialect known, grammar not registered  | file node, `FileCoverage::LexicalOnly` (a named gap) |
 //! | File over [`MAX_EXTRACTED_FILE_BYTES`] | file node, `FileCoverage::Oversized`        |
 //! | Grammar reports a syntax error         | file node, `FileCoverage::ParseError`       |
 //! | `source-graph` cargo feature disabled  | file node, `FileCoverage::LexicalOnly`      |
@@ -29,12 +30,15 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::context::source_graph::{
-    body_hash, file_node_id, FileCoverage, NodeLanguage, SourceEdge, SourceNode, SourceNodeKind,
-    Span, MAX_EXTRACTED_FILE_BYTES,
-};
-use crate::language::DetectedLanguage;
+use serde::Serialize;
 
+use crate::context::source_graph::{
+    body_hash, file_node_id, FileCoverage, ImportBinding, NodeLanguage, SourceEdge, SourceNode,
+    SourceNodeKind, Span, MAX_EXTRACTED_FILE_BYTES,
+};
+use dialect::{dialect_for_path, DialectSpec};
+
+pub mod dialect;
 pub mod lexical;
 
 #[cfg(feature = "source-graph")]
@@ -60,6 +64,9 @@ pub use treesitter::{run_query, QueryHarness};
 /// identity stays small enough to store on every node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractorIdentity {
+    /// Id of the dialect the extractor handles, so TypeScript and TSX never
+    /// share a parser version.
+    pub dialect: &'static str,
     /// Version of the pinned tree-sitter grammar crate.
     pub grammar_version: &'static str,
     /// `sha256:<hex>` over the embedded query source.
@@ -80,8 +87,8 @@ impl ExtractorIdentity {
             .unwrap_or(&self.query_digest);
         let short: String = digest.chars().take(12).collect();
         format!(
-            "{}+{}+v{}",
-            self.grammar_version, short, self.extractor_version
+            "{}:{}+{}+v{}",
+            self.dialect, self.grammar_version, short, self.extractor_version
         )
     }
 }
@@ -92,6 +99,9 @@ pub struct FileExtraction {
     pub nodes: Vec<SourceNode>,
     pub edges: Vec<SourceEdge>,
     pub coverage: FileCoverage,
+    /// Import bindings the file declares; empty for every file-level
+    /// extraction.
+    pub imports: Vec<ImportBinding>,
 }
 
 impl FileExtraction {
@@ -111,6 +121,7 @@ impl FileExtraction {
             nodes: vec![file_node(path, bytes, language, parser_version, &coverage)],
             edges: Vec::new(),
             coverage,
+            imports: Vec::new(),
         }
     }
 }
@@ -134,6 +145,7 @@ pub fn file_node(
         language,
         parser_version,
         coverage: coverage.clone(),
+        symbol_key: String::new(),
     }
 }
 
@@ -150,16 +162,34 @@ pub fn whole_file_span(bytes: &[u8]) -> Span {
     }
 }
 
+/// What an extractor captures. A dimension an extractor does not claim is
+/// reported as not covered instead of reading as "none found".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Capabilities {
+    /// Definitions become nodes.
+    pub declarations: bool,
+    /// Import statements become `Imports` edges.
+    pub imports: bool,
+    /// Import statements also yield [`ImportBinding`]s.
+    pub import_bindings: bool,
+    /// Call sites become `Calls` edges.
+    pub calls: bool,
+    /// Member calls record their receiver text.
+    pub receivers: bool,
+    /// Non-call identifier mentions become `References` edges.
+    pub references: bool,
+}
+
 /// One language's extraction strategy.
 pub trait SourceGraphExtractor {
-    /// The single language this extractor handles.
-    fn language(&self) -> DetectedLanguage;
+    /// The single dialect this extractor handles.
+    fn dialect(&self) -> &'static DialectSpec;
+
+    /// What this extractor captures.
+    fn capabilities(&self) -> Capabilities;
 
     /// Identity of this extractor build, for cache invalidation.
     fn cache_identity(&self) -> ExtractorIdentity;
-
-    /// Whether this extractor claims `path` by its extension.
-    fn supports(&self, path: &Path) -> bool;
 
     /// Extract nodes and edges from `bytes`, which must be the exact contents
     /// of `path`.
@@ -171,11 +201,18 @@ pub trait SourceGraphExtractor {
     fn extract(&self, path: &Path, bytes: &[u8]) -> Result<FileExtraction>;
 }
 
+/// One entry of the extractor registry the semantic refresh drives.
+///
+/// Boxed because the driver builds the whole registry once and hands slices of
+/// it down its own call chain, which needs `Send + Sync` for no reason a single
+/// extractor implementation cares about.
+pub type BoxedExtractor = Box<dyn SourceGraphExtractor + Send + Sync>;
+
 /// Every compiled-in extractor, in registration order.
 ///
 /// Boxed rather than an enum so a host without the `source-graph` feature gets
 /// an empty registry and the callers above it need no `cfg`.
-pub fn registry() -> Vec<Box<dyn SourceGraphExtractor + Send + Sync>> {
+pub fn registry() -> Vec<BoxedExtractor> {
     #[cfg(feature = "source-graph")]
     {
         vec![
@@ -191,16 +228,58 @@ pub fn registry() -> Vec<Box<dyn SourceGraphExtractor + Send + Sync>> {
     }
 }
 
+/// How a path maps onto the registry.
+pub enum Lookup<'a> {
+    /// A registered extractor handles the path's dialect.
+    Extractor(&'a (dyn SourceGraphExtractor + Send + Sync)),
+    /// The path's dialect is known but no extractor is available for it.
+    Gap {
+        dialect: &'static DialectSpec,
+        /// Why: the grammar pack is not compiled in, or nothing is registered.
+        detail: String,
+    },
+    /// No dialect claims the path's extension.
+    Unknown,
+}
+
+/// Find the extractor for `path`: the dialect owning its extension, then the
+/// registered extractor whose dialect matches. Precedence is the dialect table,
+/// never registration order.
+pub fn extractor_for<'a>(extractors: &'a [BoxedExtractor], path: &Path) -> Lookup<'a> {
+    let Some(dialect) = dialect_for_path(path) else {
+        return Lookup::Unknown;
+    };
+    match extractors
+        .iter()
+        .find(|extractor| extractor.dialect().id == dialect.id)
+    {
+        Some(extractor) => Lookup::Extractor(extractor.as_ref()),
+        None => Lookup::Gap {
+            dialect,
+            detail: gap_detail(dialect),
+        },
+    }
+}
+
+/// The reason a known dialect has no extractor.
+fn gap_detail(dialect: &DialectSpec) -> String {
+    if dialect.pack.compiled() {
+        format!("no extractor registered for dialect {}", dialect.id)
+    } else {
+        format!(
+            "grammar pack {} not compiled in ({})",
+            dialect.pack.feature(),
+            dialect.id
+        )
+    }
+}
+
 /// Extract one file through the registry, falling back to a file-level node.
 ///
 /// This is the entry point every caller should use: it applies the size cap,
 /// picks the extractor, and guarantees a file keeps file-level metadata no
 /// matter which degraded path it takes.
-pub fn extract_file(
-    extractors: &[Box<dyn SourceGraphExtractor + Send + Sync>],
-    path: &Path,
-    bytes: &[u8],
-) -> FileExtraction {
+pub fn extract_file(extractors: &[BoxedExtractor], path: &Path, bytes: &[u8]) -> FileExtraction {
     if bytes.len() > MAX_EXTRACTED_FILE_BYTES {
         return FileExtraction::file_level(
             path,
@@ -214,12 +293,8 @@ pub fn extract_file(
         );
     }
 
-    for extractor in extractors {
-        if !extractor.supports(path) {
-            continue;
-        }
-        let parser_version = extractor.cache_identity().to_parser_version();
-        return match extractor.extract(path, bytes) {
+    match extractor_for(extractors, path) {
+        Lookup::Extractor(extractor) => match extractor.extract(path, bytes) {
             Ok(extraction) => extraction,
             // An extractor that fails outright must not remove the file from
             // the graph — degrade to the same file-level shape as an
@@ -227,16 +302,22 @@ pub fn extract_file(
             Err(error) => FileExtraction::file_level(
                 path,
                 bytes,
-                NodeLanguage::from(extractor.language()),
-                parser_version,
+                extractor.dialect().language.clone(),
+                extractor.cache_identity().to_parser_version(),
                 FileCoverage::LexicalOnly {
                     detail: format!("extractor failed: {error}"),
                 },
             ),
-        };
+        },
+        Lookup::Gap { dialect, detail } => FileExtraction::file_level(
+            path,
+            bytes,
+            dialect.language.clone(),
+            lexical::LEXICAL_PARSER_VERSION.to_string(),
+            FileCoverage::LexicalOnly { detail },
+        ),
+        Lookup::Unknown => lexical::extract(path, bytes),
     }
-
-    lexical::extract(path, bytes)
 }
 
 #[cfg(test)]

@@ -2,11 +2,13 @@ use std::path::Path;
 
 use anyhow::Result;
 
+use crate::context::extract::dialect::{dialect_by_id, DialectSpec};
 use crate::context::extract::{
-    run_query, ExtractorIdentity, FileExtraction, QueryHarness, SourceGraphExtractor,
+    run_query, Capabilities, ExtractorIdentity, FileExtraction, QueryHarness, SourceGraphExtractor,
 };
-use crate::context::source_graph::{NodeLanguage, SourceNodeKind};
-use crate::language::DetectedLanguage;
+use crate::context::source_graph::{ImportBinding, NodeLanguage, SourceNodeKind, Span};
+
+mod imports;
 
 /// Extracts Rust declarations, `use` paths, and calls.
 ///
@@ -62,32 +64,54 @@ const QUERY: &str = r#"
   type: (type_identifier) @name) @definition.implementation
 
 (use_declaration
-  argument: (_) @import.path)
+  argument: (_) @import.path) @import.statement
 
 (call_expression
   function: (identifier) @call.name)
 
 (call_expression
   function: (field_expression
+    value: (_) @call.receiver
     field: (field_identifier) @call.name))
+
+; `Self::helper()` names a member of the enclosing type: its receiver is `Self`.
+(call_expression
+  function: (scoped_identifier
+    path: (identifier) @call.receiver
+    name: (identifier) @call.name)
+  (#eq? @call.receiver "Self"))
 
 ; A qualified callee — `crate::a::b()`, `super::b()`, `Widget::new()` — is one
 ; `scoped_identifier`, captured whole so the qualifier survives into resolution.
+; A `Self` path is the receiver form above.
 (call_expression
-  function: (scoped_identifier) @call.name)
+  function: (scoped_identifier
+    path: (_) @_path) @call.name
+  (#not-eq? @_path "Self"))
 
-; The same three forms carrying a turbofish: `b::<T>()`, `Widget::new::<T>()`,
-; and `value.parse::<T>()`.
+; The same forms carrying a turbofish: `b::<T>()`, `Widget::new::<T>()`,
+; `Self::new::<T>()` and `value.parse::<T>()`.
 (call_expression
   function: (generic_function
-    function: [
-      (identifier)
-      (scoped_identifier)
-    ] @call.name))
+    function: (identifier) @call.name))
+
+(call_expression
+  function: (generic_function
+    function: (scoped_identifier
+      path: (identifier) @call.receiver
+      name: (identifier) @call.name))
+  (#eq? @call.receiver "Self"))
+
+(call_expression
+  function: (generic_function
+    function: (scoped_identifier
+      path: (_) @_path) @call.name)
+  (#not-eq? @_path "Self"))
 
 (call_expression
   function: (generic_function
     function: (field_expression
+      value: (_) @call.receiver
       field: (field_identifier) @call.name)))
 "#;
 
@@ -102,9 +126,10 @@ impl QueryHarness for RustExtractor {
 
     fn identity(&self) -> ExtractorIdentity {
         ExtractorIdentity {
+            dialect: "rust",
             grammar_version: "0.24.2",
             query_digest: crate::context::source_graph::body_hash(QUERY.as_bytes()),
-            extractor_version: 2,
+            extractor_version: 3,
         }
     }
 
@@ -123,22 +148,30 @@ impl QueryHarness for RustExtractor {
             _ => None,
         }
     }
+
+    fn import_bindings(&self, _statement: &str, path: &str, site: Span) -> Vec<ImportBinding> {
+        imports::use_bindings(path, site)
+    }
 }
 
 impl SourceGraphExtractor for RustExtractor {
-    fn language(&self) -> DetectedLanguage {
-        DetectedLanguage::Rust
+    fn dialect(&self) -> &'static DialectSpec {
+        dialect_by_id("rust").expect("the dialect table names every registered extractor")
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            declarations: true,
+            imports: true,
+            import_bindings: true,
+            calls: true,
+            receivers: true,
+            references: false,
+        }
     }
 
     fn cache_identity(&self) -> ExtractorIdentity {
         QueryHarness::identity(self)
-    }
-
-    fn supports(&self, path: &Path) -> bool {
-        matches!(
-            path.extension().and_then(|extension| extension.to_str()),
-            Some("rs")
-        )
     }
 
     fn extract(&self, path: &Path, bytes: &[u8]) -> Result<FileExtraction> {
@@ -149,3 +182,7 @@ impl SourceGraphExtractor for RustExtractor {
 #[cfg(test)]
 #[path = "rust/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "rust/tests_imports.rs"]
+mod tests_imports;

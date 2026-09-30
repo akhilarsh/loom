@@ -4,8 +4,9 @@
 //! names does not pass as wiring.
 
 use std::path::Path;
+use std::sync::OnceLock;
 
-use crate::context::extract;
+use crate::context::extract::{self, BoxedExtractor};
 use crate::context::source_graph::FileCoverage;
 
 /// `(line, name)` for every node the extractor finds in `path`, where `line`
@@ -14,7 +15,9 @@ use crate::context::source_graph::FileCoverage;
 /// extraction degraded (oversized file, parse error, extractor failure) and
 /// holds no symbol nodes.
 pub(super) fn definition_lines(path: &Path, bytes: &[u8]) -> Option<Vec<(usize, String)>> {
-    let extraction = extract::extract_file(&extract::registry(), path, bytes);
+    static REGISTRY: OnceLock<Vec<BoxedExtractor>> = OnceLock::new();
+    let extractors = REGISTRY.get_or_init(extract::registry);
+    let extraction = extract::extract_file(extractors, path, bytes);
     if !matches!(
         extraction.coverage,
         FileCoverage::Full | FileCoverage::Partial { .. }

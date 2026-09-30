@@ -153,22 +153,22 @@ fn fan_in_counts_cross_file_edge_and_skips_same_file_and_unresolved() {
             &cross_from,
             &cross_to,
             SourceEdgeKind::Calls,
-            EdgeProvenance::Parser,
-            1.0,
+            EdgeProvenance::LocalName,
+            0.8,
         ),
         edge_at(
             &cross_from,
             &same_to,
             SourceEdgeKind::Calls,
-            EdgeProvenance::Parser,
-            1.0,
+            EdgeProvenance::LocalName,
+            0.8,
         ),
         edge_at(
             &cross_from,
             UNRESOLVED_TARGET,
             SourceEdgeKind::Calls,
-            EdgeProvenance::Inferred,
-            0.2,
+            EdgeProvenance::Syntax,
+            0.3,
         ),
     ];
     let graph = graph_of(vec![
