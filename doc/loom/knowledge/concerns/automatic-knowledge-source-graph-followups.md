@@ -49,3 +49,13 @@ its rescue floor, described in
 and `loom/eval/retrieval-cases.yaml`. Its only natural-language case asks about hook
 configuration, so `loom knowledge eval` does not measure this gap. A first step is adding a
 lifecycle case so the gap is measured before the threshold is tuned.
+
+## `loom knowledge eval` Fails Its Gates
+
+Three causes:
+
+- **The eval never refreshes the source graph.** `eval` (`commands/knowledge/eval.rs`) calls `retrieve_for_stage` for each case without first running `ensure_snapshot(.., SnapshotPolicy::LocalCurrent)`, which `loom map`'s `load_graph` does. After a commit the local overlay is stale, the source channel returns no nodes, and the three source-node cases fail, so the result swings between runs.
+- **A moved section.** `genuine-win-delivery-epoch-suppression` expects `architecture/context-retrieval.md#delivery-records-and-epoch-suppression#0`; that section now lives in `architecture/context-retrieval-state.md`.
+- **A case that needs re-judging.** `genuine-win-sandbox-settings-rules` expects two `mistakes/sandbox-and-settings.md` chunks that now rank 15th and 18th. Ahead of them are architecture sections that answer the query directly (`security-and-isolation.md` on write grants and on worktree isolation) and `sandbox/settings/policy.rs::sandbox_settings`. `architecture/context-retrieval-corpus.md#the-rescue-floor-and-the-thin-survivor-rule` quotes this query's words, so it ranks for the query too.
+
+`precision_floor` (0.40) was calibrated at p@5 0.45. Re-measure with a binary built from the tree under evaluation: an older installed `loom` scores old retrieval code. The `retrieval-delivery` stage owns the eval files and changes ranking, so re-judge the cases after it merges.

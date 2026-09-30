@@ -63,17 +63,10 @@ and "parent directory is literally named `.worktrees`" in `is_loom_worktree_path
 segments below a real worktree root no longer counts as one; nested worktree resolution now
 selects the innermost stage.
 
-## Where a Session's Write Grants Come From (STALE, corrected 2026-09-13)
+## Where a Session's Write Grants Come From
 
-This section used to say a generated `.claude/settings.local.json` decides what a session may
-write, with `sandbox::write_settings` writing it (worktree for stage sessions, main checkout for
-knowledge/merge/adjudication sessions) and `fs/permissions/sync.rs::sync_worktree_permissions`
-copying a worktree's allow rules back into the main checkout's file. All three writes are gone
-(`doc/plans/PLAN-loom-state-confinement.md`, owner decision 8): `write_settings` is deleted — only a
-test helper of the same name remains, in `orchestrator/terminal/native/tests_confinement_srt.rs` —
-and `sync_worktree_permissions` no longer writes any `.claude/settings.local.json`.
-
-Every session kind now launches from a generated **capsule**, `W/capsules/<session-id>.settings.json`,
+Loom writes no `.claude/settings.local.json`. Every session kind launches from a generated
+**capsule**, `W/capsules/<session-id>.settings.json` (`orchestrator/terminal/native/session_settings.rs`),
 built by the pure `sandbox::settings::build_settings`. Approved permissions live in a loom-owned
 list, `W/permissions/approved.json` (`fs/permissions/approved.rs`), rendered into every later
 session's capsule. Home-directory control surfaces are spelled `~/...` in both the sandbox and
@@ -81,10 +74,9 @@ permission layers of every capsule; repo and executable-dir surfaces are absolut
 `//abs` in `Edit` rules. `~/.codex/hooks`, `~/.codex/hooks.json` and `~/.codex/config.toml` are all
 denied in every capsule, whether or not the codex lane is licensed for that session. `T/.loom` is
 denied in the sandbox layer only — `Edit(.loom/**)` already covers the Claude Code file tools there,
-so the sandbox-only deny is defense in depth against a tool that bypasses `Edit`, not a gap. Two
-knowledge-related functions were renamed to match the new shape: `write_knowledge_sandbox_settings`
-became `validate_knowledge_sandbox` and `install_knowledge_hooks` became `require_knowledge_hooks`,
-since neither writes a settings file any more.
+so the sandbox-only deny is defense in depth against a tool that bypasses `Edit`. Knowledge-stage
+setup (`orchestrator/core/spawn_setup.rs`) only checks: `validate_knowledge_sandbox` and
+`require_knowledge_hooks` write no settings file.
 
 Claude Code still writes a "don't ask again" approval to `<canonical git root>/.claude/settings.local.json`
 even for a capsule-launched session (destination `localSettings`; confirmed against the 2.1.269
@@ -108,13 +100,11 @@ still passes it — the phase-3 OS deny rules close this in practice, since a de
 and the sandbox resolves symlinks. See
 [Accepted Gaps From the State-Confinement Work](../concerns/sandbox-and-confinement-gaps.md#accepted-gaps-from-the-state-confinement-work-2026-09-13).
 
-The main checkout's `.claude/settings.local.json` is still shared and still read by knowledge-stage
-spawns, merge and adjudication sessions, and the operator's own interactive sessions. On 2026-09-13
-it held the running plan's `allow_write` list and `env.LOOM_WORK_DIR` pointing at the live state
-directory, so an operator session inherited both, and anything it ran that honors `LOOM_WORK_DIR`
-targeted live state. See [Live State Pollution](../mistakes/live-state-pollution.md). That specific
-exposure predates the capsule work above and is unrelated to it — loom's own writes to that file are
-gone, but the file's pre-existing contents and Claude Code's own approval writes remain.
+The main checkout's `.claude/settings.local.json` is shared: knowledge-stage spawns, merge and
+adjudication sessions, and the operator's own interactive sessions all read it. Loom never writes
+it, but whatever it holds (including Claude Code's own approval writes and any `env.LOOM_WORK_DIR`)
+reaches those sessions. See [Live State Pollution](../mistakes/live-state-pollution.md) for the
+exposure this caused.
 
 ## Session Requests Travel Through a Hook-Written Inbox (2026-09-13)
 

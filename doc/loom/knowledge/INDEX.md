@@ -45,7 +45,7 @@
 | [plan-lifecycle-and-fields](architecture/plan-lifecycle-and-fields.md) | Plan fields v1/v2, verify checks, lints | 216 |
 | [quota-poller](architecture/quota-poller.md) | Usage-quota polling, caching, rendering | 31 |
 | [remote-control](architecture/remote-control.md) | Capability detection, preflight, naming | 82 |
-| [security-and-isolation](architecture/security-and-isolation.md) | 4-layer worktree defense, security model | 193 |
+| [security-and-isolation](architecture/security-and-isolation.md) | 4-layer worktree defense, security model | 183 |
 | [signal-generation](architecture/signal-generation.md) | Signal assembly: cache, append helpers, prefixes | 202 |
 | [skill-catalog](architecture/skill-catalog.md) | The two skill roots; 63 catalogued skills | 148 |
 | [source-graph](architecture/source-graph.md) | Source graph honesty contract, extractor, limits | 330 |
@@ -158,7 +158,7 @@
 | Topic | Blurb | Lines |
 | --- | --- | --- |
 | [agent-rule-bending-hardening](concerns/agent-rule-bending-hardening.md) | Checks an agent can bend, and the hardening backlog | 213 |
-| [automatic-knowledge-source-graph-followups](concerns/automatic-knowledge-source-graph-followups.md) | Knowledge-plan followups: retrieval gap, stopwording | 51 |
+| [automatic-knowledge-source-graph-followups](concerns/automatic-knowledge-source-graph-followups.md) | Knowledge-plan followups: retrieval gap, stopwording | 61 |
 | [code-quality-and-hook-debt](concerns/code-quality-and-hook-debt.md) | Oversized units, duplicated tables, hook debt | 195 |
 | [codex-heartbeat-starvation](concerns/codex-heartbeat-starvation.md) | Heartbeat starvation from long codex runs | 73 |
 | [iterm2-window-teardown](concerns/iterm2-window-teardown.md) | iTerm2 window never named, so teardown cannot close it | 48 |

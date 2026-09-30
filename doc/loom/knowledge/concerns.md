@@ -104,7 +104,7 @@ Four open items: an unbounded whole-file read ahead of the extraction size cap,
 three production-dead `KnowledgeDir` methods kept alive only by each other's tests,
 a writer/reader plan-key normalisation mismatch, and a `LOOM_PERMISSIONS_WORKTREE`
 constant with no consumer. The topic also covers natural-language queries that
-corpus stopwording empties.
+corpus stopwording empties, and why `loom knowledge eval` fails its gates.
 
 Full detail: [automatic-knowledge-source-graph-followups.md](concerns/automatic-knowledge-source-graph-followups.md).
 
