@@ -1,16 +1,19 @@
 //! Which graph a `loom map` answer came from: the snapshot identity every
 //! JSON payload and source window carries, and the loader that reads it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 
-use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 
 use crate::context::extract::registry;
 use crate::context::freshness::GraphState;
-use crate::context::graph_store::{GraphStore, ResolvedGraph};
+use crate::context::graph_store::GraphStore;
 use crate::context::refresh::{clean_generation, short_revision, SnapshotOutcome};
-use crate::context::source_graph::{FileCoverage, GRAPH_SCHEMA_VERSION};
+use crate::context::source_graph::GRAPH_SCHEMA_VERSION;
+use crate::context::view::{ResolvedView, ViewIdentity, ViewOrigin};
 
 /// The freshness state and layer identity of the graph a view was answered from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +26,10 @@ pub struct SnapshotIdentity {
     pub built_at: Option<String>,
     pub persisted: bool,
     pub schema_version: u32,
+    /// Version of the cross-file resolution rules the view was resolved under.
+    pub resolver_version: u32,
+    /// Whether the view was read from disk or resolved by this process.
+    pub view: ViewOrigin,
     /// Dialect id to the parser version its extractor stamps.
     pub extractors: BTreeMap<String, String>,
 }
@@ -56,72 +63,50 @@ impl SnapshotIdentity {
             "built_at": self.built_at,
             "persisted": self.persisted,
             "schema_version": self.schema_version,
+            "resolver_version": self.resolver_version,
+            "view": self.view.as_str(),
             "extractors": self.extractors,
         })
     }
 }
 
-/// Read the base and overlay layers `snapshot` selected, once each, and merge
-/// them into the graph views query. The identity's generation and build time
-/// come from the same loaded layers, so nothing is parsed twice.
+/// Describe where `view`, the resolved view `snapshot` selected, came from.
+/// The generation comes from the view's identity, so no layer is parsed.
 ///
-/// A missing base is not an error: the graph is empty and the identity says
+/// A missing base is not an error: the view is empty and the identity says
 /// why through its state.
-pub fn load_graph(
+pub fn identity_of(
     graph_store: &GraphStore,
     snapshot: &SnapshotOutcome,
-) -> Result<(ResolvedGraph, SnapshotIdentity)> {
-    let base = graph_store
-        .load_base(&snapshot.revision)?
-        .unwrap_or_default();
-    let overlay = match &snapshot.overlay {
-        Some((plan, stage)) => graph_store.load_overlay(plan, stage)?,
-        None => None,
+    view: &ResolvedView,
+) -> SnapshotIdentity {
+    let generation = &view.identity.overlay_generation;
+    let layer_path = match &snapshot.overlay {
+        Some((plan, stage)) => graph_store.overlay_path(plan, stage),
+        None => graph_store.base_path(&snapshot.revision),
     };
-    let (generation, built_at) = match &overlay {
-        Some(layer) => (layer.generation.clone(), layer.built_at),
-        None => (base.generation.clone(), base.built_at),
-    };
-    let identity = SnapshotIdentity {
+    SnapshotIdentity {
         state: snapshot.state(),
         base_revision: snapshot.revision.clone(),
         overlay: snapshot.overlay.clone(),
         generation: if generation.is_empty() {
             snapshot.generation.clone()
         } else {
-            generation
+            generation.clone()
         },
-        built_at: built_at.map(|at| at.to_rfc3339()),
+        built_at: layer_written_at(&layer_path),
         persisted: snapshot.persisted,
         schema_version: GRAPH_SCHEMA_VERSION,
-        extractors: extractor_versions(),
-    };
-
-    let mut graph = ResolvedGraph {
-        base_revision: base.revision,
-        overlaid: BTreeSet::new(),
-        files: base.files,
-    };
-    for (path, entry) in overlay.into_iter().flat_map(|layer| layer.files) {
-        // An overlay entry is the complete truth for its file in this stage.
-        if entry.coverage == FileCoverage::Deleted {
-            graph.files.remove(&path);
-        } else {
-            graph.overlaid.insert(path.clone());
-            graph.files.insert(path, entry);
-        }
+        resolver_version: view.identity.resolver_version,
+        view: view.origin,
+        extractors: ViewIdentity::extractor_versions(&registry()),
     }
-    Ok((graph, identity))
 }
 
-fn extractor_versions() -> BTreeMap<String, String> {
-    registry()
-        .iter()
-        .map(|extractor| {
-            (
-                extractor.dialect().id.to_string(),
-                extractor.cache_identity().to_parser_version(),
-            )
-        })
-        .collect()
+/// When the layer file at `path` was last written, as RFC 3339; `None` for a
+/// layer that exists only in memory. Read from the file's metadata so the
+/// layer itself is never parsed.
+fn layer_written_at(path: &Path) -> Option<String> {
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
+    Some(DateTime::<Utc>::from(modified).to_rfc3339())
 }

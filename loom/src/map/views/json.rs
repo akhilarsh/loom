@@ -45,6 +45,7 @@ pub(super) fn safe(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::context::freshness::GraphState;
+    use crate::context::view::ViewOrigin;
     use crate::map::views::snapshot::SnapshotIdentity;
     use crate::map::views::tests::{impact_chain_graph, view_options};
     use crate::map::views::{
@@ -258,6 +259,8 @@ mod tests {
             built_at: None,
             persisted: true,
             schema_version: 2,
+            resolver_version: 1,
+            view: ViewOrigin::Built,
             extractors: BTreeMap::new(),
         };
         let ctx = ViewContext {
@@ -281,10 +284,14 @@ mod tests {
                 "built_at",
                 "persisted",
                 "schema_version",
+                "resolver_version",
+                "view",
                 "extractors",
             ],
         );
         assert_eq!(payload["snapshot"]["state"], "stale");
+        assert_eq!(payload["snapshot"]["resolver_version"], 1);
+        assert_eq!(payload["snapshot"]["view"], "built");
         assert_keys(&payload["snapshot"]["overlay"], &["plan", "stage"]);
         assert!(payload["snapshot"]["built_at"].is_null());
     }

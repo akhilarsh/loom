@@ -117,7 +117,7 @@ impl GraphLayer {
 /// Built by `GraphStore::resolved`. Holds owned data because the two layers
 /// it draws from have different lifetimes and a reader should not have to care
 /// which layer an entry came from.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedGraph {
     /// Revision of the base layer underneath, empty when there is none.
     pub base_revision: String,

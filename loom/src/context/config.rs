@@ -32,6 +32,7 @@
 //! stage_brief_budget_tokens = 3000
 //! max_payload_bytes = 16384
 //! keep_base_graphs = 3
+//! graph_cache_budget_bytes = 2147483648
 //! reconcile_debounce_secs = 600
 //! reconcile_stale_lock_secs = 1800
 //! prose_roots = ["doc"]
@@ -136,6 +137,10 @@ pub struct RetrievalConfig {
     pub max_payload_bytes: usize,
     /// Base graph files retained besides the ones `state.json` references.
     pub keep_base_graphs: usize,
+    /// Byte budget over the published base graphs and their resolved views in
+    /// one main cache (`graph/base` plus `graph/view`), shared by every
+    /// worktree. The oldest unprotected revision is evicted first.
+    pub graph_cache_budget_bytes: usize,
     /// Minimum seconds between background reconcile attempts. `0` means every
     /// attempt is allowed to proceed.
     pub reconcile_debounce_secs: u64,
@@ -160,6 +165,7 @@ impl Default for RetrievalConfig {
             stage_brief_budget_tokens: 3000,
             max_payload_bytes: 16384,
             keep_base_graphs: 3,
+            graph_cache_budget_bytes: 2 * 1024 * 1024 * 1024,
             reconcile_debounce_secs: 600,
             reconcile_stale_lock_secs: 1800,
             prose_roots: vec!["doc".to_string()],
@@ -255,18 +261,28 @@ impl RetrievalConfig {
                 self.max_payload_bytes =
                     budget(value, key, self.max_payload_bytes, MIN_PAYLOAD_BYTES);
             }
+            "prose_roots" => {
+                if let Some(roots) = prose_roots(value, key) {
+                    self.prose_roots = roots;
+                }
+            }
+            _ => self.apply_graph_key(key, value),
+        }
+    }
+
+    /// Apply one source-graph cache or reconcile key, as [`Self::apply`] does.
+    fn apply_graph_key(&mut self, key: &str, value: &Value) {
+        match key {
             "keep_base_graphs" => self.keep_base_graphs = count(value, key, self.keep_base_graphs),
+            "graph_cache_budget_bytes" => {
+                self.graph_cache_budget_bytes = count(value, key, self.graph_cache_budget_bytes);
+            }
             "reconcile_debounce_secs" => {
                 self.reconcile_debounce_secs = seconds(value, key, self.reconcile_debounce_secs);
             }
             "reconcile_stale_lock_secs" => {
                 self.reconcile_stale_lock_secs =
                     seconds(value, key, self.reconcile_stale_lock_secs);
-            }
-            "prose_roots" => {
-                if let Some(roots) = prose_roots(value, key) {
-                    self.prose_roots = roots;
-                }
             }
             unknown => tracing::debug!(key = %unknown, "ignoring an unknown [retrieval] key"),
         }

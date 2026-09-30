@@ -12,9 +12,12 @@
 //! and, once write access is restored, persists normally again.
 
 use anyhow::Result;
+use std::fs;
 use std::path::Path;
+use std::time::SystemTime;
 
 use super::{read_layer, GraphLayer, GraphStore};
+use crate::context::view::ResolvedView;
 
 impl GraphStore {
     /// A denied cache write is not this call's failure: keep `layer` in
@@ -42,10 +45,45 @@ impl GraphStore {
         Ok(())
     }
 
+    /// [`Self::fall_back_to_memory`] for a resolved view: keep `view` in memory
+    /// when the disk write of `error` was denied, propagate any other failure.
+    pub(crate) fn fall_back_view_to_memory(
+        &self,
+        path: &Path,
+        view: &ResolvedView,
+        error: anyhow::Error,
+    ) -> Result<()> {
+        if !is_write_denied(&error) {
+            return Err(error);
+        }
+        tracing::warn!(
+            path = %path.display(),
+            %error,
+            "context cache is not writable; keeping this resolved view in memory \
+             for the rest of this process"
+        );
+        self.view_fallback
+            .borrow_mut()
+            .insert(path.to_path_buf(), view.clone());
+        Ok(())
+    }
+
     /// True when a denied cache write made this store keep a layer in memory
     /// only, so that layer will not outlive the process.
     pub fn fell_back(&self) -> bool {
-        !self.memory_fallback.borrow().is_empty()
+        !self.memory_fallback.borrow().is_empty() || !self.view_fallback.borrow().is_empty()
+    }
+
+    /// When the layer file at `path` was last modified, or `None` when there is
+    /// none or this process holds the layer in memory: a denied write left any
+    /// file there older than the layer this process reads.
+    pub(crate) fn layer_modified(&self, path: &Path) -> Option<SystemTime> {
+        if self.memory_fallback.borrow().contains_key(path) {
+            return None;
+        }
+        fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
     }
 
     /// `read_layer`, preferring a layer this process already fell back to

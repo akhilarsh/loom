@@ -6,9 +6,10 @@
 //! under the 400-line cap.
 //!
 //! `graph/base/*.json` accretes one file per published revision
-//! (`context::graph_store::GraphStore::publish_base`) with no pruning until
-//! now. This module runs the exact same retention
-//! [`GraphStore::prune_base_graphs`] enforces at publish time, unconditionally,
+//! (`context::graph_store::GraphStore::publish_base`), and `graph/view/*.json`
+//! one resolved view per revision and identity. This module runs the exact same
+//! retention [`GraphStore::prune_base_graphs`] and
+//! [`GraphStore::prune_to_budget`] enforce at publish time, unconditionally,
 //! on every `loom clean` invocation — this is disk hygiene, not a destructive
 //! operation, so it does not need a flag to gate it the way `--worktrees` /
 //! `--state` do.
@@ -22,7 +23,8 @@ use crate::context::config::RetrievalConfig;
 use crate::context::graph_store::GraphStore;
 use crate::context::store::{ContextStore, CACHE_RELATIVE_DIR};
 
-/// Prune stale base graph layers under `repo_root`'s context cache.
+/// Prune stale base graph layers, and the resolved views of the revisions
+/// removed, under `repo_root`'s context cache.
 ///
 /// Returns `(files_removed, bytes_freed)`. Never destructive beyond what
 /// [`GraphStore::prune_base_graphs`] already guarantees: the revision
@@ -32,14 +34,14 @@ pub(super) fn prune_base_graphs(repo_root: &Path) -> Result<(usize, u64)> {
     let cache_root = repo_root.join(CACHE_RELATIVE_DIR);
     let store = ContextStore::with_root(&cache_root);
     let graph_store = GraphStore::new(&cache_root, &super::resolve_state_dir(repo_root));
-    let base_dir = graph_store.base_dir();
+    let dirs = [graph_store.base_dir(), graph_store.view_dir()];
 
-    let before = base_layer_sizes(&base_dir);
+    let before = layer_sizes(&dirs);
     if before.is_empty() {
         return Ok((0, 0));
     }
 
-    let keep = RetrievalConfig::load(repo_root).keep_base_graphs;
+    let config = RetrievalConfig::load(repo_root);
     let protected_revision = store
         .load_state()
         .ok()
@@ -47,9 +49,10 @@ pub(super) fn prune_base_graphs(repo_root: &Path) -> Result<(usize, u64)> {
         .filter(|revision| !revision.is_empty());
     let protected: Vec<&str> = protected_revision.as_deref().into_iter().collect();
 
-    graph_store.prune_base_graphs(keep, &protected)?;
+    graph_store.prune_base_graphs(config.keep_base_graphs, &protected)?;
+    graph_store.prune_to_budget(config.graph_cache_budget_bytes, &protected)?;
 
-    let after = base_layer_sizes(&base_dir);
+    let after = layer_sizes(&dirs);
     let removed = before.len().saturating_sub(after.len());
     let freed_bytes: u64 = before
         .iter()
@@ -60,14 +63,13 @@ pub(super) fn prune_base_graphs(repo_root: &Path) -> Result<(usize, u64)> {
     Ok((removed, freed_bytes))
 }
 
-/// `path -> byte size` for every `*.json` file directly in `dir`. Empty (not
-/// an error) when `dir` does not exist yet — a project that has never
+/// `path -> byte size` for every `*.json` file directly in one of `dirs`.
+/// Empty (not an error) when none exists yet — a project that has never
 /// published a base graph has nothing to prune.
-fn base_layer_sizes(dir: &Path) -> BTreeMap<PathBuf, u64> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return BTreeMap::new();
-    };
-    entries
+fn layer_sizes(dirs: &[PathBuf]) -> BTreeMap<PathBuf, u64> {
+    dirs.iter()
+        .filter_map(|dir| fs::read_dir(dir).ok())
+        .flatten()
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
         .filter_map(|entry| {

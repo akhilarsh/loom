@@ -119,6 +119,7 @@ fn timings_json_holds_the_seven_numeric_phases() {
         "snapshot",
         "load",
         "resolve",
+        "view",
         "query",
         "render",
         "total",
@@ -130,6 +131,29 @@ fn timings_json_holds_the_seven_numeric_phases() {
         );
     }
     assert!(String::from_utf8_lossy(&output.stderr).contains("total"));
+}
+
+#[test]
+fn warm_second_run_reads_the_materialized_view() {
+    let repo = repo(&[("src/lib.rs", LIB_RS)]);
+    let args = ["--find-all", "target", "--json"];
+
+    let first = map_json(repo.path(), &args);
+    let second = map_json(repo.path(), &args);
+
+    assert!(
+        first["snapshot"]["resolver_version"].is_number(),
+        "{first:#}"
+    );
+    assert!(
+        matches!(
+            first["snapshot"]["view"].as_str(),
+            Some("built" | "materialized")
+        ),
+        "{first:#}"
+    );
+    assert_eq!(second["snapshot"]["view"], "materialized", "{second:#}");
+    assert_eq!(second["views"], first["views"]);
 }
 
 #[test]

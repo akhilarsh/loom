@@ -32,6 +32,7 @@ use std::time::SystemTime;
 
 use crate::context::source_graph::{FileCoverage, GRAPH_SCHEMA_VERSION};
 use crate::context::store::canonical_json;
+use crate::context::view::ResolvedView;
 
 /// Graph directory, relative to the context cache root.
 pub const GRAPH_RELATIVE_DIR: &str = "graph";
@@ -51,6 +52,11 @@ pub struct GraphStore {
     overlay_root: PathBuf,
     /// Layers a denied disk write fell back to; see `fallback`.
     memory_fallback: RefCell<HashMap<PathBuf, GraphLayer>>,
+    /// Views a denied disk write fell back to; see `view::store`.
+    pub(crate) view_fallback: RefCell<HashMap<PathBuf, ResolvedView>>,
+    /// Views this process materialized, keyed by view path; the first
+    /// `GraphStore::view` call for one takes it. See `view::store`.
+    pub(crate) view_cache: RefCell<HashMap<PathBuf, ResolvedView>>,
 }
 
 impl GraphStore {
@@ -62,6 +68,8 @@ impl GraphStore {
             graph_root: context_cache_root.join(GRAPH_RELATIVE_DIR),
             overlay_root: work_root.join(OVERLAY_RELATIVE_DIR),
             memory_fallback: RefCell::new(HashMap::new()),
+            view_fallback: RefCell::new(HashMap::new()),
+            view_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -208,8 +216,8 @@ impl GraphStore {
     ///
     /// Called after the stage's work is merged and folded into a new base
     /// layer, at which point the overlay layer describes a revision nobody
-    /// reads. Removes only [`LAYER_FILE`] — never the overlay directory — because
-    /// that directory is a shared namespace, not this module's alone:
+    /// reads. Removes only [`LAYER_FILE`] and the overlay's resolved view
+    /// (`view.json`) — never the overlay directory — because that directory is a shared namespace, not this module's alone:
     /// `crate::commands::context::record_edit` keeps `dirty-paths.json` there,
     /// and `crate::context::delivery` keeps `session-retrieval/*.json` there,
     /// and both outlive the graph layer and are read by other stages after
@@ -219,6 +227,7 @@ impl GraphStore {
     /// does not accumulate across plans.
     pub fn discard_overlay(&self, plan: &str, stage: &str) -> Result<()> {
         let path = self.overlay_path(plan, stage);
+        self.discard_overlay_view(plan, stage);
         match fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),

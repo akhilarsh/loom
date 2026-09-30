@@ -11,6 +11,10 @@ pub struct Timings {
     pub snapshot: Duration,
     pub load: Duration,
     pub resolve: Duration,
+    /// The whole `GraphStore::view` call: `load` when it read a persisted
+    /// view, `resolve` when it resolved one. A view `ensure_snapshot` just
+    /// materialized is handed over here, so its build time sits in `snapshot`.
+    pub view: Duration,
     pub query: Duration,
     pub render: Duration,
 }
@@ -35,6 +39,7 @@ impl Timings {
             "snapshot": millis(self.snapshot),
             "load": millis(self.load),
             "resolve": millis(self.resolve),
+            "view": millis(self.view),
             "query": millis(self.query),
             "render": millis(self.render),
             "total": millis(total),
@@ -45,11 +50,12 @@ impl Timings {
     /// The one stderr line `--timings` prints.
     pub fn summary(&self, total: Duration) -> String {
         format!(
-            "timings: snapshot {:.1}ms, load {:.1}ms, resolve {:.1}ms, query {:.1}ms, \
-             render {:.1}ms, total {:.1}ms, peak_rss {} KiB",
+            "timings: snapshot {:.1}ms, load {:.1}ms, resolve {:.1}ms, view {:.1}ms, \
+             query {:.1}ms, render {:.1}ms, total {:.1}ms, peak_rss {} KiB",
             millis(self.snapshot),
             millis(self.load),
             millis(self.resolve),
+            millis(self.view),
             millis(self.query),
             millis(self.render),
             millis(total),

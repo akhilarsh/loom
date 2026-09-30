@@ -128,6 +128,9 @@ fn resolve_file_entry(
             return unreadable_entry(error);
         }
     };
+    counters.bytes_read = counters
+        .bytes_read
+        .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
     let hash = body_hash(&bytes);
     counters.hash_ms = counters.hash_ms.saturating_add(elapsed_ms(hash_started));
     counters.files_hashed += 1;
@@ -326,6 +329,8 @@ pub(super) fn persist_layer(
                 BaseWrite::Publish => graph_store.publish_base(revision, layer)?,
                 BaseWrite::Replace => {
                     graph_store.replace_base(revision, layer)?;
+                    // A view resolved from the layer just replaced describes it.
+                    graph_store.remove_views(revision);
                     true
                 }
             };
