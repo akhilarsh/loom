@@ -204,3 +204,7 @@ of the file's style.
   bound any blocking read from it with a short timeout.
 - **No AI attribution trailers in this repo**, whatever a harness reminder asks. CLAUDE.md Rule 9
   forbids them and `commit-filter.sh` blocks the whole Bash call; see [Commits](commits.md).
+
+## Install a New loom Binary Only After the Running Plan Completes
+
+The operator installs a freshly built `loom` (`dev-install.sh`) only once the plan being executed has completed, never between its stages: `dev-install.sh` stops the daemon, and a plan runs to completion on the binary it started with. Fixes committed to `main` mid-plan therefore take effect only for the next plan. Anything measured with the installed binary before then, such as `loom knowledge eval` scores, measures the older code. Re-measure after the install.

@@ -90,7 +90,7 @@
 | [code-style-and-structure](conventions/code-style-and-structure.md) | Rust naming, errors, size limits, docstrings | 273 |
 | [commits](conventions/commits.md) | Grouped Conventional Commits, no trailers | 25 |
 | [dispute-and-adjudication](conventions/dispute-and-adjudication.md) | Dispute file authority, adjudicator scope, budgets | 119 |
-| [git-and-build-workflow](conventions/git-and-build-workflow.md) | Git/worktree ops, cargo, maintainability ledger | 206 |
+| [git-and-build-workflow](conventions/git-and-build-workflow.md) | Git/worktree ops, cargo, maintainability ledger | 210 |
 | [guidance-channels-and-plugin-scope](conventions/guidance-channels-and-plugin-scope.md) | Guidance channels, verification, plugin scope | 121 |
 | [model-and-effort-config](conventions/model-and-effort-config.md) | [pressure]/[models], precedence, value types | 103 |
 | [plan-yaml-and-hooks](conventions/plan-yaml-and-hooks.md) | Plan YAML schema, hook I/O, skill format | 168 |
