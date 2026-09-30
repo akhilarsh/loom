@@ -1,5 +1,6 @@
 //! Unit tests for [`super::Orchestrator::adopt_live_session_if_present`]'s
-//! worker-kind lookup and its contract-phase fallback.
+//! worker-kind lookup and its contract-phase fallback, and for the on-disk
+//! status gate `start_stage` puts in front of it.
 //!
 //! Fixtures mirror `coherence_tests.rs`: they are private to that module, so
 //! the same small set is duplicated here.
@@ -9,8 +10,10 @@ use crate::fs::session_files::save_session;
 use crate::fs::work_dir::write_terminal_config;
 use crate::models::session::{Session, SessionBackendKind, SessionStatus, TerminalConfig};
 use crate::models::stage::{Stage, StageType};
+use crate::orchestrator::core::stage_executor::StageExecutor;
 use crate::orchestrator::core::OrchestratorConfig;
 use crate::orchestrator::terminal::native::write_test_pid_identity;
+use crate::plan::schema::StageDefinition;
 use crate::plan::ExecutionGraph;
 use crate::verify::transitions::{load_stage, save_stage};
 use std::path::Path;
@@ -32,6 +35,9 @@ fn work_dir() -> TempDir {
     temp
 }
 
+/// An orchestrator whose graph holds `alpha` as `Queued`, whatever its file
+/// says: what `start_stage` sees when the file moved on after the tick's
+/// graph sync.
 fn orchestrator_for(work_dir: &Path, repo_root: &Path) -> Orchestrator {
     let config = OrchestratorConfig {
         work_dir: work_dir.to_path_buf(),
@@ -39,7 +45,19 @@ fn orchestrator_for(work_dir: &Path, repo_root: &Path) -> Orchestrator {
         enable_skill_routing: false,
         ..Default::default()
     };
-    Orchestrator::new(config, ExecutionGraph::build(Vec::new()).unwrap()).unwrap()
+    let graph = ExecutionGraph::build(vec![StageDefinition {
+        id: "alpha".to_string(),
+        name: "alpha".to_string(),
+        working_dir: ".".to_string(),
+        ..Default::default()
+    }])
+    .unwrap();
+    let mut orchestrator = Orchestrator::new(config, graph).unwrap();
+    orchestrator
+        .graph
+        .force_status("alpha", StageStatus::Queued)
+        .unwrap();
+    orchestrator
 }
 
 fn queued_stage(work_dir: &Path, stage_type: StageType, plan_version: u32) {
@@ -48,6 +66,15 @@ fn queued_stage(work_dir: &Path, stage_type: StageType, plan_version: u32) {
     stage.status = StageStatus::Queued;
     stage.stage_type = stage_type;
     stage.plan_version = plan_version;
+    save_stage(&stage, work_dir).unwrap();
+}
+
+/// Stage `alpha` in `status`, naming `session` as its agent.
+fn stage_in(work_dir: &Path, status: StageStatus, session: Option<&str>) {
+    let mut stage = Stage::new("alpha".to_string(), None);
+    stage.id = "alpha".to_string();
+    stage.status = status;
+    stage.session = session.map(str::to_string);
     save_stage(&stage, work_dir).unwrap();
 }
 
@@ -125,4 +152,71 @@ fn a_contract_session_is_never_adopted_without_a_contract_phase() {
             "v{plan_version} {stage_type:?}"
         );
     }
+}
+
+/// A stage the graph still holds `Queued` but whose file has moved on is not
+/// the executor's to start: adopting its live agent would walk it back to
+/// `Executing` out of a status it was put in on purpose, the way an escalated
+/// dispute's idle worker was re-adopted. The graph node follows the file.
+#[test]
+fn start_stage_leaves_a_stage_whose_file_is_not_startable_alone() {
+    for status in [
+        StageStatus::NeedsHumanReview,
+        StageStatus::NeedsAdjudication,
+        StageStatus::WaitingForInput,
+        StageStatus::CompletedWithFailures,
+        StageStatus::MergeBlocked,
+        StageStatus::Blocked,
+        StageStatus::NeedsHandoff,
+    ] {
+        let temp = work_dir();
+        let work = temp.path().join(".work");
+        let worker = live_session(&work, stage_session());
+        stage_in(&work, status.clone(), Some(worker.id.as_str()));
+
+        let mut orchestrator = orchestrator_for(&work, temp.path());
+        orchestrator.start_stage("alpha").unwrap();
+
+        let after = load_stage("alpha", &work).unwrap();
+        assert_eq!(after.status, status, "the file's status must stand");
+        assert_eq!(
+            after.session.as_deref(),
+            Some(worker.id.as_str()),
+            "{status:?}"
+        );
+        assert!(orchestrator.active_sessions.is_empty(), "{status:?}");
+        assert_eq!(
+            orchestrator
+                .graph
+                .get_node("alpha")
+                .map(|n| n.status.clone()),
+            Some(status.clone()),
+            "the graph node must follow the file"
+        );
+    }
+}
+
+/// Adoption walks only from `Queued`, so a `WaitingForDeps` stage with a live
+/// worker is adopted once the dependency check has stepped it there, instead
+/// of failing to adopt on every tick.
+#[test]
+fn start_stage_adopts_a_live_worker_once_a_waiting_stage_is_queued() {
+    let temp = work_dir();
+    let work = temp.path().join(".work");
+    let worker = live_session(&work, stage_session());
+    stage_in(&work, StageStatus::WaitingForDeps, None);
+
+    let mut orchestrator = orchestrator_for(&work, temp.path());
+    orchestrator.start_stage("alpha").unwrap();
+
+    let after = load_stage("alpha", &work).unwrap();
+    assert_eq!(after.status, StageStatus::Executing);
+    assert_eq!(after.session.as_deref(), Some(worker.id.as_str()));
+    assert_eq!(
+        orchestrator
+            .active_sessions
+            .get("alpha")
+            .map(|s| s.id.as_str()),
+        Some(worker.id.as_str())
+    );
 }

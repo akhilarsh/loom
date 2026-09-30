@@ -1,8 +1,8 @@
-//! Live-session adoption at stage spawn time.
+//! Live-session adoption at stage spawn time, and the graph resync for a
+//! stage the executor must not start.
 //!
-//! Split out of `session_lifecycle.rs` to keep that file under the
-//! maintainability limit. Adoption is now typed and escalates to `Blocked`
-//! on a tracked-incumbent conflict instead of silently picking a session.
+//! Adoption walks only a `Queued` stage to `Executing`, and escalates to
+//! `Blocked` on a tracked-incumbent conflict rather than picking a session.
 
 use anyhow::Result;
 use chrono::Utc;
@@ -15,6 +15,33 @@ use super::persistence::Persistence;
 use super::Orchestrator;
 
 impl Orchestrator {
+    /// Bring the graph node of a stage the executor was handed as `Queued`
+    /// in line with a stage file that says otherwise.
+    ///
+    /// The file is the authority: a stage whose file has moved on (to a
+    /// dispute, a review, a handoff, a failure) since the last sync was put
+    /// there on purpose, and starting it would walk it back out of that
+    /// status — adoption re-linking a live agent, or a spawn putting a second
+    /// one in the worktree. Resyncing the node takes it out of
+    /// `ready_stages`, so the executor stops being handed it.
+    pub(super) fn sync_unstartable_node(&mut self, stage_id: &str, status: &StageStatus) {
+        let synced = match status {
+            StageStatus::Executing => self.graph.mark_executing(stage_id),
+            StageStatus::Completed => self.graph.mark_completed(stage_id).map(|_| ()),
+            // A synchronisation, not a transition: `mark_status` would warn
+            // that most of these are unreachable from `Queued`.
+            other => self.graph.force_status(stage_id, other.clone()),
+        };
+        if let Err(error) = synced {
+            tracing::warn!(
+                stage_id = %stage_id,
+                disk_status = %status,
+                %error,
+                "Failed to sync the graph node of a stage whose file is not startable"
+            );
+        }
+    }
+
     /// Refuse to spawn a second agent over one that is still alive. A daemon
     /// crash can leave a stage `Executing` with a session that is
     /// unreachable (e.g. an orphaned tmux server) but still running; if the
@@ -22,6 +49,10 @@ impl Orchestrator {
     /// walks it back to `Queued`), scheduling it again here would spawn a
     /// duplicate agent into the same worktree alongside the first. Adopt the
     /// live session instead of spawning a duplicate.
+    ///
+    /// Adoption walks only a `Queued` stage to `Executing`; the executor calls
+    /// this only for one (see `start_stage`), and the walk refuses any other
+    /// status under the stage lock.
     ///
     /// Only considers sessions of the stage's own WORKER kind (`Stage` for a
     /// standard stage, `Knowledge` for a knowledge stage, falling back to
@@ -97,9 +128,10 @@ impl Orchestrator {
         eprintln!("{reason}");
     }
 
-    /// Assign `session_id` to the stage and, if it is not already
-    /// `Executing`, walk it there. Returns `false` on failure (already
-    /// logged), in which case the caller must not proceed to tracking.
+    /// Assign `session_id` to the `Queued` stage and walk it to `Executing`.
+    /// Returns `false` on failure (already logged), including a stage whose
+    /// file is no longer `Queued`, in which case the caller must not proceed
+    /// to tracking.
     fn link_adopted_session_to_stage(&mut self, stage_id: &str, session_id: &str) -> bool {
         tracing::warn!(
             stage_id = %stage_id,
@@ -107,11 +139,14 @@ impl Orchestrator {
             "Adopting live session instead of spawning a duplicate agent"
         );
         if let Err(e) = self.update_stage(stage_id, |current| {
+            anyhow::ensure!(
+                current.status == StageStatus::Queued,
+                "stage is {}, not Queued; a live session is adopted only into a queued stage",
+                current.status
+            );
             current.assign_session(session_id.to_string());
-            if current.status != StageStatus::Executing {
-                current.try_mark_executing()?;
-                current.begin_attempt(Utc::now());
-            }
+            current.try_mark_executing()?;
+            current.begin_attempt(Utc::now());
             Ok(())
         }) {
             tracing::error!(
