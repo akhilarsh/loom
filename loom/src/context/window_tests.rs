@@ -221,3 +221,38 @@ fn errors_render_the_exit_message_text() {
         "changed since snapshot: a.rs"
     );
 }
+
+#[test]
+fn a_file_past_the_extraction_cap_is_changed_since_snapshot() {
+    let (temp, graph) = fixture(&[("big.txt", "small\n")]);
+    fs::write(
+        temp.path().join("big.txt"),
+        vec![b'x'; crate::context::source_graph::MAX_EXTRACTED_FILE_BYTES + 1],
+    )
+    .expect("grow file");
+
+    let result = window(&temp, &graph, "big.txt@0-5");
+
+    assert_eq!(
+        result,
+        Err(WindowError::ChangedSinceSnapshot {
+            path: "big.txt".to_string()
+        })
+    );
+}
+
+#[test]
+fn an_unchanged_oversized_file_returns_its_window() {
+    let size = crate::context::source_graph::MAX_EXTRACTED_FILE_BYTES + 1;
+    let mut body = "head\n".to_string();
+    body.push_str(&"x".repeat(size - body.len()));
+    let (temp, graph) = fixture(&[("big.txt", body.as_str())]);
+    assert!(matches!(
+        graph.files["big.txt"].coverage,
+        FileCoverage::Oversized { .. }
+    ));
+
+    let result = window(&temp, &graph, "big.txt@0-4").expect("window");
+
+    assert!(result.text.starts_with("head\n"));
+}

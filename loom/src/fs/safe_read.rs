@@ -7,7 +7,7 @@ use nix::sys::stat::{fstatat, Mode};
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, Metadata};
 use std::io;
-use std::io::{Read, Take};
+use std::io::Read;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -54,30 +54,81 @@ pub fn read_bounded(root: &Path, relative: &Path, max_bytes: usize) -> Result<Ve
     let metadata = regular_file_metadata(&file)
         .with_context(|| format!("Refusing unsafe read of {}", relative.display()))?;
     if metadata.len() > max_bytes as u64 {
-        bail!(
-            "{} exceeds the {} byte verification limit",
-            relative.display(),
-            max_bytes
-        );
+        return Err(OverLimit::new(relative, max_bytes, OverLimitStage::Stat).into());
     }
+    read_capped(file, metadata.len() as usize, relative, max_bytes)
+}
 
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+/// Read `source` to its end, refusing more than `max_bytes`. One byte past
+/// the limit is enough to tell that the file grew after its size was checked.
+fn read_capped(
+    source: impl Read,
+    capacity: usize,
+    relative: &Path,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(capacity);
     let limit = u64::try_from(max_bytes)
         .unwrap_or(u64::MAX)
         .saturating_add(1);
-    let mut reader: Take<File> = file.take(limit);
+    let mut reader = source.take(limit);
     reader
         .read_to_end(&mut bytes)
         .context("Failed to read opened file")?;
     if bytes.len() > max_bytes {
-        bail!(
-            "{} grew beyond the {} byte verification limit while reading",
-            relative.display(),
-            max_bytes
-        );
+        return Err(OverLimit::new(relative, max_bytes, OverLimitStage::Read).into());
     }
     Ok(bytes)
 }
+
+/// When `read_bounded` noticed a file over its limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverLimitStage {
+    /// The size reported by `fstat` already exceeded the limit.
+    Stat,
+    /// The file grew past the limit while it was being read.
+    Read,
+}
+
+/// `read_bounded` refused a file for exceeding its byte limit. Callers that
+/// treat an oversized file as a changed file match it with `downcast_ref`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverLimit {
+    path: String,
+    max_bytes: usize,
+    stage: OverLimitStage,
+}
+
+impl OverLimit {
+    fn new(relative: &Path, max_bytes: usize, stage: OverLimitStage) -> Self {
+        Self {
+            path: relative.display().to_string(),
+            max_bytes,
+            stage,
+        }
+    }
+}
+
+impl std::fmt::Display for OverLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.stage {
+            OverLimitStage::Stat => {
+                write!(
+                    f,
+                    "{} exceeds the {} byte verification limit",
+                    self.path, self.max_bytes
+                )
+            }
+            OverLimitStage::Read => write!(
+                f,
+                "{} grew beyond the {} byte verification limit while reading",
+                self.path, self.max_bytes
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OverLimit {}
 
 /// Read a bounded UTF-8 file beneath `root` without following symlinks.
 pub fn read_to_string_bounded(root: &Path, relative: &Path, max_bytes: usize) -> Result<String> {
@@ -193,6 +244,37 @@ fn entry_kind(listing: &Dir, entry: &Entry) -> Result<EntryKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_over_the_limit_yields_the_typed_error_with_its_wording() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("big"), [b'x'; 8]).unwrap();
+
+        let error = read_bounded(root.path(), Path::new("big"), 4).unwrap_err();
+        let typed = error.downcast_ref::<OverLimit>().expect("typed error");
+        assert_eq!(typed.stage, OverLimitStage::Stat);
+        assert_eq!(
+            error.to_string(),
+            "big exceeds the 4 byte verification limit"
+        );
+    }
+
+    #[test]
+    fn a_file_that_grows_while_reading_yields_the_typed_error() {
+        let error = read_capped(&[b'x'; 8][..], 2, Path::new("grown"), 4).unwrap_err();
+        let typed = error.downcast_ref::<OverLimit>().expect("typed error");
+        assert_eq!(typed.stage, OverLimitStage::Read);
+        assert_eq!(
+            error.to_string(),
+            "grown grew beyond the 4 byte verification limit while reading"
+        );
+    }
+
+    #[test]
+    fn read_capped_returns_a_body_at_exactly_the_limit() {
+        let bytes = read_capped(&[b'x'; 4][..], 4, Path::new("ok"), 4).unwrap();
+        assert_eq!(bytes.len(), 4);
+    }
 
     #[test]
     fn rejects_leaf_symlink() {

@@ -212,6 +212,18 @@ fn a_graph_root_reads_coverage_from_the_graph() {
 }
 
 #[test]
+fn an_empty_graph_falls_back_to_in_memory_extraction() {
+    let temp = repo(&[("a.rs", "pub fn a() {}\n")]);
+    let graph = graph_of(temp.path(), &[]);
+
+    let report = run(&CensusOptions::default(), Some((temp.path(), &graph))).expect("census");
+
+    let root = &report.roots[0];
+    assert_eq!(root.coverage_source, CoverageSource::InMemory);
+    assert_eq!(counts(root.symbol_level()), (1, 14));
+}
+
+#[test]
 fn another_root_is_extracted_in_memory_without_writing() {
     let current = repo(&[("a.rs", "pub fn a() {}\n")]);
     let other = repo(&[("b.rs", "pub fn b() {}\n"), ("c.rs", "pub fn c() {}\n")]);

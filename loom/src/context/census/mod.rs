@@ -39,7 +39,8 @@ pub struct CensusOptions {
 
 /// Census every root in `options`. `current` is the project root and resolved
 /// graph of the checkout `loom map` runs in; a root equal to it is measured
-/// from that graph, any other root by in-memory extraction.
+/// from that graph, any other root (or a current root whose graph holds no
+/// files) by in-memory extraction.
 pub fn run(
     options: &CensusOptions,
     current: Option<(&Path, &ResolvedGraph)>,
@@ -57,7 +58,11 @@ pub fn run(
     for root in roots {
         let graph = current
             .filter(|(project, _)| same_directory(project, root))
-            .map(|(_, graph)| graph);
+            .map(|(_, graph)| graph)
+            // A graph with no files (never built, or unavailable) sees
+            // nothing; reading coverage from it would report every eligible
+            // file as lexical-only.
+            .filter(|graph| !graph.files.is_empty());
         let census = census_root(root, graph, &extractors)
             .with_context(|| format!("census of {} failed", root.display()))?;
         report.totals.merge(&census.totals);

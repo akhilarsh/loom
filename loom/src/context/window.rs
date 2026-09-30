@@ -10,8 +10,8 @@ use std::fmt;
 use std::path::Path;
 
 use crate::context::graph_store::ResolvedGraph;
-use crate::context::source_graph::{body_hash, FileCoverage, Span};
-use crate::fs::safe_read::{is_not_found, read_bounded};
+use crate::context::source_graph::{body_hash, FileCoverage, Span, MAX_EXTRACTED_FILE_BYTES};
+use crate::fs::safe_read::{is_not_found, read_bounded, OverLimit};
 
 /// The whole lines a node or site covers, truncated to the caller's line cap.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,14 +72,20 @@ pub fn read_window(
     max_lines: usize,
 ) -> Result<SourceWindow, WindowError> {
     let target = resolve_target(graph, id).ok_or_else(|| WindowError::UnknownId(id.to_string()))?;
-    let expected = graph
-        .files
-        .get(&target.path)
+    let entry = graph.files.get(&target.path);
+    let expected = entry
         .map(|entry| entry.content_hash.as_str())
         .unwrap_or_default();
-    let bytes = match read_bounded(project_root, Path::new(&target.path), usize::MAX) {
+    // A file past the size it had when indexed has changed, so it is never
+    // read whole.
+    let read = read_bounded(
+        project_root,
+        Path::new(&target.path),
+        read_limit(entry.map(|entry| &entry.coverage)),
+    );
+    let bytes = match read {
         Ok(bytes) => bytes,
-        Err(error) if is_not_found(&error) => {
+        Err(error) if is_not_found(&error) || is_over_limit(&error) => {
             return Err(WindowError::ChangedSinceSnapshot { path: target.path });
         }
         Err(error) => {
@@ -93,6 +99,20 @@ pub fn read_window(
         return Err(WindowError::ChangedSinceSnapshot { path: target.path });
     }
     Ok(slice_lines(target, &bytes, max_lines.max(1)))
+}
+
+/// The most bytes a file may hold and still match its snapshot: the size
+/// recorded for an oversized file, the extraction cap for any other.
+fn read_limit(coverage: Option<&FileCoverage>) -> usize {
+    match coverage {
+        Some(FileCoverage::Oversized { bytes, .. }) => *bytes,
+        _ => MAX_EXTRACTED_FILE_BYTES,
+    }
+}
+
+/// Whether `error` is `read_bounded` refusing a file over its byte limit.
+fn is_over_limit(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<OverLimit>().is_some()
 }
 
 /// Map an id onto a graph file and byte range. A node id wins over a site

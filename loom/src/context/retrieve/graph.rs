@@ -122,27 +122,20 @@ const NEVER_BUILT_REASON: &str = "source graph never built; run loom map to buil
 /// degraded. `spawn_if_needed` never rebuilds from a never-built pack
 /// (`wants_rebuild`), so this banner cannot start a background rebuild.
 ///
-/// Otherwise this is NOT simply `graph.base_revision.is_empty()` — that was
-/// the bug. `GraphStore::resolved` returns `base ∪ overlay`, and an overlay
-/// can still provide the requested checkout view if an older cache lacks the
-/// matching base. Testing `base_revision` alone flagged every such checkout
-/// as degraded forever, which is both a banner nobody can ever clear (a warning that is
-/// always on is a warning nobody reads) and, far more importantly, a live
-/// input to [`crate::commands::hook::reconcile_graph::spawn_if_needed`]: that
-/// function fires a detached full-repository tree-sitter rebuild on `stale OR
-/// degraded`, so this predicate does not merely choose a display string — it
-/// decides whether every single prompt in every checkout with a dirty tree
-/// (i.e. nearly all of them) starts an unbounded background rebuild, throttled
-/// only by the reconcile debounce lock.
-///
-/// The honest test is two-part: a base was found (`base_revision` non-empty —
-/// note this stays true even for a genuinely empty, zero-file base: a
+/// Otherwise the answer is two-part: a base was found (`base_revision`
+/// non-empty, which holds even for a genuinely empty, zero-file base: a
 /// published layer over a project with no matching source files is current,
-/// not degraded), OR the resolved view has ANY content at all (`files`
-/// non-empty — an overlay alone can supply this with no base present). Only
-/// when NEITHER holds — no base was found for this revision AND nothing else
-/// covered for it — is there truly nothing to answer a query with, which is
-/// the one case worth surfacing.
+/// not degraded), OR the resolved view has ANY content (`files` non-empty; an
+/// overlay alone can supply this with no base present). `GraphStore::resolved`
+/// returns `base ∪ overlay`, so `base_revision` alone would flag a checkout
+/// whose overlay answers queries. Only when NEITHER holds is there nothing to
+/// answer a query with, and that is the one case surfaced.
+///
+/// The result feeds [`crate::commands::hook::reconcile_graph::spawn_if_needed`],
+/// which starts a detached full-repository rebuild according to
+/// `wants_rebuild`: a `Stale` graph is rebuilt; a `Current` graph is rebuilt
+/// only when degraded; a `NeverBuilt` or `Unavailable` graph is never rebuilt
+/// by a hook. The rebuild is throttled by the reconcile debounce lock.
 fn degraded_reason(semantic_revision: &str, graph: &ResolvedGraph) -> Option<String> {
     if semantic_revision.is_empty() {
         return graph
