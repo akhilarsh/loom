@@ -111,7 +111,7 @@ impl Site<'_> {
 /// Whether resolution acts on `edge`: an unresolved `Syntax` call, reference
 /// or import that extraction left without candidates. A candidate set found at
 /// extraction is same-file ambiguity, which is final.
-pub(super) fn eligible(edge: &SourceEdge) -> bool {
+pub(crate) fn eligible(edge: &SourceEdge) -> bool {
     edge.provenance == EdgeProvenance::Syntax
         && edge.is_unresolved()
         && edge.candidates.is_empty()
