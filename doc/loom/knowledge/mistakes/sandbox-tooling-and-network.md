@@ -224,3 +224,13 @@ cleanup pass should also check that scope, not just local.
 **Prevention:** reproduce without Claude Code: `bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --unshare-pid unshare -U -r true` must exit 0, and `bwrap ... cat /proc/self/attr/apparmor/current` must not print `unpriv_bwrap`.
 
 **Fix:** host configuration, root required: link `bwrap-userns-restrict` into `/etc/apparmor.d/disable/`, remove it with `apparmor_parser -R`, then reload the unconfined `bwrap` profile with `apparmor_parser -r /etc/apparmor.d/bwrap`. Loom has no preflight for this yet.
+
+## Nested subprocess timing can crash Loom in the sandbox
+
+**What happened:** A Python subprocess benchmark of loom map exited with SIGABRT and no result, while direct loom map succeeded.
+
+**Why:** The wait-timeout child-process handler panicked on an EPERM write to its signal pipe in the nested sandbox process.
+
+**Prevention:** Run CLI comparisons directly through the command tool and inspect stderr before treating a nonzero exit as a retrieval failure or timing result.
+
+**Fix:** Discard the nested benchmark and use direct commands only if timing is needed.

@@ -10,6 +10,8 @@
 
 **Prevention:** a test asserting "released" against a flock cannot assume the next probe observes it. Poll to a deadline instead of probing once, and report the last observed state (`held` vs `indeterminate`) in the failure message so the next failure is diagnosable. More generally, treat single-probe assertions about process-global OS state as flaky-by-construction in a multithreaded test binary that also spawns processes.
 
+**Second instance:** `run_lock_is_exclusive_until_dropped` failed the v1.0.2 release run. Re-acquiring the bootstrap run lock right after `drop` returned "already running", because `fs2` locks with `flock`. Fix: `loom/src/commands/knowledge/bootstrap/tests.rs` polls the final acquire for up to 5 s.
+
 **Note for production:** the same window applies to the daemon singleton lock. A child forked during the microseconds `orchestrator.lock` is open can hold it past daemon exit until that child execs, so an immediate restart could briefly see "another daemon instance holds the singleton lock". Not observed in practice; recorded so the symptom is recognisable.
 
 ## A Non-Serial Test Read an Env Var a `#[serial]` Sibling Mutates (2026-09-03)

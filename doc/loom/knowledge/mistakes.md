@@ -245,9 +245,6 @@ Lint and test-discipline lessons spanning `--all-targets`, `--no-fail-fast`, amb
 
 Twelve prevention rules from the verification-v2 plan: wave-brief ownership gaps, truncated caller searches, worker sizing and `loom subagents watch` traps, rustfmt-before-measure, the pre-commit rustdoc gate, the silent markdown lint, unregistered hook tests, commit mechanics, gates on the wrong record, unverified reviews, fixtures that cannot fail. → [verification-v2-delivery](mistakes/verification-v2-delivery.md)
 
-## flock test flaked under a forking test binary
+## An flock Outlives `drop` Under a Forking Test Binary
 
-**What happened:** `run_lock_is_exclusive_until_dropped` failed the v1.0.2 release run: re-acquiring the bootstrap run lock right after `drop` returned "already running".
-**Why:** `fs2` locks with `flock`, owned by the open file description. A child forked by another test thread while the lock file is open holds a duplicate fd until exec, so the lock outlives `drop` briefly.
-**Prevention:** A test that asserts an `flock` is free after drop retries with a deadline; never assume release at drop inside the multithreaded test binary.
-**Fix:** `loom/src/commands/knowledge/bootstrap/tests.rs` polls the final acquire for up to 5 s.
+A test asserting an `flock` is free right after `drop` must poll to a deadline. A child forked by another test thread holds the descriptor until exec. → [Test Concurrency & Fixtures](mistakes/test-concurrency-and-fixtures.md)

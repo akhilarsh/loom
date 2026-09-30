@@ -46,8 +46,14 @@ and states plainly which channel is wired. Then the file for what you touch:
 `loom map` is five read-only view flags and nothing else: `--outline <PATH>`,
 `--find-all <SYMBOL>`, `--impact <SYMBOL_OR_PATH>`, `--callers <SYMBOL>`, `--callees <SYMBOL>`
 (`MapArgs`, `commands/map.rs`), plus the shared modifiers `--depth`, `--kinds`, `--limit`,
-`--path`, `--min-confidence`, `--json`. At least one view is required; no mode writes
-Markdown. The earlier "three flags" claim here predates `--callers`/`--callees`. `--deep`
-and `--focus` are gone, along with `map/{analyzer,detectors,knowledge_sync}.rs`. Note
-that the GLOBAL agent doctrine file still documents `loom map [--deep] [--focus <area>]`
-— that text is stale against this repo.
+`--path`, `--min-confidence`, `--json`. At least one view is required, and no mode writes
+Markdown.
+
+- `--callers`/`--callees` return direct, one-hop neighbours over
+  calls/references/implements/extends edges (`resolve/neighbors.rs`), even though their
+  help text says "direct and transitive".
+- `--impact` is the only multi-hop traversal.
+- The CLI's `--kinds` default is all six edge kinds, while the library's
+  `ImpactOptions::default` uses the four semantic kinds.
+- The agent doctrine templates at the repository root, and
+  `loom-hooks/codex-forward.sh`, name `--outline`, `--find-all` and `--impact` only.

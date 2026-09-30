@@ -12,7 +12,7 @@
 | [entry-points.md](entry-points.md) | Key files agents should read first | 245 |
 | [patterns.md](patterns.md) | Architectural patterns discovered in the codebase | 186 |
 | [conventions.md](conventions.md) | Coding conventions discovered in the codebase | 243 |
-| [mistakes.md](mistakes.md) | Mistakes made and lessons learned - what to avoid | 253 |
+| [mistakes.md](mistakes.md) | Mistakes made and lessons learned - what to avoid | 250 |
 | [stack.md](stack.md) | Dependencies, frameworks, and tooling used in the project | 119 |
 | [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 250 |
 
@@ -48,7 +48,7 @@
 | [security-and-isolation](architecture/security-and-isolation.md) | 4-layer worktree defense, security model | 193 |
 | [signal-generation](architecture/signal-generation.md) | Signal assembly: cache, append helpers, prefixes | 202 |
 | [skill-catalog](architecture/skill-catalog.md) | The two skill roots; 63 catalogued skills | 148 |
-| [source-graph](architecture/source-graph.md) | Source graph honesty contract, extractor, limits | 333 |
+| [source-graph](architecture/source-graph.md) | Source graph honesty contract, extractor, limits | 330 |
 | [status-data-model](architecture/status-data-model.md) | Where each loom status field comes from | 196 |
 | [terminal-backends](architecture/terminal-backends.md) | Native and tmux session backends, lane resolution | 285 |
 | [test-runner-adapters](architecture/test-runner-adapters.md) | 23 adapters, profiles, quoting, detect | 49 |
@@ -62,7 +62,7 @@
 | Topic | Blurb | Lines |
 | --- | --- | --- |
 | [cli-and-plan-pipeline](entry-points/cli-and-plan-pipeline.md) | CLI dispatch, plan parse/validate/graph, verification | 192 |
-| [context-and-source-graph](entry-points/context-and-source-graph.md) | Context retrieval pipeline, source-graph channel | 53 |
+| [context-and-source-graph](entry-points/context-and-source-graph.md) | Context retrieval pipeline, source-graph channel | 59 |
 | [filesystem-and-integration-modules](entry-points/filesystem-and-integration-modules.md) | Git, fs/work_dir, handoff, sandbox, remote control | 121 |
 | [hooks](entry-points/hooks.md) | Hook scripts, their events, command matching | 146 |
 | [orchestrator-daemon-and-sessions](entry-points/orchestrator-daemon-and-sessions.md) | Orchestrator loop, daemon, monitor, signals, merges | 224 |
@@ -105,7 +105,7 @@
 | [briefs-and-bug-reports](mistakes/briefs-and-bug-reports.md) | Stage bug reports; guard flags in briefs | 105 |
 | [ci-toolchain-and-cargo](mistakes/ci-toolchain-and-cargo.md) | CI clippy drift, offline cargo audit, install.sh | 182 |
 | [codex-lane-rogue-wrapper](mistakes/codex-lane-rogue-wrapper.md) | A wrapper implemented instead of forwarding | 157 |
-| [codex-navigation](mistakes/codex-navigation.md) | Forbidding reads instead of fixing a slow reader | 32 |
+| [codex-navigation](mistakes/codex-navigation.md) | Forbidding reads instead of fixing a slow reader | 52 |
 | [codex-worker-briefing](mistakes/codex-worker-briefing.md) | Codex brief pitfalls: braces, placeholders, path reuse | 70 |
 | [completion-broker-credential](mistakes/completion-broker-credential.md) | Completion broker fallback, dup naming, exit-0 | 179 |
 | [computed-values-and-hidden-couplings](mistakes/computed-values-and-hidden-couplings.md) | Values computed right but unread downstream | 215 |
@@ -129,7 +129,7 @@
 | [sandbox-and-settings](mistakes/sandbox-and-settings.md) | Sandbox path rules, permission sync, merge traps | 293 |
 | [sandbox-protected-hooks-dir](mistakes/sandbox-protected-hooks-dir.md) | A directory named hooks/ is sandbox write-protected. | 37 |
 | [sandbox-state-channels](mistakes/sandbox-state-channels.md) | Sandboxed callers vs .loom/work state | 288 |
-| [sandbox-tooling-and-network](mistakes/sandbox-tooling-and-network.md) | Stage-sandbox tool failures: sccache, audit, loopback | 226 |
+| [sandbox-tooling-and-network](mistakes/sandbox-tooling-and-network.md) | Stage-sandbox tool failures: sccache, audit, loopback | 236 |
 | [sandbox-write-rules-inert](mistakes/sandbox-write-rules-inert.md) | Only Edit(path) rules are enforced | 57 |
 | [schema-reuse-and-silent-skips](mistakes/schema-reuse-and-silent-skips.md) | deny_unknown_fields with two deserialization sources | 130 |
 | [session-identity-env](mistakes/session-identity-env.md) | LOOM_* wrapper exports contract | 104 |
@@ -141,14 +141,14 @@
 | [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, file ownership | 285 |
 | [subagent-liveness-and-watch](mistakes/subagent-liveness-and-watch.md) | Subagent alive/done/dead detection; watch traps | 321 |
 | [subagent-orchestration](mistakes/subagent-orchestration.md) | Delegation model, defect reports, gotchas | 110 |
-| [test-concurrency-and-fixtures](mistakes/test-concurrency-and-fixtures.md) | Racy tests: fds, ETXTBSY, serial env, stdin hangs | 208 |
+| [test-concurrency-and-fixtures](mistakes/test-concurrency-and-fixtures.md) | Racy tests: fds, ETXTBSY, serial env, stdin hangs | 210 |
 | [testing-and-lint](mistakes/testing-and-lint.md) | Lint/test discipline: --all-targets, --no-fail-fast | 324 |
 | [tests-that-cannot-fail](mistakes/tests-that-cannot-fail.md) | Tests that pass whether the bug is present | 274 |
 | [tmux-backend](mistakes/tmux-backend.md) | tmux spawn-failure exits, cleanup-on-error | 136 |
 | [typed-config-values-process](mistakes/typed-config-values-process.md) | Verification-brief, dev-server, plan-prose gotchas | 43 |
 | [untrusted-value-boundaries](mistakes/untrusted-value-boundaries.md) | Enumerate every producer of a rendered field | 188 |
 | [verification-harness](mistakes/verification-harness.md) | When checks fail at once, suspect the harness | 369 |
-| [verification-v2-delivery](mistakes/verification-v2-delivery.md) | Wave, gate and proof misses in v2 | 172 |
+| [verification-v2-delivery](mistakes/verification-v2-delivery.md) | Wave, gate and proof misses in v2 | 192 |
 | [visibility-and-reachability](mistakes/visibility-and-reachability.md) | pub(crate) visibility is capped by path | 123 |
 | [web-dashboard-server](mistakes/web-dashboard-server.md) | Dashboard server: concurrency, security, tests | 316 |
 | [writer-reader-address](mistakes/writer-reader-address.md) | A layer written under a key its reader ignores | 73 |
@@ -158,7 +158,7 @@
 | Topic | Blurb | Lines |
 | --- | --- | --- |
 | [agent-rule-bending-hardening](concerns/agent-rule-bending-hardening.md) | Checks an agent can bend, and the hardening backlog | 213 |
-| [automatic-knowledge-source-graph-followups](concerns/automatic-knowledge-source-graph-followups.md) | Knowledge-plan followups: retrieval gap, stopwording | 84 |
+| [automatic-knowledge-source-graph-followups](concerns/automatic-knowledge-source-graph-followups.md) | Knowledge-plan followups: retrieval gap, stopwording | 89 |
 | [code-quality-and-hook-debt](concerns/code-quality-and-hook-debt.md) | Oversized units, duplicated tables, hook debt | 195 |
 | [codex-heartbeat-starvation](concerns/codex-heartbeat-starvation.md) | Heartbeat starvation from long codex runs | 73 |
 | [iterm2-window-teardown](concerns/iterm2-window-teardown.md) | iTerm2 window never named, so teardown cannot close it | 48 |
@@ -169,5 +169,5 @@
 | [state-confinement-gaps](concerns/state-confinement-gaps.md) | Shared package-manager caches stay session-writable. | 9 |
 | [token-accounting-and-proof-defects](concerns/token-accounting-and-proof-defects.md) | Token-optimization and efficiency follow-ups | 92 |
 | [typed-config-values](concerns/typed-config-values.md) | Accepted gaps in the config read-path | 27 |
-| [verification-v2-followups](concerns/verification-v2-followups.md) | Nine doc-derived adapters, parser gaps, v2 known gaps | 67 |
-| [web-dashboard-latent-issues](concerns/web-dashboard-latent-issues.md) | Latent issues found in commands/status/web/ | 88 |
+| [verification-v2-followups](concerns/verification-v2-followups.md) | Nine doc-derived adapters, parser gaps, v2 known gaps | 72 |
+| [web-dashboard-latent-issues](concerns/web-dashboard-latent-issues.md) | Latent issues found in commands/status/web/ | 94 |

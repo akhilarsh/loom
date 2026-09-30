@@ -19,12 +19,11 @@ plus edges between them. It has **two** production consumers, and both are live:
 | `loom map` (`--outline`, `--find-all`, `--impact`) | `context::graph_store` | the resolved layer, rendered as read-only views |
 | the `Source` retrieval channel | `context::rank_source` → `fuse` → `pack` | symbol nodes, scored and fused with knowledge chunks into one `ContextPack` |
 
-The second consumer is new. Before it existed the graph was built, persisted and
-given a CLI while `Channel::Source` was ranked over nothing at all — the failure
-class is in `mistakes/store-without-consumer.md`, and the ranking design that
-closed it is in `architecture/context-retrieval.md`.
+The ranking design behind the second consumer is in
+`architecture/context-retrieval.md`. The failure class it closed, a store nothing
+reads, is in `mistakes/store-without-consumer.md`.
 
-Nobody builds this graph by hand any more either. `loom init` and `loom run`
+Nobody builds this graph by hand. `loom init` and `loom run`
 publish a base layer through `advisory_source_graph_preflight`, and every stage's
 overlay is reconciled just before its signal is written — see *Lifecycle* below.
 
@@ -114,9 +113,8 @@ genuinely disjoint and parallelizable.
   Foo` and a `const Foo`. Keying on scope alone let an implementation node
   silently shadow the type it implements, collapsing two distinct nodes into one
   and making their `Contains` edges indistinguishable, so a traversal could not
-  tell which parent a method belonged to. The id was scope-only when first
-  written and the collision was caught inside the same stage; the docstring now
-  carries the reasoning so it is not "simplified" back.
+  tell which parent a method belonged to. The `node_id` docstring carries this
+  reasoning so the kind is not dropped from the id.
 - `SourceNodeKind`: `File`, `Function`, `Type`, `Interface`, `Module`,
   `Constant`, `Implementation`. `SourceEdgeKind`: `Contains`, `Imports`, `Calls`,
   `References`, `Implements`, `Extends`. Both have `as_str()` giving the stable
@@ -198,8 +196,7 @@ drives the same builder.
   - `SourceGraphScope::Base { revision }` lists **committed** content
     (`git ls-tree -r -z HEAD`), and `build_layer` reads a dirty path's bytes with
     `git show HEAD:<path>` rather than from disk. A base therefore always describes
-    committed `HEAD` and can be published from a dirty checkout; the earlier rule
-    that a dirty tree refused a base publish is gone.
+    committed `HEAD` and can be published from a dirty checkout.
   - `SourceGraphScope::Overlay { plan, stage }` lists the index
     (`git ls-files -s -z`) plus **untracked** files
     (`git ls-files --others --exclude-standard -z`, existing and not excluded), and
@@ -230,8 +227,8 @@ drives the same builder.
   advisory line.
 - `EXCLUDED_ROOTS` = `.loom`, `.work`, `.worktrees`, `target`, `node_modules`, `.git`
   (`refresh/source_graph.rs`), matched against the FIRST path segment only, applied to
-  enumerated, untracked and dirty paths alike. (An earlier version of this entry listed a
-  compound `.loom/work`; the list has two separate top-level entries, `.loom` and `.work`.)
+  enumerated, untracked and dirty paths alike. `.loom` and `.work` are two separate
+  top-level entries; there is no compound `.loom/work` entry.
 - `context` reaches `git` only through `git::runner::run_git_checked`, from
   `enumerate.rs`, `generation.rs` and `layer.rs` under `refresh/source_graph/`. That
   is a deliberate downward edge, not a layering violation.
@@ -294,16 +291,13 @@ every surface prints.
 `advisory_source_graph_preflight(repo_root, work_dir)` (`commands/run/checks.rs`)
 never returns a `Result`, so it cannot bail startup: it prints the `describe()` line
 unless the base was simply reused, and one `source graph: unavailable (...)` line on
-error. It is modelled on `advisory_codex_lane_preflight`. The `publish_source_graph`
-helper and the `allow_overlay_fallback` parameter an earlier version of this section
-described no longer exist.
+error. It is modelled on `advisory_codex_lane_preflight`.
 
-**Ordering in `loom run`.** The preflight now runs AFTER
-`plan_inputs::mark_plan_in_progress`, which commits the plan-file rename, so the
-base is published against the committed `IN_PROGRESS-` filename and the revision
-stages inherit. The earlier rule — preflight first, because the rename dirtied the
-tree and a dirty tree refused a base publish — no longer applies, since bases are
-built from committed content.
+**Ordering in `loom run`.** The preflight runs AFTER
+`plan_inputs::mark_plan_in_progress`, which commits the plan-file rename. The base is
+therefore published against the committed `IN_PROGRESS-` filename and the revision
+stages inherit. A dirty tree does not block this, because bases are built from
+committed content.
 
 **Recovery signals need their own call.** Signal bytes are embedded once at write
 time and `start_stage` later re-uses them verbatim from disk, so a crash/hang retry
@@ -312,22 +306,25 @@ that did not reconcile first would hand the agent a stale overlay (`skip_retry.r
 repo with no worktree, and `reconcile_overlay` returns early when the stage has no
 worktree directory.
 
-## Stage Worktree Cache Is Read-Only — `ensure_snapshot` Needs a Host-Published Base (2026-09-10)
+## Stage Worktree Cache Is Read-Only: In-Memory Fallback
 
 Inside a sandboxed stage worktree the shared context cache (`<main>/.loom/cache/context-v1`)
-is read-only to the stage session. Earlier this made `ensure_snapshot` degrade the whole
-snapshot to `SnapshotAction::Unavailable` on a denied write; that is no longer true.
-`GraphStore::fall_back_to_memory` (`loom/src/context/graph_store/fallback.rs`, since
-`8d39ddcc`) treats a permission-denied or read-only-filesystem write as this call's success:
-the freshly built layer is kept in `GraphStore.memory_fallback` for the rest of the process,
-and `GraphStore::read_layer_or_memory` prefers it over disk. `publish_base` and
-`write_overlay` (`graph_store/mod.rs`) route their write failures through it, so
-`reconcile_with_working_tree` still returns a normal `Built`/`Reused` outcome — a stage
-session's `loom map`/`loom knowledge context` answer with the full graph even when the host
-never published a base for the worktree's `HEAD`, just without persisting it to disk; the
-next process starts over. Only a genuine bug (malformed path, serialization failure) still
-propagates and produces the "DEGRADED: source graph base ... missing" state.
+is read-only to the stage session.
 
-A from-scratch base build of this repo (1681 files parsed; 15063 nodes, 72540 edges as of
-2026-09-10) took ~35s — comfortably over the 15s `GIT_READ_TIMEOUT` for a single git call, but
-that bound is per git invocation, not per refresh, so a cold build still completes.
+`GraphStore::fall_back_to_memory` (`loom/src/context/graph_store/fallback.rs`) treats a
+permission-denied or read-only-filesystem write as this call's success:
+
+- The freshly built layer is kept in `GraphStore.memory_fallback` for the rest of the process,
+  and `GraphStore::read_layer_or_memory` prefers it over disk.
+- `publish_base` and `write_overlay` (`graph_store/mod.rs`) route their write failures through
+  it, so `reconcile_with_working_tree` still returns a normal `Built`/`Reused` outcome.
+- As a result, a stage session's `loom map` and `loom knowledge context` answer with the full
+  graph even when the host never published a base for the worktree's `HEAD`. The graph is not
+  persisted, so the next process starts over.
+- Only a genuine bug (malformed path, serialization failure) propagates and produces the
+  "DEGRADED: source graph base ... missing" state.
+
+A from-scratch base build of this repository is a cold parse of every tracked file. The
+`loom map --impact` footer at `67e442d5` reported 3447 files, 25198 nodes and 117583 edges. That
+build takes tens of seconds, well over the 15 s `GIT_READ_TIMEOUT`. The timeout bounds each git
+invocation, not the refresh, so a cold build still completes.

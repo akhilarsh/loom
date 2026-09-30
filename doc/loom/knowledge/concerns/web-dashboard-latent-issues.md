@@ -86,3 +86,9 @@ eager vendor chunk (850 kB) in the probe, and manual vendor splits can produce c
 (TDZ) failures that only show at runtime. Since nothing in this repo executes the built bundle
 in a browser (gap 2 above), the split could not be verified and was not attempted. Whoever
 closes gap 2 should revisit this probe.
+
+## Merge-Conflict Stages Never Reach the Conflicts Counter
+
+`build_merge_report` (`git/merge/status.rs:163-166`) skips every stage whose status is not `Completed`, so a stage sitting in `MergeConflict` is never counted: `merge.conflicts` (a `string[]` of stage ids in `web/src/api/schema.ts`) stays empty, and the dashboard header's ⚡ conflicts cell reads 0 while the graph shows the stage in Conflict and the attention panel lists a MERGE CONFLICT entry. The cell only counts a `Completed` stage whose `merge_conflict` flag is still set.
+
+A conflicted stage's card footer also repeats the word ("conflict conflict"): `stage-node.tsx`'s Footer prints `activityText(stage)` then `mergeText(stage)`, and for status merge-conflict both return the fixed text "conflict" (`web/src/lib/format.ts` `baseActivity` :169-170 and `mergeText` :295-296). No server value avoids it; only `held` or `outgoing_session_exit_reason` change the line, and both would misstate the stage.

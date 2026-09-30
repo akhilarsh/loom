@@ -46,34 +46,31 @@ pending-knowledge document, and `../mistakes/sandbox-write-rules-inert.md` for t
 `Write(.loom/work/**)` / `Bash(loom *)` rules that read like a blanket grant but have no real
 consumers, and `Write(path)` rules are inert anyway. A documented fossil.
 
-## Retrieval Cannot Distinguish 'No Source Graph' From 'Healthy' (2026-09-01)
+## A Never-Built Source Graph Reads as Stale
 
-`degraded_reason` (`context/retrieve/graph.rs:116-124`) returns `None` when
-`semantic_revision` is empty — the never-built case — which is the same value it returns for a
-healthy graph. In a checkout with no `.loom/work/` (so no context store, so no graph), the Knowledge
-Brief therefore prints `Structural: current` with no `DEGRADED` marker while serving
-knowledge-only results.
+`Freshness::never_built` (`context/freshness.rs`) sets `revision` to the empty string and
+`stale: true`. The Knowledge Brief header (`orchestrator/signals/format/brief.rs::freshness_word`)
+therefore prints `Semantic: stale` for a graph that was never built, the same word it prints for a
+graph whose `HEAD` moved. `loom knowledge context` adds the detail
+(`stale (source graph not built; …)`); the prompt-hook brief prints only the word.
+`degraded_reason` (`context/retrieve/graph.rs:143-151`) returns `None` for the never-built case,
+so no `DEGRADED:` banner appears either.
 
-Observed 2026-09-01 in the loom repo itself: the hook was given the query _how does
-`ensure_work_symlink` plant the worktree symlink and what calls it_ — written to need the source
-lane — and returned five knowledge chunks, 130 omitted, and zero `Channel::Source` items, with a
-clean status line. `loom map --outline/--find-all/--impact` all failed with
-`.work directory does not exist` at the same time.
+`loom map` itself works in a checkout that never ran `loom init`: `WorkDir::new` falls back to
+`.loom/work`, and `refresh/tests_snapshot.rs::map_answers_in_a_checkout_that_never_ran_init`
+pins it.
 
-This is the shape recorded in [visibility-and-reachability.md](../mistakes/visibility-and-reachability.md):
-an `Option` that is `None` for two reasons cannot gate a claim about either.
+The rebuild trigger already fires on this state. `commands::hook::reconcile_graph::spawn_if_needed`
+spawns on `stale || degraded`, so a never-built graph starts a detached full-repository build. The
+spawn happens at most once per `reconcile_debounce_secs` (600 s) when `.loom/cache/context-v1`
+exists or `LOOM_WORK_DIR` is set. While the build keeps failing it retries at that fixed interval,
+with no backoff.
 
-**Deliberately NOT fixed on the spot.** The doc comment at `graph.rs:96-115` shows the predicate
-was tuned carefully: it is a live input to
-`commands::hook::reconcile_graph::spawn_if_needed`, which fires a detached full-repository
-tree-sitter rebuild on `stale OR degraded`. Widening it to report the never-built case as degraded
-would make every prompt in an uninitialised checkout start an unbounded background rebuild,
-throttled only by the reconcile debounce lock — the exact failure the current shape exists to
-avoid.
-
-**Fix shape if taken up:** carry the never-built case as its OWN field rather than folding it into
-`degraded`, so the status line can say it without feeding the rebuild trigger. Resolve the question
-at its own source, and default in the fail-safe direction (do not claim currency).
+This is the shape recorded in
+[visibility-and-reachability.md](../mistakes/visibility-and-reachability.md): one value that means
+two things cannot gate a claim about either. Stage `map-api-freshness` of
+`doc/plans/PLAN-source-graph-mechanism.md` makes `current | stale | never built | unavailable`
+explicit and stops the prompt hook from rebuilding a never-built graph.
 
 ## Stopwording drops the words a natural-language source-graph question is asked in (2026-09-06)
 
@@ -82,3 +79,11 @@ at its own source, and default in the fail-safe direction (do not claim currency
 **Why it matters:** the knowledge-first doctrine now tells every session to pull a question instead of reading; a pull that misses on the project's own vocabulary sends the reader back to paging files.
 
 **Where to look:** `context/rank/corpus/stopwords.rs` (the corpus-derived stopword threshold and its rescue floor, described in `architecture/context-retrieval-corpus.md#corpus-derived-query-stopwording-with-a-rescue-floor`), and `loom/eval/retrieval-cases.yaml`, which has no natural-language lifecycle case. A first step is adding that case so the gap is measured before the threshold is tuned.
+
+## An Unparseable Base Layer Wedges the Graph Cache
+
+`read_layer` (`context/graph_store/mod.rs`) returns `Err` when a layer file fails to deserialize. `ensure_base` (`context/refresh/snapshot.rs`) calls `load_base(..)?` before its `layer_is_current` check and its delete, so a corrupt base for `HEAD` never reaches the rebuild. The snapshot reports `Unavailable` and marks the semantic layer stale. `resolve_scope_layers` uses `load_newest_base()?`, so an unparseable newest base also blocks building any other base until it is pruned or removed by hand. Retrieval (`context/retrieve/graph.rs::load_resolved_graph`) degrades to an empty graph with no banner, and `build_worktree_graph` (`context/worktree_graph.rs`) propagates the error into `reachable` checks and impact-selected tests. No test covers a stored layer that fails to deserialize. The graph layer has no schema version: the only versioning is the per-node `parser_version`. Stage `graph-contract` of `doc/plans/PLAN-source-graph-mechanism.md` adds `GRAPH_SCHEMA_VERSION` and treats a corrupt layer as absent.
+
+## Worktree Graphs Trust Stale Extractor Output
+
+`build_worktree_graph` (`context/worktree_graph.rs`) loads the nearest published base and re-extracts only the files changed in the worktree. It never compares a base entry's `parser_version` with the current extractor identity. A base written by an older extractor therefore serves old-shape entries for every unchanged file, mixed with new-shape entries for the changed ones, in `reachable` checks and impact-selected tests. Stage `graph-contract` of `doc/plans/PLAN-source-graph-mechanism.md` re-extracts mismatched entries.

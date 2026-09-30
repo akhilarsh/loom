@@ -56,6 +56,11 @@ Open parser and command gaps found while writing the language skills, checked ag
 - **Impact selection misses macro-only use** (`context/extract/rust.rs:19`) and skips every test in a contract file.
 - **Reachable by bare name** passes when any symbol of that name is reached from any `from` node; common names (`run`,
   `handle`) can false-pass. `Partial` coverage counts as checked in definition-site exclusion.
+- **`loom plan verify` does not check where contracts run.** A stage with `contracts` whose `working_dir` has no manifest
+  for the contract's adapter (`Cargo.toml` for cargo) verifies clean, although every contract command then exits
+  non-zero: `cargo test <name> -- --exact` takes no manifest path. See
+  [verification-v2-delivery.md](../mistakes/verification-v2-delivery.md). A preflight check could resolve each
+  contract's adapter and require its manifest in `working_dir`.
 - **Integrity blind spot.** A file marked skip-worktree or assume-unchanged hides its edits from the `git diff` the
   fingerprint and the count totals trust. `verify::integrity::current_events` has no production caller (kept for the
   pinned dispute-kinds API).

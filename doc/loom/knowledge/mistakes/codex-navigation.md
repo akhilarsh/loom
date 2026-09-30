@@ -30,3 +30,23 @@ A codex worker's `apply_patch` creates a brand-new file as `100664` (not `100755
 file is a script meant to be run directly (e.g. `scripts/test-pre-commit-partial-staging.sh`).
 The orchestrator must `chmod +x` the file before running it or before committing, or the mode
 that lands in the tree is `100644`.
+
+## Evaluating the source graph from one checkout
+
+**What happened:** An answer about whether the source graph mechanism beats agentic rg retrieval began with coverage counts from one loom checkout.
+
+**Why:** Available local telemetry was mistaken for evidence about performance across repositories.
+
+**Prevention:** Separate mechanism-level claims from project-specific measurements; compare both methods on representative tasks across project sizes and languages before claiming a general win.
+
+**Fix:** Treat local coverage and edge counts as an implementation case study and state their scope explicitly.
+
+## A neighbor line is not a call-site line
+
+**What happened:** A source-graph proposal described the current neighbor output as the target declaration line; incoming caller output actually uses the neighboring symbol declaration start.
+
+**Why:** The line field was read from the neighbor node without checking which endpoint each query direction selects.
+
+**Prevention:** For each graph view, trace the displayed line field to its originating span and state whether it names a declaration or a reference site.
+
+**Fix:** Describe the current field as the neighboring declaration line and propose a separate reference-site span.
