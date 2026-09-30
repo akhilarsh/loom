@@ -225,6 +225,24 @@ pub(super) fn begin_run(lock_path: &Path, now: u64, pid: u32) {
     update_lock(lock_path, |state| (Some(held_by(state, now, pid)), ()));
 }
 
+/// Hand the lease [`super::try_claim`] granted `from_pid` at `epoch` to the
+/// spawned reconciler `to_pid`, so a second hook sees a live holder in the
+/// window before the child's own [`begin_run`]. Nothing is written when the
+/// line no longer carries that claim (the child already re-stamped it, or it
+/// moved to another holder).
+pub(super) fn rebind_claim(lock_path: &Path, epoch: u64, from_pid: u32, to_pid: u32) {
+    update_lock(lock_path, |state| match state {
+        Some(held) if held.pid == from_pid && held.epoch == epoch => (
+            Some(LockState {
+                pid: to_pid,
+                ..held
+            }),
+            (),
+        ),
+        _ => (None, ()),
+    });
+}
+
 /// After one pass, under the lock: keep the lease for another pass when a
 /// request queued meanwhile, else release it. The holder keeps its pid through
 /// every pass, so a concurrent [`super::try_claim`] never sees a released lease while
@@ -304,3 +322,7 @@ pub(super) fn unix_now() -> u64 {
 #[cfg(test)]
 #[path = "tests_lock.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests_rebind.rs"]
+mod tests_rebind;

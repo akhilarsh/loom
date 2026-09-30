@@ -45,8 +45,8 @@ use super::target::{non_empty_env, HookTarget};
 mod cancel;
 mod lock;
 use lock::{
-    begin_run, decide, end_pass, held_by, mark_pending, reconcile_lock_path, release_failed,
-    unix_now, update_lock, LockDecision, PassEnd,
+    begin_run, decide, end_pass, held_by, mark_pending, rebind_claim, reconcile_lock_path,
+    release_failed, unix_now, update_lock, LockDecision, PassEnd,
 };
 
 /// The `loom hook reconcile-graph` subcommand body: a best-effort, one-shot
@@ -276,16 +276,22 @@ fn try_spawn(project_root: &Path, now: u64) -> Result<()> {
     })
 }
 
-/// Run `spawn` for a lease `pid` just won. A failed spawn leaves no child to
-/// release it, so the lease is freed here with a failure counted, and the
-/// backoff throttles the next attempt instead of every prompt retrying.
+/// Run `spawn` for a lease `pid` just won at `now`. A failed spawn leaves no
+/// child to release it, so the lease is freed here with a failure counted, and
+/// the backoff throttles the next attempt instead of every prompt retrying. A
+/// spawned child's pid replaces the spawning hook's (which exits right away)
+/// so a second hook sees a live holder until the child re-stamps the lease.
 fn spawn_claimed(
     lock_path: &Path,
     now: u64,
     pid: u32,
-    spawn: impl FnOnce() -> Result<()>,
+    spawn: impl FnOnce() -> Result<Option<u32>>,
 ) -> Result<()> {
-    spawn().inspect_err(|_| release_failed(lock_path, now, pid))
+    let child = spawn().inspect_err(|_| release_failed(lock_path, now, pid))?;
+    if let Some(child_pid) = child {
+        rebind_claim(lock_path, now, pid, child_pid);
+    }
+    Ok(())
 }
 
 /// Set false to suppress every detached spawn for the remainder of this
@@ -338,13 +344,15 @@ pub fn disable_spawn_for_tests() {
 /// its own process group so it survives the hook's exit, and NEVER
 /// awaited — `wait()`/`output()` here would turn a background self-heal into
 /// a foreground stall on the hook's own latency budget.
-fn spawn_detached(project_root: &Path) -> Result<()> {
+///
+/// Returns the child's pid; `None` when the test guard suppressed the spawn.
+fn spawn_detached(project_root: &Path) -> Result<Option<u32>> {
     if !SPAWN_ENABLED.load(Ordering::SeqCst) {
         // See `SPAWN_ENABLED`'s doc: a test build must never create a real,
         // process-group-leading child that survives the test harness.
         #[cfg(test)]
         SUPPRESSED_SPAWNS.fetch_add(1, Ordering::SeqCst);
-        return Ok(());
+        return Ok(None);
     }
 
     let program = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("loom"));
@@ -372,8 +380,7 @@ fn spawn_detached(project_root: &Path) -> Result<()> {
         command.process_group(0);
     }
 
-    command.spawn()?;
-    Ok(())
+    Ok(Some(command.spawn()?.id()))
 }
 
 #[cfg(test)]

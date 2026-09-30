@@ -18,9 +18,14 @@ use super::lock::{read_lock, release_lease};
 const START_SKEW_SECS: u64 = 2;
 
 /// Stop the live holder named by `lock_path`, then record its run as finished
-/// with `failures` unchanged. With no holder recorded this does nothing.
+/// with `failures` unchanged. With no holder recorded, or a recorded holder
+/// that is already dead, this does nothing: the line stays an in-progress
+/// marker with a dead pid, which the next hook takes over at once instead of
+/// waiting out a debounce a fresh release would start.
 pub(super) fn cancel_holder(lock_path: &Path, now: u64) {
-    let Some(holder) = read_lock(lock_path).filter(|state| state.pid != 0) else {
+    let Some(holder) = read_lock(lock_path)
+        .filter(|state| state.pid != 0 && crate::process::is_process_alive(state.pid))
+    else {
         return;
     };
     if is_reconciler(holder.pid, holder.epoch, now) {

@@ -309,6 +309,21 @@ fn cancel_with_no_holder_writes_nothing() {
 }
 
 #[test]
+fn cancel_with_a_dead_holder_leaves_the_lease_for_an_immediate_takeover() {
+    let temp = TempDir::new().unwrap();
+    let lock_path = lock_in(&temp);
+    let now = unix_now();
+    // Above i32::MAX, so `is_process_alive` reports it dead without a process.
+    seed(&lock_path, now, u32::MAX, 1, false);
+
+    cancel::cancel_holder(&lock_path, now);
+
+    assert_eq!(read_lock(&lock_path).unwrap().pid, u32::MAX);
+    let decision = decide(&lock_path, now, 600, 1800, crate::process::is_process_alive);
+    assert_eq!(decision, LockDecision::Spawn);
+}
+
+#[test]
 fn failed_spawn_releases_the_lease_with_a_failure_and_backoff() {
     let temp = TempDir::new().unwrap();
     let lock_path = lock_in(&temp);
@@ -372,7 +387,7 @@ fn successful_spawn_keeps_the_lease_claimed() {
     let me = std::process::id();
     seed(&lock_path, 100, me, 0, false);
 
-    spawn_claimed(&lock_path, 300, me, || Ok(())).unwrap();
+    spawn_claimed(&lock_path, 300, me, || Ok(None)).unwrap();
 
     assert_eq!(read_lock(&lock_path).unwrap().pid, me);
 }
