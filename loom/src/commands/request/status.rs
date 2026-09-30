@@ -16,13 +16,22 @@ pub fn execute(id: String, session: Option<String>) -> Result<()> {
     let session = session.or_else(|| std::env::var("LOOM_SESSION_ID").ok());
     let scratch = std::env::var_os("LOOM_SCRATCH_DIR").map(PathBuf::from);
 
-    let status = resolve_status(work_dir.root(), session.as_deref(), scratch.as_deref(), &id)?;
+    // In a stage worktree `.loom/work` is a symlink to the main repository's
+    // state directory, and the inbox reads refuse to follow symlinks.
+    let root = canonical_root(work_dir.root());
+
+    let status = resolve_status(&root, session.as_deref(), scratch.as_deref(), &id)?;
     let (message, not_found) = format_status(&status);
     println!("{id}: {message}");
     if not_found {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// `root` with symlinks resolved; `root` itself when it cannot be resolved.
+fn canonical_root(root: &Path) -> PathBuf {
+    root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
 }
 
 /// What `loom request status` reports: either a CLI ticket the relay hook
@@ -165,6 +174,26 @@ mod tests {
         let id = new_request_id();
         let status = resolve_status(work_dir.path(), None, None, &id).unwrap();
         assert_eq!(status, ReportedStatus::Inbox(RequestStatus::NotFound));
+    }
+
+    #[test]
+    fn a_work_dir_symlink_resolves_once_canonicalized() {
+        let base = tempfile::tempdir().unwrap();
+        let real = base.path().join("real");
+        let id = new_request_id();
+        let dir = real.join("inbox").join("session-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{id}.json")), b"{}").unwrap();
+        let link_parent = base.path().join("wt").join(".loom");
+        std::fs::create_dir_all(&link_parent).unwrap();
+        let link = link_parent.join("work");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert!(resolve_status(&link, Some("session-1"), None, &id).is_err());
+        assert_eq!(
+            resolve_status(&canonical_root(&link), Some("session-1"), None, &id).unwrap(),
+            ReportedStatus::Inbox(RequestStatus::RelayedAwaitingDaemon)
+        );
     }
 
     #[test]
