@@ -83,11 +83,27 @@ pub trait QueryHarness {
     fn kind_for_capture(&self, suffix: &str) -> Option<SourceNodeKind>;
 
     /// The names one import statement binds. `statement` is the
-    /// `@import.statement` text, `path` the normalized `@import.path` and
-    /// `site` its span. The default binds the whole module under its last
+    /// `@import.statement` text, `path` the module spec (the normalized
+    /// `@import.path` after `import_spec`) and `site` the path's span. The default binds the whole module under its last
     /// path segment.
     fn import_bindings(&self, _statement: &str, path: &str, site: Span) -> Vec<ImportBinding> {
         vec![default_import_binding(path, site)]
+    }
+
+    /// The scope segment a definition's `@name` text stands for. Identity by
+    /// default; a grammar whose name text is not one segment rewrites it (PHP
+    /// `namespace A\B;` is the single segment `A.B`).
+    fn definition_name(&self, name: &str) -> String {
+        name.to_string()
+    }
+
+    /// The module spec of one import: `path` is the normalized `@import.path`
+    /// and `statement` the `@import.statement` text. Identity by default; a
+    /// grammar whose path is not the whole spec completes it (Ruby
+    /// `require_relative 'x'` is `./x`). Bindings and the `Imports` edge both
+    /// carry the result.
+    fn import_spec(&self, _statement: &str, path: &str) -> String {
+        path.to_string()
     }
 
     /// Receiver spellings that mean "the enclosing type". Defaults to the
