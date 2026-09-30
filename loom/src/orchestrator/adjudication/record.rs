@@ -23,19 +23,23 @@
 //!    not end its session;
 //! 2. the stage must be in `NeedsAdjudication`, so a verdict cannot be
 //!    injected against a stage that is executing, completed, or merged;
-//! 3. the dispute's `request.md` must exist, so a verdict cannot invent the
-//!    dispute it answers;
+//! 3. the dispute's `request.md` must exist and the dispute must not be
+//!    closed, so a verdict cannot invent the dispute it answers or revive one
+//!    an escalation abandoned (`closed_disputes.rs`);
 //! 4. `verdict.md` must not exist yet, so a recorded verdict cannot be
 //!    overwritten with a different one before the daemon applies it.
 
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
-use crate::models::dispute::{verdict_file, DisputeKind};
+use crate::models::dispute::{dispute_dir, verdict_file, DisputeKind};
 use crate::models::stage::StageStatus;
 use crate::verify::transitions::{load_stage, update_stage};
 
-use super::{attempt_count, persist_verdict, read_request, resolve_model, verdict};
+use super::{
+    attempt_count, close_open_disputes, is_closed, persist_verdict, read_request, resolve_model,
+    verdict,
+};
 
 /// What recording the verdict did.
 #[derive(Debug, PartialEq, Eq)]
@@ -120,21 +124,25 @@ fn record_validated(
         }
         // Degenerate output (e.g. needs-more-evidence with no questions) would
         // loop the evidence round forever if it were recorded, so the stage
-        // goes to a human instead and no verdict file is written.
+        // goes to a human instead and no verdict file is written. The disputes
+        // it leaves open are closed, as for any escalation.
         verdict::ValidationOutcome::Escalate { reason } => {
-            update_stage(stage_id, work_dir, |s| {
+            let stage = update_stage(stage_id, work_dir, |s| {
                 s.try_request_human_review(reason.clone()).ok();
                 Ok(())
             })
             .context("Failed to escalate the stage after a degenerate verdict")?;
+            if stage.status == StageStatus::NeedsHumanReview {
+                close_open_disputes(work_dir, stage_id);
+            }
             Ok(AdjudicateOutcome::Escalated(reason))
         }
     }
 }
 
-/// Guards 2-4: the stage is under adjudication, the dispute exists, and no
-/// verdict has been recorded for it yet. Returns the dispute's kind, which
-/// decides the verdicts it takes.
+/// Guards 2-4: the stage is under adjudication, the dispute exists and is
+/// open, and no verdict has been recorded for it yet. Returns the dispute's
+/// kind, which decides the verdicts it takes.
 fn ensure_recordable(work_dir: &Path, stage_id: &str, dispute_id: u32) -> Result<DisputeKind> {
     let stage = load_stage(stage_id, work_dir)
         .with_context(|| format!("Failed to load stage '{stage_id}'"))?;
@@ -148,7 +156,14 @@ fn ensure_recordable(work_dir: &Path, stage_id: &str, dispute_id: u32) -> Result
     let request = read_request(work_dir, stage_id, dispute_id).with_context(|| {
         format!("No readable dispute {dispute_id} for stage '{stage_id}' to answer")
     })?;
-    if verdict_file(&work_dir.join("disputes"), stage_id, dispute_id).exists() {
+    let disputes_root = work_dir.join("disputes");
+    if is_closed(&dispute_dir(&disputes_root, stage_id, dispute_id)) {
+        bail!(
+            "Stage '{stage_id}' dispute {dispute_id} was closed when the stage was escalated \
+             to human review; it takes no verdict."
+        );
+    }
+    if verdict_file(&disputes_root, stage_id, dispute_id).exists() {
         bail!(
             "A verdict for stage '{stage_id}' dispute {dispute_id} has already been recorded; \
              it cannot be replaced."

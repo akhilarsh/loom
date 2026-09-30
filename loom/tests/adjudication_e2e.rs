@@ -10,11 +10,8 @@
 
 use loom::commands::stage::{record_verdict, AdjudicateOutcome};
 use loom::models::dispute::{applied_marker, request_file, verdict_file, DisputeRequest};
-use loom::models::session::Session;
 use loom::models::stage::{Stage, StageStatus};
-use loom::orchestrator::adjudication::{
-    feedback, verdict_draft_file, AdjudicatorRegistry, MAX_ADJUDICATION_ATTEMPTS,
-};
+use loom::orchestrator::adjudication::{feedback, verdict_draft_file, AdjudicatorRegistry};
 use loom::plan::schema::AcceptanceCriterion;
 use std::path::{Path, PathBuf};
 
@@ -22,6 +19,8 @@ use std::path::{Path, PathBuf};
 mod amendment;
 #[path = "adjudication_e2e/kinds.rs"]
 mod kinds;
+#[path = "adjudication_e2e/sessions.rs"]
+mod sessions;
 
 fn write_stage(work_dir: &Path, stage: &Stage) {
     std::fs::create_dir_all(work_dir.join("stages")).unwrap();
@@ -218,7 +217,7 @@ fn drive_dispute(
     dispute_id: u32,
     verdict: &serde_json::Value,
 ) {
-    let jobs = reg.disputes_awaiting_session(work).unwrap();
+    let jobs = reg.disputes_awaiting_session(work).unwrap().jobs;
     assert!(
         jobs.iter()
             .any(|job| job.stage.id == stage_id && job.request.id == dispute_id),
@@ -292,7 +291,7 @@ fn accept_verdict_amends_plan_and_clears_feedback() {
     feedback::append_questions(work, "s1", &["stale".to_string()]).unwrap();
 
     let reg = AdjudicatorRegistry::new();
-    assert_eq!(reg.disputes_awaiting_session(work).unwrap().len(), 1);
+    assert_eq!(reg.disputes_awaiting_session(work).unwrap().jobs.len(), 1);
     session_records_verdict(work, "s1", 1, &verdict_accept_with_amendment());
 
     // `apply_pending_verdicts` returns Ok even when individual verdicts
@@ -312,65 +311,6 @@ fn accept_verdict_amends_plan_and_clears_feedback() {
     assert!(
         !applied_marker(&work.join("disputes"), "s1", 1).exists(),
         "applied.marker must not exist when apply_amendment failed",
-    );
-}
-
-/// A session that died without recording anything must be replaced — but only
-/// while the dispute's budget lasts, after which the stage asks for a human
-/// instead of collecting adjudicators forever.
-#[test]
-fn a_dead_session_is_replaced_until_the_budget_runs_out() {
-    let tmp = tempfile::tempdir().unwrap();
-    let work = tmp.path();
-    write_plan(work);
-    write_stage(work, &make_stage("s1"));
-    write_dispute(work, "s1", 1);
-
-    let reg = AdjudicatorRegistry::new();
-    for attempt in 1..=MAX_ADJUDICATION_ATTEMPTS {
-        assert_eq!(
-            reg.disputes_awaiting_session(work).unwrap().len(),
-            1,
-            "attempt {attempt} should still be offered a session",
-        );
-    }
-    assert!(
-        reg.disputes_awaiting_session(work).unwrap().is_empty(),
-        "the budget is spent; no further session may be started",
-    );
-
-    let after = loom::verify::transitions::load_stage("s1", work).unwrap();
-    assert_eq!(after.status, StageStatus::NeedsHumanReview);
-    assert!(!verdict_file(&work.join("disputes"), "s1", 1).exists());
-}
-
-/// Two adjudicators judging the same stage in the same main repository is the
-/// thing the daemon must never do, so a live session suppresses the next offer.
-#[test]
-fn a_live_adjudication_session_blocks_a_second_one() {
-    let tmp = tempfile::tempdir().unwrap();
-    let work = tmp.path();
-    write_plan(work);
-    write_stage(work, &make_stage("s1"));
-    write_dispute(work, "s1", 1);
-
-    // A session record plus PID-identity evidence for a process that really is
-    // alive (this test's own). A PID file with no start-time line reads back as
-    // unverifiable, which every liveness probe treats as alive.
-    let session = Session::new_adjudication("s1");
-    loom::fs::session_files::save_session(&session, work).unwrap();
-    let pids = work.join("pids");
-    std::fs::create_dir_all(&pids).unwrap();
-    std::fs::write(
-        pids.join(format!("{}-{}.pid", session.tracking_key, session.id)),
-        format!("{}\n", std::process::id()),
-    )
-    .unwrap();
-
-    let reg = AdjudicatorRegistry::new();
-    assert!(
-        reg.disputes_awaiting_session(work).unwrap().is_empty(),
-        "a live adjudication session must suppress a second one",
     );
 }
 

@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::language::{detect_project_languages, DetectedLanguage};
 use crate::models::session::Session;
 use crate::models::worktree::Worktree;
-use crate::orchestrator::adjudication::AdjudicatorRegistry;
+use crate::orchestrator::adjudication::{AdjudicatorRegistry, Escalation};
 use crate::orchestrator::monitor::{Monitor, MonitorConfig};
 use crate::plan::schema::SandboxConfig;
 use crate::plan::ExecutionGraph;
@@ -246,24 +246,62 @@ impl Orchestrator {
         self.active_sessions.len()
     }
 
-    /// Poll `.loom/work/disputes/` and start an adjudication session for every
-    /// dispute that needs one. See
+    /// Poll `.loom/work/disputes/`: start an adjudication session for every
+    /// dispute that needs one, and hand to a human every stage a guard
+    /// escalates instead. See
     /// [`AdjudicatorRegistry::start_pending_adjudications`] and
     /// [`AdjudicatorRegistry::disputes_awaiting_session`] for the guards.
     pub(crate) fn check_pending_disputes(&mut self) -> Result<()> {
-        let started = self.adjudicators.start_pending_adjudications(
+        let pass = self.adjudicators.start_pending_adjudications(
             &self.backend,
             &self.config.work_dir,
             &self.config.repo_root,
         )?;
-        for started in started {
+        for started in pass.started {
             clear_status_line();
             eprintln!(
                 "Spawned adjudication session for stage '{}' dispute {}: {}",
                 started.stage_id, started.dispute_id, started.session_id
             );
         }
+        for escalation in pass.escalations {
+            self.escalate_dispute(escalation);
+        }
         Ok(())
+    }
+
+    /// Hand a disputed stage to a human, retiring its disputing agent first.
+    ///
+    /// Filing a dispute does not end the filing agent's session, so the stage
+    /// still names a live, idle agent. It is retired exactly as before a
+    /// verdict applies (handoff written, session killed, `stage.session`
+    /// released) while the stage is still `NeedsAdjudication`, and only then
+    /// is `NeedsHumanReview` written, so approving the review queues the stage
+    /// for a fresh session instead of the executor re-adopting the idle one.
+    /// The escalation is never deferred: an agent that survives the kill, or
+    /// a retirement that fails, is named in the review reason instead, and
+    /// `loom stage human-review --approve` refuses while it is live.
+    fn escalate_dispute(&mut self, escalation: Escalation) {
+        let unretired = match self.retire_disputing_agents(&escalation.stage_id) {
+            Ok(survivors) if survivors.is_empty() => None,
+            Ok(survivors) => Some(format!(
+                "session(s) {} survived the retirement kill",
+                survivors.join(", ")
+            )),
+            Err(error) => Some(format!("its agents could not be retired: {error:#}")),
+        };
+        let escalation = match unretired {
+            Some(detail) => {
+                clear_status_line();
+                eprintln!(
+                    "Escalating stage '{}' with its disputing agent not retired: {detail}",
+                    escalation.stage_id
+                );
+                escalation.with_unretired_agents(&detail)
+            }
+            None => escalation,
+        };
+        escalation.write(&self.config.work_dir);
     }
 }
 

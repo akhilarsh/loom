@@ -9,10 +9,10 @@ use std::path::Path;
 
 use crate::models::dispute::{DisputeRequest, DisputeVerdictRecord};
 
-use super::AdjudicatorRegistry;
+use super::{is_closed, AdjudicatorRegistry};
 
 /// Discover `(stage_id, dispute_id)` pairs that have `request.md` but
-/// no `verdict.md`.
+/// no `verdict.md`, and were not closed.
 pub(super) fn scan_pending_requests(disputes_root: &Path) -> Result<Vec<(String, u32)>> {
     let mut pending = Vec::new();
     if !disputes_root.exists() {
@@ -45,7 +45,7 @@ pub(super) fn scan_pending_requests(disputes_root: &Path) -> Result<Vec<(String,
             };
             let req = inner_path.join("request.md");
             let ver = inner_path.join("verdict.md");
-            if req.exists() && !ver.exists() {
+            if req.exists() && !ver.exists() && !is_closed(&inner_path) {
                 pending.push((stage_id.clone(), dispute_id));
             }
         }
@@ -55,7 +55,7 @@ pub(super) fn scan_pending_requests(disputes_root: &Path) -> Result<Vec<(String,
 }
 
 /// Discover `(stage_id, dispute_id)` pairs that have `verdict.md` but
-/// no `applied.marker`.
+/// no `applied.marker`, and were not closed.
 pub(super) fn scan_pending_verdicts(disputes_root: &Path) -> Result<Vec<(String, u32)>> {
     let mut pending = Vec::new();
     if !disputes_root.exists() {
@@ -88,7 +88,7 @@ pub(super) fn scan_pending_verdicts(disputes_root: &Path) -> Result<Vec<(String,
             };
             let ver = inner_path.join("verdict.md");
             let applied = inner_path.join("applied.marker");
-            if ver.exists() && !applied.exists() {
+            if ver.exists() && !applied.exists() && !is_closed(&inner_path) {
                 pending.push((stage_id.clone(), dispute_id));
             }
         }
@@ -99,7 +99,7 @@ pub(super) fn scan_pending_verdicts(disputes_root: &Path) -> Result<Vec<(String,
 
 impl AdjudicatorRegistry {
     /// `(stage_id, dispute_id)` pairs with a written verdict that hasn't been
-    /// applied yet (no `applied.marker`).
+    /// applied yet (no `applied.marker`) on a dispute that was not closed.
     pub fn pending_verdicts(&self, work_dir: &Path) -> Result<Vec<(String, u32)>> {
         let disputes_root = work_dir.join("disputes");
         if !disputes_root.exists() {
@@ -127,7 +127,7 @@ impl AdjudicatorRegistry {
         .and_then(|record| record.session_id)
     }
 
-    /// How many disputes on `stage_id` still have no verdict on disk.
+    /// How many open disputes on `stage_id` still have no verdict on disk.
     pub fn unanswered_disputes(&self, work_dir: &Path, stage_id: &str) -> Result<usize> {
         Ok(scan_pending_requests(&work_dir.join("disputes"))?
             .into_iter()
@@ -169,7 +169,7 @@ impl AdjudicatorRegistry {
 
 /// The numbered dispute subdirectories under one stage's dispute directory,
 /// walked the same way as [`scan_pending_verdicts`].
-fn dispute_ids(stage_dir: &Path) -> Vec<u32> {
+pub(super) fn dispute_ids(stage_dir: &Path) -> Vec<u32> {
     let Ok(entries) = std::fs::read_dir(stage_dir) else {
         return Vec::new();
     };

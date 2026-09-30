@@ -28,8 +28,12 @@ use crate::verify::transitions::{load_stage, update_stage};
 
 use super::apply_kinds::apply_by_kind;
 use super::plan_patch::build_amendment_request;
+use super::requeue::requeue_or_hold_for_remaining_disputes;
 use super::scan::read_verdict_record;
-use super::{feedback, resolve_plan_path, AdjudicatorRegistry, MAX_EVIDENCE_ROUNDS};
+use super::{
+    close_open_disputes, feedback, is_closed, resolve_plan_path, AdjudicatorRegistry,
+    MAX_EVIDENCE_ROUNDS,
+};
 
 impl AdjudicatorRegistry {
     /// Apply verdict files that haven't been applied yet (no
@@ -75,17 +79,18 @@ impl AdjudicatorRegistry {
         }
     }
 
-    /// One apply attempt. Idempotent under crash recovery: a `.applying`
-    /// marker guards the mutation and is removed once `applied.marker` lands.
+    /// One apply attempt, a no-op on a closed dispute. Idempotent under crash
+    /// recovery: a `.applying` marker guards the mutation until `applied.marker` lands.
     fn apply_verdict_once(&self, work_dir: &Path, stage_id: &str, dispute_id: u32) -> Result<()> {
         let disputes_root = work_dir.join("disputes");
         let verdict_path =
             crate::models::dispute::verdict_file(&disputes_root, stage_id, dispute_id);
         let applied = applied_marker(&disputes_root, stage_id, dispute_id);
-        if applied.exists() {
+        let dir = dispute_dir(&disputes_root, stage_id, dispute_id);
+        if applied.exists() || is_closed(&dir) {
             return Ok(());
         }
-        let applying = dispute_dir(&disputes_root, stage_id, dispute_id).join(".applying");
+        let applying = dir.join(".applying");
 
         let record = read_verdict_record(&verdict_path)?;
         let mut stage = load_stage(stage_id, work_dir)?;
@@ -146,7 +151,7 @@ fn persist_verdict_result(
     let verdict_amendments_applied = stage.tally.amendments_applied;
     let verdict_acceptance = stage.acceptance.clone();
     let verdict_wiring = stage.wiring.clone();
-    update_stage(stage_id, work_dir, |s| {
+    let persisted = update_stage(stage_id, work_dir, |s| {
         if s.status != verdict_status {
             if s.status.can_transition_to(&verdict_status) {
                 let _ = s.try_transition(verdict_status.clone());
@@ -167,6 +172,12 @@ fn persist_verdict_result(
     }
     std::fs::write(applied, b"")
         .with_context(|| format!("Failed to write {}", applied.display()))?;
+    // A verdict-driven escalation abandons the stage's other open disputes.
+    // The stage lock is released by now: the filing path takes the dispute
+    // lock and then the stage lock, so this order must never invert.
+    if persisted.status == StageStatus::NeedsHumanReview {
+        close_open_disputes(work_dir, stage_id);
+    }
     Ok(())
 }
 
@@ -303,80 +314,6 @@ pub(super) fn apply_needs_more_evidence(
     } else {
         requeue_or_hold_for_remaining_disputes(work_dir, stage)
     }
-}
-
-fn transition_to_queued(stage: &mut Stage) -> Result<()> {
-    let target = StageStatus::Queued;
-    // try_transition refuses NeedsAdjudication → Queued unless it knows
-    // about it (the foundations stage added that transition). If the stage
-    // is somehow in NeedsAdjudication but not recognized as a valid
-    // transition source, fall back to a direct assignment with a warning so
-    // we don't refuse to apply a verdict because of unrelated state drift.
-    //
-    // Any OTHER status must be left untouched: it means a verdict on an
-    // earlier, sibling dispute already moved the stage (e.g. a Reject to
-    // NeedsHumanReview), and forcing Queued here would silently erase that
-    // escalation.
-    if stage.status.can_transition_to(&target) {
-        stage.try_transition(target)?;
-    } else if stage.status == StageStatus::NeedsAdjudication {
-        tracing::warn!(
-            target: "loom::adjudication",
-            stage = %stage.id,
-            status = %stage.status,
-            "stage not recognized as transitionable to Queued from NeedsAdjudication; forcing it",
-        );
-        stage.status = target;
-        stage.updated_at = chrono::Utc::now();
-    } else {
-        tracing::warn!(
-            target: "loom::adjudication",
-            stage = %stage.id,
-            status = %stage.status,
-            "refusing to force stage to Queued from a non-NeedsAdjudication status",
-        );
-    }
-    Ok(())
-}
-
-/// Re-queue the stage, unless another dispute on it still has no verdict.
-///
-/// `job_for_dispute` only schedules a dispute whose stage is
-/// `NeedsAdjudication`, so the stage must stay there until the LAST
-/// unanswered dispute is judged; only that verdict re-queues it. The
-/// dispute currently being applied already has its `verdict.md` on disk, so
-/// `scan_pending_requests` does not count it among the remainder.
-pub(super) fn requeue_or_hold_for_remaining_disputes(
-    work_dir: &Path,
-    stage: &mut Stage,
-) -> Result<()> {
-    if stage.status == StageStatus::NeedsHumanReview {
-        // A Reject verdict on a sibling dispute already escalated this stage;
-        // a later Accept/NeedsMoreEvidence verdict must not re-queue over it.
-        tracing::warn!(
-            target: "loom::adjudication",
-            stage = %stage.id,
-            "stage already NeedsHumanReview; not re-queueing or holding for remaining disputes",
-        );
-        return Ok(());
-    }
-    let remaining = AdjudicatorRegistry::new().unanswered_disputes(work_dir, &stage.id)?;
-    if remaining == 0 {
-        return transition_to_queued(stage);
-    }
-    tracing::info!(
-        target: "loom::adjudication",
-        stage = %stage.id,
-        remaining,
-        "holding stage in NeedsAdjudication: unanswered disputes remain",
-    );
-    if stage.status != StageStatus::NeedsAdjudication {
-        stage.force_status_with_reason(
-            StageStatus::NeedsAdjudication,
-            "unanswered disputes remain after a verdict",
-        );
-    }
-    Ok(())
 }
 
 /// Write `applied.marker` after an apply-cap escalation so the daemon stops

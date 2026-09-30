@@ -30,6 +30,8 @@ use crate::models::worktree::Worktree;
 use crate::orchestrator::core::spawn_failure_type;
 use crate::orchestrator::terminal::backend::SessionBackend;
 
+use super::Escalation;
+
 /// Model adjudication sessions run on when `.loom/work/config.toml` names none.
 ///
 /// A `claude --model` argument (an alias such as `opus`, or a full model id),
@@ -71,8 +73,18 @@ pub struct StartedAdjudication {
     pub session_id: String,
 }
 
+/// What one pass of [`super::AdjudicatorRegistry::start_pending_adjudications`]
+/// did, and the escalations it leaves to its caller.
+pub struct AdjudicationPass {
+    pub started: Vec<StartedAdjudication>,
+    /// Stages to hand to a human once their disputing agent is retired; see
+    /// [`Escalation`].
+    pub escalations: Vec<Escalation>,
+}
+
 impl super::AdjudicatorRegistry {
-    /// Start an adjudication session for every dispute that needs one.
+    /// Start an adjudication session for every dispute that needs one, and
+    /// return the stages to escalate instead.
     ///
     /// A spawn failure escalates that dispute's stage rather than aborting the
     /// pass: it means no adjudicator can run here at all, and a dispute left
@@ -82,9 +94,13 @@ impl super::AdjudicatorRegistry {
         backend: &SessionBackend,
         work_dir: &Path,
         repo_root: &Path,
-    ) -> Result<Vec<StartedAdjudication>> {
+    ) -> Result<AdjudicationPass> {
+        let super::PendingDisputes {
+            jobs,
+            mut escalations,
+        } = self.disputes_awaiting_session(work_dir)?;
         let mut started = Vec::new();
-        for job in self.disputes_awaiting_session(work_dir)? {
+        for job in jobs {
             match spawn_for(backend, &job, work_dir, repo_root) {
                 Ok(session) => started.push(StartedAdjudication {
                     stage_id: job.stage.id,
@@ -101,16 +117,18 @@ impl super::AdjudicatorRegistry {
                         %error,
                         "could not spawn an adjudication session; escalating the stage",
                     );
-                    super::escalate_adjudicator_unavailable(
-                        work_dir,
+                    escalations.push(Escalation::adjudicator_unavailable(
                         &job.stage.id,
                         failure_type,
                         &error,
-                    );
+                    ));
                 }
             }
         }
-        Ok(started)
+        Ok(AdjudicationPass {
+            started,
+            escalations,
+        })
     }
 }
 
@@ -194,9 +212,9 @@ pub fn attempt_count(work_dir: &Path, stage_id: &str, dispute_id: u32) -> u32 {
 /// Count one more adjudication attempt and return the new total.
 ///
 /// Counted when the daemon decides to hand the dispute a session, not when
-/// that session succeeds: a spawn that fails escalates immediately (see
-/// `escalate_adjudicator_unavailable`), so the budget only ever has to bound
-/// sessions that started and then died without writing a verdict.
+/// that session succeeds: a spawn that fails escalates the stage (see
+/// `Escalation::adjudicator_unavailable`), so the budget only ever has to
+/// bound sessions that started and then died without writing a verdict.
 pub(super) fn record_attempt(work_dir: &Path, stage_id: &str, dispute_id: u32) -> u32 {
     let path = attempts_file(work_dir, stage_id, dispute_id);
     let next = attempt_count(work_dir, stage_id, dispute_id).saturating_add(1);

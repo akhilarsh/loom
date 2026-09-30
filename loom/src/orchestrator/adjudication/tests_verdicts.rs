@@ -8,6 +8,7 @@ use super::{feedback, AdjudicatorRegistry, MAX_APPLY_ATTEMPTS, MAX_EVIDENCE_ROUN
 use crate::models::dispute::{Citation, DisputeVerdict, PlanPatch};
 use crate::models::stage::StageStatus;
 use std::path::PathBuf;
+use tempfile::TempDir;
 
 /// A Reject is a deadlock, not a retry: the agent called the criterion
 /// impossible and the adjudicator upheld it, so re-queueing would loop the
@@ -168,7 +169,7 @@ fn a_verdict_holds_the_stage_while_another_dispute_is_unanswered() {
         .join("applied.marker");
     assert!(applied.exists(), "applied.marker must exist after apply");
 
-    let jobs = reg.disputes_awaiting_session(work).unwrap();
+    let jobs = reg.disputes_awaiting_session(work).unwrap().jobs;
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].request.id, 2);
 }
@@ -233,7 +234,8 @@ fn apply_verdict_writes_applying_marker_then_removes_it() {
 
 /// A Reject verdict on one dispute puts the stage in `NeedsHumanReview`; a
 /// later verdict on a SIBLING dispute must not force it back to `Queued` and
-/// erase that escalation.
+/// erase that escalation. The escalation closes the sibling, so its verdict is
+/// never applied at all.
 #[test]
 fn a_reject_verdict_is_not_undone_by_a_later_verdict_on_a_sibling_dispute() {
     let tmp = tempfile::tempdir().unwrap();
@@ -260,6 +262,9 @@ fn a_reject_verdict_is_not_undone_by_a_later_verdict_on_a_sibling_dispute() {
     );
     reg.apply_verdict(work, "s1", 2).unwrap();
 
+    let sibling = work.join("disputes").join("s1").join("2");
+    assert!(sibling.join("closed.marker").exists());
+    assert!(!sibling.join("applied.marker").exists());
     let after = crate::verify::transitions::load_stage("s1", work).unwrap();
     assert_eq!(after.status, StageStatus::NeedsHumanReview);
     assert!(after
@@ -273,7 +278,7 @@ fn a_reject_verdict_is_not_undone_by_a_later_verdict_on_a_sibling_dispute() {
 /// `plan_patch` that can never normalise under either accepted shape, so
 /// every apply attempt fails identically. Returns the tempdir (keep it alive
 /// for `work`'s lifetime), the registry, and the `applied.marker` path.
-fn arrange_unnormalisable_accept_verdict() -> (tempfile::TempDir, AdjudicatorRegistry, PathBuf) {
+pub(super) fn arrange_unnormalisable_accept_verdict() -> (TempDir, AdjudicatorRegistry, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let work = tmp.path();
     std::fs::create_dir_all(work.join("stages")).unwrap();

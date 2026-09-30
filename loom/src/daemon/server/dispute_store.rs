@@ -3,7 +3,6 @@
 //! escalation of an exhausted budget. `dispute.rs` states the trust boundary.
 
 use anyhow::{anyhow, bail, Result};
-use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -12,6 +11,7 @@ use crate::fs::safe_fs::safe_create_new_in_workdir;
 use crate::fs::work_dir::WorkDir;
 use crate::models::dispute::DisputeRequest;
 use crate::models::stage::Stage;
+use crate::orchestrator::adjudication::lock_stage_dispute_dir;
 use crate::verify::transitions::update_stage;
 
 /// A stage's `disputes/<stage>/` directory, held under its per-stage flock
@@ -21,11 +21,12 @@ pub(super) struct LockedDisputes {
     pub work_dir: PathBuf,
     /// `disputes/<stage>/` beneath it.
     pub stage_dir: PathBuf,
-    _lock: File,
+    _lock: OwnedFd,
 }
 
 /// Take the lock that serialises dispute filings for `stage_id` (id
-/// allocation and state transition). `stage_id` must already be validated.
+/// allocation and state transition) with the closing of its disputes.
+/// `stage_id` must already be validated.
 pub(super) fn lock_stage_disputes(work_dir: &Path, stage_id: &str) -> Result<LockedDisputes> {
     // Resolve canonical .loom/work path. Worktrees use a `.loom/work` symlink
     // to ../../../.loom/work; canonicalize so the dirfd-relative writes land
@@ -47,26 +48,13 @@ pub(super) fn lock_stage_disputes(work_dir: &Path, stage_id: &str) -> Result<Loc
     // state-root path it returns that path. Use the canonical work path for
     // disputes_dir() so all writes land beneath it deterministically.
     let stage_dir = wd.disputes_dir().join(stage_id);
-    std::fs::create_dir_all(&stage_dir)?;
-
-    let lock_path = stage_dir.join(".lock");
-    let lock_file: File = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)?;
-    // SAFETY: the descriptor belongs to the live `lock_file`, and `LOCK_EX` is
-    // a valid flock operation for the duration of this call.
-    let rc = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) };
-    if rc != 0 {
-        bail!("Failed to acquire dispute lock at {}", lock_path.display());
-    }
+    // The same lock an escalation takes to close the stage's open disputes.
+    let lock = lock_stage_dispute_dir(&stage_dir)?;
     // The lock is released when `_lock` closes on drop.
     Ok(LockedDisputes {
         work_dir: work_canonical,
         stage_dir,
-        _lock: lock_file,
+        _lock: lock,
     })
 }
 

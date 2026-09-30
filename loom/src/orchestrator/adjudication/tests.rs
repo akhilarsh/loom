@@ -114,7 +114,7 @@ fn pending_dispute_is_offered_a_session_and_counted() {
     write_dispute_request(work, "s1", 1, 0);
 
     let reg = AdjudicatorRegistry::new();
-    let jobs = reg.disputes_awaiting_session(work).unwrap();
+    let jobs = reg.disputes_awaiting_session(work).unwrap().jobs;
 
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].stage.id, "s1");
@@ -138,7 +138,7 @@ fn a_stage_with_two_pending_disputes_gets_one_session() {
     write_dispute_request(work, "s1", 2, 0);
 
     let reg = AdjudicatorRegistry::new();
-    let jobs = reg.disputes_awaiting_session(work).unwrap();
+    let jobs = reg.disputes_awaiting_session(work).unwrap().jobs;
 
     assert_eq!(jobs.len(), 1);
     assert_eq!(attempt_count(work, "s1", 2), 0, "only one dispute is spent");
@@ -155,10 +155,13 @@ fn dispute_is_skipped_once_the_stage_leaves_adjudication() {
     write_dispute_request(work, "s1", 1, 0);
 
     let reg = AdjudicatorRegistry::new();
-    assert!(reg.disputes_awaiting_session(work).unwrap().is_empty());
+    let pending = reg.disputes_awaiting_session(work).unwrap();
+    assert!(pending.jobs.is_empty() && pending.escalations.is_empty());
     assert_eq!(attempt_count(work, "s1", 1), 0);
 }
 
+/// The registry returns the escalation instead of writing it: the stage's
+/// disputing agent has to be retired while it is still `NeedsAdjudication`.
 #[test]
 fn exhausted_spawn_budget_escalates_instead_of_respawning() {
     let tmp = tempfile::tempdir().unwrap();
@@ -169,11 +172,25 @@ fn exhausted_spawn_budget_escalates_instead_of_respawning() {
 
     let reg = AdjudicatorRegistry::new();
     for _ in 0..MAX_ADJUDICATION_ATTEMPTS {
-        assert_eq!(reg.disputes_awaiting_session(work).unwrap().len(), 1);
+        assert_eq!(reg.disputes_awaiting_session(work).unwrap().jobs.len(), 1);
     }
     // Budget spent: no further session, and the stage stops waiting silently.
-    assert!(reg.disputes_awaiting_session(work).unwrap().is_empty());
+    let pending = reg.disputes_awaiting_session(work).unwrap();
+    assert!(pending.jobs.is_empty());
+    let [escalation] = pending.escalations.as_slice() else {
+        panic!("expected one escalation, got {:?}", pending.escalations);
+    };
+    assert_eq!(escalation.stage_id, "s1");
+    assert!(escalation.reason.contains("no verdict"));
+    assert_eq!(
+        crate::verify::transitions::load_stage("s1", work)
+            .unwrap()
+            .status,
+        StageStatus::NeedsAdjudication,
+        "the registry must leave writing the escalation to its caller",
+    );
 
+    escalation.write(work);
     let after = crate::verify::transitions::load_stage("s1", work).unwrap();
     assert_eq!(after.status, StageStatus::NeedsHumanReview);
     assert!(after
@@ -192,13 +209,43 @@ fn evidence_cap_escalates_before_a_session_is_offered() {
     stage.tally.evidence_rounds = MAX_EVIDENCE_ROUNDS;
     write_stage(work, &stage);
     write_dispute_request(work, "s1", 1, 0);
+    write_dispute_request(work, "s1", 2, 0);
 
     let reg = AdjudicatorRegistry::new();
-    assert!(reg.disputes_awaiting_session(work).unwrap().is_empty());
+    let pending = reg.disputes_awaiting_session(work).unwrap();
+    assert!(pending.jobs.is_empty());
+    assert_eq!(
+        pending.escalations.len(),
+        1,
+        "one escalation per stage, however many disputes it carries",
+    );
+    assert_eq!(attempt_count(work, "s1", 1), 0);
 
+    pending.escalations[0].write(work);
     let after = crate::verify::transitions::load_stage("s1", work).unwrap();
     assert_eq!(after.status, StageStatus::NeedsHumanReview);
-    assert_eq!(attempt_count(work, "s1", 1), 0);
+}
+
+/// An escalation is written only over `NeedsAdjudication`, the one status
+/// whose disputing agent the daemon retires before writing it, and closes no
+/// dispute of a stage it did not escalate.
+#[test]
+fn an_escalation_leaves_a_stage_that_left_adjudication_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let work = tmp.path();
+    std::fs::create_dir_all(work.join("stages")).unwrap();
+    let mut stage = make_stage("s1");
+    stage.status = StageStatus::Executing;
+    write_stage(work, &stage);
+    write_dispute_request(work, "s1", 1, 0);
+
+    super::Escalation::evidence_cap("s1").write(work);
+
+    let after = crate::verify::transitions::load_stage("s1", work).unwrap();
+    assert_eq!(after.status, StageStatus::Executing);
+    assert_eq!(after.review_reason, None);
+    let open = AdjudicatorRegistry::new().unanswered_disputes(work, "s1");
+    assert_eq!(open.unwrap(), 1);
 }
 
 #[test]

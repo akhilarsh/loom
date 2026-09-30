@@ -8,6 +8,8 @@ use std::path::Path;
 
 use crate::git::worktree::find_repo_root_from_cwd;
 use crate::models::stage::{Stage, StageStatus};
+use crate::orchestrator::adjudication::close_open_disputes;
+use crate::orchestrator::coherence::live_worker_sessions;
 use crate::verify::transitions::{load_stage, update_stage};
 
 /// Handle human review response for a stage.
@@ -90,6 +92,14 @@ fn show_review_status(stage_id: &str, stage: &Stage) -> Result<()> {
 /// NeedsHumanReview) never resets the budget, and a failed reset aborts the
 /// transition instead of leaving it approved with a still-spent budget.
 fn handle_approve(stage_id: &str, work_dir: &Path) -> Result<()> {
+    refuse_live_worker(stage_id, work_dir)?;
+    // Disputes left open when the stage escalated would shadow the one the
+    // fresh session files. Closing here also repairs a crash between an
+    // escalation's status write and its own close. Before the transition, so
+    // a crash after it cannot leave a queued stage with stale disputes.
+    if load_stage(stage_id, work_dir)?.status == StageStatus::NeedsHumanReview {
+        close_open_disputes(work_dir, stage_id);
+    }
     update_stage(stage_id, work_dir, |stage| {
         stage.try_approve_review()?;
         stage.fix_attempts = 0;
@@ -100,6 +110,24 @@ fn handle_approve(stage_id: &str, work_dir: &Path) -> Result<()> {
     println!("Stage '{stage_id}' approved: queued for a fresh session with fresh fix attempts.");
 
     Ok(())
+}
+
+/// Refuse to approve while the stage has a live worker session: the executor
+/// would adopt it, by the same predicate, instead of spawning a fresh session.
+fn refuse_live_worker(stage_id: &str, work_dir: &Path) -> Result<()> {
+    let stage = load_stage(stage_id, work_dir)?;
+    let live = live_worker_sessions(work_dir, &stage)?;
+    if live.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<&str> = live.iter().map(|session| session.id.as_str()).collect();
+    bail!(
+        "Stage '{stage_id}' still has live worker session(s) {}; approving would queue the \
+         stage onto that agent instead of a fresh session. Run 'loom stage reset {stage_id} \
+         --kill-session' to take it down (this also resets the stage), or approve once it \
+         has exited.",
+        ids.join(", ")
+    )
 }
 
 /// Force-complete the review: skip acceptance criteria and merge, then mark as completed.
@@ -155,6 +183,11 @@ fn handle_reject(stage_id: &str, reason: &str, work_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fs::session_files::save_session;
+    use crate::fs::work_dir::write_terminal_config;
+    use crate::models::dispute::dispute_dir;
+    use crate::models::session::{Session, SessionBackendKind, SessionStatus, TerminalConfig};
+    use crate::orchestrator::terminal::native::write_test_pid_identity;
     use crate::verify::contracts::store::{attempts_spent, spend_attempt};
     use crate::verify::contracts::test_support::contract_stage;
     use tempfile::TempDir;
@@ -240,6 +273,71 @@ mod tests {
             StageStatus::Completed
         );
         assert_eq!(attempts_spent(temp.path(), "test-stage").unwrap(), 3);
+    }
+
+    /// Approval settles the disputes the escalation left open, so the one a
+    /// fresh session files next is the only live dispute of the stage.
+    #[test]
+    fn test_human_review_approve_closes_an_open_dispute() {
+        let temp = TempDir::new().unwrap();
+        setup_stage(&temp, StageStatus::NeedsHumanReview, Some("Escalated"));
+        let dispute = dispute_dir(&temp.path().join("disputes"), "test-stage", 1);
+        std::fs::create_dir_all(&dispute).unwrap();
+
+        handle_approve("test-stage", temp.path()).unwrap();
+
+        assert!(dispute.join("closed.marker").exists());
+    }
+
+    /// A stage not awaiting review keeps its disputes open: a refused approve
+    /// must not settle anything.
+    #[test]
+    fn test_human_review_refused_approve_leaves_disputes_open() {
+        let temp = TempDir::new().unwrap();
+        setup_stage(&temp, StageStatus::Completed, None);
+        let dispute = dispute_dir(&temp.path().join("disputes"), "test-stage", 1);
+        std::fs::create_dir_all(&dispute).unwrap();
+
+        assert!(handle_approve("test-stage", temp.path()).is_err());
+
+        assert!(!dispute.join("closed.marker").exists());
+    }
+
+    /// Approval queues the stage, and the executor adopts a live worker
+    /// session instead of spawning a fresh one, so approval refuses while one
+    /// is live. The test process stands in for the agent: alive throughout,
+    /// and nothing is left running after the test.
+    #[test]
+    fn test_human_review_approve_refuses_while_a_worker_session_is_live() {
+        let temp = TempDir::new().unwrap();
+        let work_dir = temp.path();
+        setup_stage(&temp, StageStatus::NeedsHumanReview, Some("Agent live"));
+        let tmux = TerminalConfig {
+            backend: SessionBackendKind::Tmux,
+        };
+        write_terminal_config(work_dir, &tmux).unwrap();
+        let mut worker = Session::new();
+        worker.assign_to_stage("test-stage".to_string());
+        worker.status = SessionStatus::Running;
+        worker.backend = SessionBackendKind::Tmux;
+        save_session(&worker, work_dir).unwrap();
+        write_test_pid_identity(work_dir, &worker, std::process::id()).unwrap();
+
+        let message = format!("{:#}", handle_approve("test-stage", work_dir).unwrap_err());
+        assert!(message.contains(&worker.id), "{message}");
+        assert!(
+            message.contains("loom stage reset test-stage --kill-session"),
+            "{message}"
+        );
+        let refused = load_stage("test-stage", work_dir).unwrap();
+        assert_eq!(refused.status, StageStatus::NeedsHumanReview);
+
+        // Gone, as a takedown records it.
+        worker.status = SessionStatus::ContextExhausted;
+        save_session(&worker, work_dir).unwrap();
+        handle_approve("test-stage", work_dir).unwrap();
+        let approved = load_stage("test-stage", work_dir).unwrap();
+        assert_eq!(approved.status, StageStatus::Queued);
     }
 
     #[test]

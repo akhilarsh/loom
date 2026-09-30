@@ -138,6 +138,8 @@ fn degenerate_verdict_escalates_instead_of_recording() {
     assert!(!verdict_file(&work.join("disputes"), "s1", 1).exists());
     let after = crate::verify::transitions::load_stage("s1", &work).unwrap();
     assert_eq!(after.status, StageStatus::NeedsHumanReview);
+    // Left open, the unanswered dispute would be judged again after approval.
+    assert!(is_closed(&dispute_dir(&work.join("disputes"), "s1", 1)));
 }
 
 #[test]

@@ -29,8 +29,9 @@ pub enum HandoffOrigin {
     /// The daemon gave up on a session whose heartbeat went stale far past its
     /// response budget and recovered the stage without the agent's help.
     Stalled,
-    /// The daemon retired the agent after the dispute it filed was
-    /// adjudicated; its successor starts against the amended criteria.
+    /// The daemon retired the agent that filed a dispute: when the verdict is
+    /// applied (its successor starts against the amended criteria), or before
+    /// the dispute escalates to human review.
     Retired,
     /// The trusted host broker or daemon recorded completion verification
     /// evidence for this exact session.

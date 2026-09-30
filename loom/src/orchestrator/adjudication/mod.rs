@@ -7,8 +7,11 @@
 //!   that need an adjudication session started, having applied every guard
 //!   (a verdict already written, a stage that has left `NeedsAdjudication`,
 //!   the evidence-round cap, a session already live for the stage, the
-//!   spawn-attempt cap) and escalated the stage where a guard is terminal.
-//!   The daemon spawns the session; see `orchestrator/core/orchestrator.rs`.
+//!   spawn-attempt cap), plus an [`Escalation`] for every stage a guard hands
+//!   to a human. The daemon spawns the sessions, and retires each escalated
+//!   stage's disputing agent before writing its escalation, which closes the
+//!   stage's open disputes (`closed_disputes.rs`); see
+//!   `orchestrator/core/orchestrator.rs`.
 //! * [`AdjudicatorRegistry::apply_pending_verdicts`] scans for verdict
 //!   files that haven't been applied (no `applied.marker`) and mutates
 //!   stage state accordingly (see `apply.rs`, and `apply_kinds.rs` for the
@@ -30,10 +33,13 @@
 mod apply;
 mod apply_contract;
 mod apply_kinds;
+mod closed_disputes;
+mod escalation;
 pub mod feedback;
 mod plan_patch;
 pub mod prompt;
 pub mod record;
+mod requeue;
 mod scan;
 pub mod session;
 pub mod verdict;
@@ -42,21 +48,26 @@ mod verdict_kinds;
 #[cfg(test)]
 mod apply_kinds_tests;
 #[cfg(test)]
+mod closed_disputes_tests;
+#[cfg(test)]
+mod escalation_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_verdicts;
 
 use anyhow::Result;
-use chrono::Utc;
 use std::path::{Path, PathBuf};
 
 use crate::models::dispute::{dispute_dir, request_file, verdict_file};
-use crate::models::failure::{FailureInfo, FailureType};
 use crate::models::stage::StageStatus;
-use crate::verify::transitions::{load_stage, update_stage};
+use crate::verify::transitions::load_stage;
 
+use closed_disputes::is_closed;
 use scan::{read_dispute_request, scan_pending_requests};
 
+pub(crate) use closed_disputes::{close_open_disputes, lock_stage_dispute_dir};
+pub use escalation::Escalation;
 pub use session::{
     attempt_count, persist_verdict, read_request, resolve_model, scratch_verdict_draft,
     scratch_verdict_file_name, verdict_draft_file, AdjudicationJob, DEFAULT_ADJUDICATION_MODEL,
@@ -99,43 +110,50 @@ impl AdjudicatorRegistry {
         Self
     }
 
-    /// Disputes that need an adjudication session started on this tick.
+    /// Disputes that need an adjudication session started on this tick, and
+    /// the stages a terminal guard hands to a human instead.
     ///
     /// Every returned job has already been counted against the dispute's
     /// spawn budget: the caller is expected to try the spawn immediately, and
-    /// [`AdjudicatorRegistry::start_pending_adjudications`] escalates the
-    /// stage when it cannot.
-    pub fn disputes_awaiting_session(&self, work_dir: &Path) -> Result<Vec<AdjudicationJob>> {
+    /// [`AdjudicatorRegistry::start_pending_adjudications`] adds an escalation
+    /// for the stage when it cannot. No escalation is written here; see
+    /// [`Escalation`].
+    pub fn disputes_awaiting_session(&self, work_dir: &Path) -> Result<PendingDisputes> {
         let disputes_root = work_dir.join("disputes");
+        let mut pending = PendingDisputes::default();
         if !disputes_root.exists() {
-            return Ok(Vec::new());
+            return Ok(pending);
         }
-        let mut jobs: Vec<AdjudicationJob> = Vec::new();
         for (stage_id, dispute_id) in scan_pending_requests(&disputes_root)? {
-            // One adjudicator per stage per pass. A stage can carry more than
-            // one unanswered dispute (an earlier one abandoned when the stage
-            // was escalated and then resumed), and the live-session guard
-            // below only sees sessions started on an EARLIER tick — so
-            // without this, both would be handed a session at once and two
-            // adjudicators would judge the same stage in the same repository.
-            if jobs.iter().any(|job| job.stage.id == stage_id) {
+            // One outcome per stage per pass. A stage can carry more than one
+            // unanswered dispute (a second one filed while the first awaits
+            // its verdict), and the live-session guard below only sees
+            // sessions started on an EARLIER tick — so without this, both
+            // would be handed a session at once and two adjudicators
+            // would judge the same stage in the same repository. A stage
+            // escalated on this pass is still `NeedsAdjudication` until the
+            // caller writes it, so it is skipped here too.
+            if pending.covers(&stage_id) {
                 continue;
             }
-            if let Some(job) = self.job_for_dispute(work_dir, &stage_id, dispute_id) {
-                jobs.push(job);
+            if let Some(job) =
+                self.job_for_dispute(work_dir, &stage_id, dispute_id, &mut pending.escalations)
+            {
+                pending.jobs.push(job);
             }
         }
-        Ok(jobs)
+        Ok(pending)
     }
 
-    /// The guards, in order, for one pending dispute. `None` means "not this
-    /// tick" — either because the dispute is already handled, or because a
-    /// terminal condition escalated the stage instead.
+    /// The guards, in order, for one pending dispute. `None` means "no session
+    /// this tick" — either because the dispute is already handled, or because
+    /// a terminal condition pushed an escalation onto `escalations` instead.
     fn job_for_dispute(
         &self,
         work_dir: &Path,
         stage_id: &str,
         dispute_id: u32,
+        escalations: &mut Vec<Escalation>,
     ) -> Option<AdjudicationJob> {
         let disputes_root = work_dir.join("disputes");
         if verdict_file(&disputes_root, stage_id, dispute_id).exists() {
@@ -156,10 +174,10 @@ impl AdjudicatorRegistry {
             return None;
         }
         if stage.tally.evidence_rounds >= MAX_EVIDENCE_ROUNDS {
-            escalate_evidence_cap(work_dir, stage_id);
+            escalations.push(Escalation::evidence_cap(stage_id));
             return None;
         }
-        if !self.claim_session_slot(work_dir, stage_id, dispute_id) {
+        if !self.claim_session_slot(work_dir, stage_id, dispute_id, escalations) {
             return None;
         }
 
@@ -178,16 +196,23 @@ impl AdjudicatorRegistry {
     /// `false` means either that a session is already judging the stage — the
     /// reason not to start a second one, and one that holds across daemon
     /// restarts because it is answered from the session record — or that the
-    /// dispute has used its budget, in which case the stage is escalated so it
-    /// does not wait on a session that will never come.
-    fn claim_session_slot(&self, work_dir: &Path, stage_id: &str, dispute_id: u32) -> bool {
+    /// dispute has used its budget, in which case an escalation is pushed onto
+    /// `escalations` so the stage does not wait on a session that will never
+    /// come.
+    fn claim_session_slot(
+        &self,
+        work_dir: &Path,
+        stage_id: &str,
+        dispute_id: u32,
+        escalations: &mut Vec<Escalation>,
+    ) -> bool {
         if let Some(session_id) = session::live_adjudication_session(work_dir, stage_id) {
             tracing::debug!(target: "loom::adjudication", stage = %stage_id, session = %session_id, "adjudication session already live");
             return false;
         }
         let attempts = session::attempt_count(work_dir, stage_id, dispute_id);
         if attempts >= MAX_ADJUDICATION_ATTEMPTS {
-            escalate_attempt_cap(work_dir, stage_id, dispute_id, attempts);
+            escalations.push(Escalation::attempt_cap(stage_id, dispute_id, attempts));
             return false;
         }
         session::record_attempt(work_dir, stage_id, dispute_id);
@@ -195,51 +220,33 @@ impl AdjudicatorRegistry {
     }
 }
 
-/// Escalate a stage whose adjudication session could not be started at all.
-///
-/// A spawn failure is an environment problem (no terminal, no `claude` on
-/// PATH, a backend that refuses), not something a retry fixes, and a dispute
-/// that hangs silently is worse than one that asks for a human. `failure_type`
-/// is classified the same way a stage or merge-resolver spawn failure is, and
-/// recorded on the stage so `loom status` shows whether it was a sandbox
-/// setup problem.
-fn escalate_adjudicator_unavailable(
-    work_dir: &Path,
-    stage_id: &str,
-    failure_type: FailureType,
-    error: &str,
-) {
-    escalate(
-        work_dir,
-        stage_id,
-        format!("No adjudication session could be started for this dispute: {error}"),
-        Some(failure_type),
-    );
+/// What one pass over `.loom/work/disputes/` found to act on.
+#[derive(Debug, Default)]
+pub struct PendingDisputes {
+    /// Disputes to start an adjudication session for, at most one per stage.
+    pub jobs: Vec<AdjudicationJob>,
+    /// Stages a terminal guard hands to a human, not yet written.
+    pub escalations: Vec<Escalation>,
 }
 
-fn escalate_evidence_cap(work_dir: &Path, stage_id: &str) {
-    escalate(
-        work_dir,
-        stage_id,
-        format!("Evidence loop exhausted at {MAX_EVIDENCE_ROUNDS} rounds"),
-        None,
-    );
-}
-
-fn escalate_attempt_cap(work_dir: &Path, stage_id: &str, dispute_id: u32, attempts: u32) {
-    escalate(
-        work_dir,
-        stage_id,
-        format!(
-            "Adjudication of dispute {dispute_id} produced no verdict after {attempts} session(s)"
-        ),
-        None,
-    );
+impl PendingDisputes {
+    /// Whether this pass already has an outcome for `stage_id`.
+    fn covers(&self, stage_id: &str) -> bool {
+        self.jobs.iter().any(|job| job.stage.id == stage_id)
+            || self
+                .escalations
+                .iter()
+                .any(|escalation| escalation.stage_id == stage_id)
+    }
 }
 
 /// Escalate a dispute whose verdict has now failed to apply
-/// [`MAX_APPLY_ATTEMPTS`] times. The operator's only other clue is a log
-/// line, so the reason carries the apply error text itself.
+/// [`MAX_APPLY_ATTEMPTS`] times.
+///
+/// Written immediately, unlike the dispute loop's escalations:
+/// `Orchestrator::apply_pending_verdicts` retires the disputing agent before
+/// every apply attempt, so by the time an attempt fails the agent is already
+/// gone and `stage.session` released.
 fn escalate_apply_cap(
     work_dir: &Path,
     stage_id: &str,
@@ -247,14 +254,7 @@ fn escalate_apply_cap(
     failures: u32,
     error: &anyhow::Error,
 ) {
-    escalate(
-        work_dir,
-        stage_id,
-        format!(
-            "Applying the verdict for dispute {dispute_id} failed {failures} time(s): {error:#}"
-        ),
-        None,
-    );
+    Escalation::apply_cap(stage_id, dispute_id, failures, error).write(work_dir);
 }
 
 /// File name for the per-dispute apply-failure counter, mirroring
@@ -304,33 +304,6 @@ fn record_apply_failure(work_dir: &Path, stage_id: &str, dispute_id: u32) -> u32
         );
     }
     next
-}
-
-/// Single locked read-modify-write: re-apply only the human-review transition
-/// onto the fresh on-disk stage (A-5). Best effort — a refused transition is
-/// logged inside the closure and ignored. `failure_type`, when given, is
-/// recorded as the stage's `failure_info`; only a spawn failure has one to
-/// give — the evidence/attempt/apply caps that exhaust a budget do not.
-fn escalate(work_dir: &Path, stage_id: &str, reason: String, failure_type: Option<FailureType>) {
-    let result = update_stage(stage_id, work_dir, |s| {
-        s.try_request_human_review(reason.clone()).ok();
-        if let Some(failure_type) = failure_type {
-            s.failure_info = Some(FailureInfo {
-                failure_type,
-                detected_at: Utc::now(),
-                evidence: vec![reason.clone()],
-            });
-        }
-        Ok(())
-    });
-    if let Err(error) = result {
-        tracing::warn!(
-            target: "loom::adjudication",
-            stage = %stage_id,
-            %error,
-            "failed to escalate stage to NeedsHumanReview",
-        );
-    }
 }
 
 fn resolve_plan_path(work_dir: &Path) -> Option<PathBuf> {

@@ -33,9 +33,8 @@ use crate::verify::review::store::{CarriedFinding, Ruling, RulingKind};
 use crate::verify::review::verdict_records;
 use crate::verify::transitions::list_all_stages;
 
-use super::apply::{
-    apply_accept, apply_needs_more_evidence, apply_reject, requeue_or_hold_for_remaining_disputes,
-};
+use super::apply::{apply_accept, apply_needs_more_evidence, apply_reject};
+use super::requeue::requeue_or_hold_for_remaining_disputes;
 use super::{apply_contract, feedback, read_request};
 
 /// Apply `record` to `stage` by the kind of the dispute it answers.

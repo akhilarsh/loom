@@ -336,9 +336,9 @@ impl Stage {
         Ok(())
     }
 
-    /// Approve human review and queue a fresh session.
-    ///
-    /// Transitions from NeedsHumanReview to Queued: the escalating agent's session is already gone.
+    /// Approve human review: NeedsHumanReview to Queued. The caller refuses
+    /// while a worker session is live (`live_worker_sessions`), which the
+    /// executor would adopt instead of spawning a fresh session.
     ///
     /// # Returns
     /// `Ok(())` if the transition succeeded, `Err` if invalid
