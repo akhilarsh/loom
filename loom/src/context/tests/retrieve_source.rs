@@ -47,6 +47,7 @@ fn distinctive_node() -> SourceNode {
         language: NodeLanguage::Rust,
         parser_version: "test+v1".to_string(),
         coverage: FileCoverage::Full,
+        symbol_key: String::new(),
     }
 }
 
@@ -68,6 +69,7 @@ fn write_local_overlay(root: &Path, node: &SourceNode) {
             nodes: vec![node.clone()],
             edges: Vec::new(),
             coverage: FileCoverage::Full,
+            imports: Vec::new(),
         },
     );
     let layer = GraphLayer {
@@ -76,6 +78,7 @@ fn write_local_overlay(root: &Path, node: &SourceNode) {
         built_at: None,
         files,
         blob_index: BTreeMap::new(),
+        schema_version: crate::context::source_graph::GRAPH_SCHEMA_VERSION,
     };
     graph_store.save_overlay(&plan, &stage, &layer).unwrap();
 }
@@ -269,6 +272,7 @@ fn retrieve_for_stage_is_not_degraded_when_the_semantic_base_exists() {
         built_at: None,
         files: BTreeMap::new(),
         blob_index: BTreeMap::new(),
+        schema_version: crate::context::source_graph::GRAPH_SCHEMA_VERSION,
     };
     graph_store.publish_base(revision, &layer).unwrap();
     store

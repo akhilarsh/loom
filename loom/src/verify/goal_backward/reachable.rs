@@ -6,7 +6,7 @@
 //! reachability in the derived graph: unresolved edges are never walked, so an
 //! absent path means "not found", never "does not exist".
 
-use crate::context::extract::{registry, SourceGraphExtractor};
+use crate::context::extract::{extractor_for, registry, BoxedExtractor, Lookup};
 use crate::context::graph_store::ResolvedGraph;
 use crate::context::resolve::{impact_with, node_names, ImpactOptions};
 use crate::context::source_graph::{SourceEdgeKind, SourceNode, SourceNodeKind};
@@ -41,7 +41,7 @@ pub fn verify_reachable(checks: &[ReachableCheck], graph: &WorktreeGraph) -> Vec
 fn verify_one(
     check: &ReachableCheck,
     graph: &WorktreeGraph,
-    extractors: &[Box<dyn SourceGraphExtractor + Send + Sync>],
+    extractors: &[BoxedExtractor],
 ) -> Option<VerificationGap> {
     let symbols = exact_matches(&graph.graph, &check.symbol);
     let starts = exact_matches(&graph.graph, &check.from);
@@ -50,11 +50,9 @@ fn verify_one(
         return Some(not_found_gap(check, name, graph));
     }
     let unparsed = |nodes: &[&SourceNode]| {
-        !nodes.iter().any(|node| {
-            extractors
-                .iter()
-                .any(|extractor| extractor.supports(&node.path))
-        })
+        !nodes
+            .iter()
+            .any(|node| matches!(extractor_for(extractors, &node.path), Lookup::Extractor(_)))
     };
     if let Some((name, _)) = ends.iter().find(|(_, nodes)| unparsed(nodes.as_slice())) {
         eprintln!(
@@ -100,9 +98,8 @@ fn reaches(
     let options = ImpactOptions {
         max_depth: usize::MAX,
         kinds: REACHABLE_KINDS.to_vec(),
-        limit: 0,
-        path_prefix: None,
         min_confidence,
+        ..Default::default()
     };
     impact_with(graph, &symbol.id, &options)
         .hits

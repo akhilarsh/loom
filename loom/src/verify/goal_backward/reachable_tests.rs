@@ -7,7 +7,6 @@ use super::verify_reachable;
 use crate::context::extract::{extract_file, registry};
 use crate::context::graph_store::{FileEntry, ResolvedGraph};
 use crate::context::resolve::resolve_graph;
-use crate::context::source_graph::body_hash;
 use crate::context::worktree_graph::WorktreeGraph;
 use crate::plan::schema::ReachableCheck;
 use crate::verify::goal_backward::{GapType, VerificationGap};
@@ -44,12 +43,7 @@ fn crate_graph(degraded: Option<&str>) -> WorktreeGraph {
     let mut graph = ResolvedGraph::default();
     for (path, source) in files {
         let extraction = extract_file(&extractors, Path::new(path), source.as_bytes());
-        let entry = FileEntry {
-            content_hash: body_hash(source.as_bytes()),
-            nodes: extraction.nodes,
-            edges: extraction.edges,
-            coverage: extraction.coverage,
-        };
+        let entry = FileEntry::from_extraction(source.as_bytes(), extraction);
         graph.files.insert(path.to_string(), entry);
     }
     resolve_graph(&mut graph);

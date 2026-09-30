@@ -101,7 +101,7 @@ fn oversized_file_yields_oversized_coverage() {
 }
 
 #[test]
-fn ambiguous_dynamic_call_yields_inferred_edge() {
+fn ambiguous_dynamic_call_yields_syntax_edge() {
     let extractors = registry();
 
     for fixture in DYNAMIC_CALL_FIXTURES {
@@ -111,9 +111,9 @@ fn ambiguous_dynamic_call_yields_inferred_edge() {
 
         assert!(
             extraction.edges.iter().any(|edge| {
-                edge.provenance == EdgeProvenance::Inferred && edge.confidence <= 0.5
+                edge.provenance == EdgeProvenance::Syntax && edge.confidence <= 0.5
             }),
-            "fixture should yield an inferred low-confidence edge: {fixture}"
+            "fixture should yield a low-confidence syntax edge: {fixture}"
         );
     }
 }

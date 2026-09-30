@@ -9,9 +9,9 @@
 //! Each hit reports the confidence of the **weakest** edge on the path taken,
 //! along with that edge's provenance and kind. A path is worth exactly its worst
 //! step: one guess anywhere in a chain caps everything beyond it, and a caller
-//! that sees `0.5 / inferred` knows which link to distrust. Multiplying
+//! that sees `0.5 / syntax` knows which link to distrust. Multiplying
 //! confidences would instead punish long chains for their length — five fully
-//! parsed hops would decay below a single guess, which is precisely backwards.
+//! bound hops would decay below a single guess, which is precisely backwards.
 //!
 //! ## What a traversal may not claim
 //!

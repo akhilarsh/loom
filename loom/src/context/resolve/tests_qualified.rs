@@ -4,7 +4,7 @@
 use super::fixtures::*;
 use super::*;
 use crate::context::graph_store::FileEntry;
-use crate::context::source_graph::{SourceNodeKind, UNRESOLVED_TARGET};
+use crate::context::source_graph::{SourceNodeKind, IMPORT_CONFIDENCE, UNRESOLVED_TARGET};
 
 const LIB: &str = "loom/src/lib.rs";
 
@@ -17,7 +17,7 @@ fn crate_graph(files: Vec<(&'static str, FileEntry)>) -> ResolvedGraph {
 
 /// An unresolved edge of `kind` leaving `from`, naming `symbol`.
 fn seeking(from: &str, kind: SourceEdgeKind, symbol: &str) -> Vec<SourceEdge> {
-    vec![SourceEdge::unresolved(from, kind, symbol)]
+    vec![unresolved_edge(from, kind, symbol)]
 }
 
 /// A file with no symbols, present only as a path something can match.
@@ -191,7 +191,7 @@ fn a_qualified_call_picks_the_definition_its_path_names() {
     assert_eq!(graph.files["src/app.rs"].edges[0].to, expected.id);
     assert_eq!(
         graph.files["src/app.rs"].edges[0].confidence,
-        UNIQUE_MATCH_CONFIDENCE
+        IMPORT_CONFIDENCE
     );
     assert_eq!(stats.retargeted, 1);
 }
@@ -223,11 +223,7 @@ fn a_bare_call_two_types_both_answer_to_stays_unresolved() {
     assert_eq!(graph.files["src/app.rs"].edges[0].to, UNRESOLVED_TARGET);
     assert_eq!(
         stats,
-        ResolutionStats {
-            retargeted: 0,
-            ambiguous: 1,
-            unresolved: 1
-        },
+        expected_stats(0, 1, 1),
         "dropping the qualifier is what makes `new` a contest"
     );
 }
@@ -278,14 +274,7 @@ fn a_call_qualified_by_an_unknown_type_never_matches_a_namesake() {
         graph.files["src/app.rs"].edges[0].to, UNRESOLVED_TARGET,
         "nothing here defines `String`, so the local `from` is a namesake"
     );
-    assert_eq!(
-        stats,
-        ResolutionStats {
-            retargeted: 0,
-            ambiguous: 0,
-            unresolved: 1
-        }
-    );
+    assert_eq!(stats, expected_stats(0, 0, 1));
 }
 
 #[test]

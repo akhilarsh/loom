@@ -4,8 +4,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::language::DetectedLanguage;
-
 /// What kind of program element a [`SourceNode`] denotes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -73,7 +71,8 @@ pub struct Span {
 pub enum FileCoverage {
     /// The file was deleted from this overlay.
     Deleted,
-    /// The whole file parsed and every query match was walked.
+    /// The configured syntax pass completed without unnamed definition
+    /// matches. It does not mean the call graph is exhaustive.
     Full,
     /// The file was parsed by a real grammar but the extraction is partial.
     Partial {
@@ -148,21 +147,45 @@ pub struct SourceNode {
     pub parser_version: String,
     /// Coverage of the file this node came from.
     pub coverage: FileCoverage,
+    /// The un-suffixed base id when the node was disambiguated against a
+    /// same-id declaration in its file; empty otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub symbol_key: String,
 }
 
 /// Language tag on a [`SourceNode`].
 ///
-/// Mirrors [`DetectedLanguage`] plus an `Other` arm, because a file-level
-/// lexical node exists for every tracked file regardless of language and
-/// [`DetectedLanguage`] deliberately enumerates only the languages loom
-/// supports elsewhere.
+/// One variant per dialect in `crate::context::extract::dialect::DIALECTS`
+/// plus an `Other` arm, because a file-level lexical node exists for every
+/// tracked file regardless of language. Each unit variant serializes as its
+/// [`NodeLanguage::as_str`] name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NodeLanguage {
+    #[serde(rename = "rust")]
     Rust,
+    #[serde(rename = "typescript")]
     TypeScript,
+    #[serde(rename = "tsx")]
+    Tsx,
+    #[serde(rename = "javascript")]
+    JavaScript,
+    #[serde(rename = "python")]
     Python,
+    #[serde(rename = "go")]
     Go,
+    #[serde(rename = "java")]
+    Java,
+    #[serde(rename = "csharp")]
+    CSharp,
+    #[serde(rename = "ruby")]
+    Ruby,
+    #[serde(rename = "php")]
+    Php,
+    #[serde(rename = "c")]
+    C,
+    #[serde(rename = "cpp")]
+    Cpp,
     /// Any other language: file-level lexical coverage only. Carries the
     /// extension so output can still say what it was.
     Other(String),
@@ -174,20 +197,17 @@ impl NodeLanguage {
         match self {
             NodeLanguage::Rust => "rust",
             NodeLanguage::TypeScript => "typescript",
+            NodeLanguage::Tsx => "tsx",
+            NodeLanguage::JavaScript => "javascript",
             NodeLanguage::Python => "python",
             NodeLanguage::Go => "go",
+            NodeLanguage::Java => "java",
+            NodeLanguage::CSharp => "csharp",
+            NodeLanguage::Ruby => "ruby",
+            NodeLanguage::Php => "php",
+            NodeLanguage::C => "c",
+            NodeLanguage::Cpp => "cpp",
             NodeLanguage::Other(ext) => ext,
-        }
-    }
-}
-
-impl From<DetectedLanguage> for NodeLanguage {
-    fn from(language: DetectedLanguage) -> Self {
-        match language {
-            DetectedLanguage::Rust => NodeLanguage::Rust,
-            DetectedLanguage::TypeScript => NodeLanguage::TypeScript,
-            DetectedLanguage::Python => NodeLanguage::Python,
-            DetectedLanguage::Go => NodeLanguage::Go,
         }
     }
 }

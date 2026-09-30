@@ -1,6 +1,8 @@
 use super::*;
 use crate::context::graph_store::FileEntry;
-use crate::context::source_graph::{NodeLanguage, SourceEdge, SourceEdgeKind, Span};
+use crate::context::source_graph::{
+    EdgeProvenance, NodeLanguage, SourceEdge, SourceEdgeKind, Span,
+};
 use serial_test::serial;
 use std::collections::BTreeMap;
 use tempfile::TempDir;
@@ -33,6 +35,7 @@ fn node(
         language: NodeLanguage::Rust,
         parser_version: "test".to_string(),
         coverage,
+        symbol_key: String::new(),
     }
 }
 
@@ -46,6 +49,7 @@ fn graph_of(files: Vec<(&str, SourceNode, Vec<SourceEdge>)>) -> ResolvedGraph {
                 coverage: n.coverage.clone(),
                 nodes: vec![n],
                 edges,
+                imports: Vec::new(),
             },
         );
     }
@@ -154,8 +158,8 @@ fn find_all_still_lists_a_parse_error_file_and_reports_its_status() {
     assert!(!rendered.contains("coverage: 1 files"));
 }
 
-/// A three-hop chain (`baz -> bar -> foo`) with a strong parser-derived edge
-/// nearest `foo` and a weaker inferred edge nearest `baz`, for
+/// A three-hop chain (`baz -> bar -> foo`) with a strong local-name edge
+/// nearest `foo` and a weaker unique-name edge nearest `baz`, for
 /// [`impact_row_shows_provenance_and_the_weakest_confidence_on_the_path`] to
 /// assert the impact view reports each edge's provenance and the WEAKEST
 /// confidence along the path, not just the nearest hop's.
@@ -182,19 +186,22 @@ pub(super) fn impact_chain_graph() -> ResolvedGraph {
         FileCoverage::Full,
     );
 
-    // bar --(parser, 1.0)--> foo ; baz --(inferred, 0.5)--> bar
-    let bar_calls_foo = SourceEdge::parser(
+    // bar --(local-name, 0.8)--> foo ; baz --(unique-name, 0.6)--> bar
+    let bar_calls_foo = SourceEdge::bound(
         "src/b.rs#function:bar",
         "src/a.rs#function:foo",
         SourceEdgeKind::Calls,
         "foo",
+        Span::default(),
+        EdgeProvenance::LocalName,
     );
-    let baz_calls_bar = SourceEdge::inferred(
+    let baz_calls_bar = SourceEdge::bound(
         "src/c.rs#function:baz",
         "src/b.rs#function:bar",
         SourceEdgeKind::Calls,
         "bar",
-        0.5,
+        Span::default(),
+        EdgeProvenance::UniqueName,
     );
 
     graph_of(vec![
@@ -217,12 +224,12 @@ fn impact_row_shows_provenance_and_the_weakest_confidence_on_the_path() {
         &impact_args(Vec::new()),
     );
 
-    assert!(rendered.contains("parser"));
-    assert!(rendered.contains("inferred"));
-    assert!(rendered.contains("0.50"));
+    assert!(rendered.contains("local-name"));
+    assert!(rendered.contains("unique-name"));
+    assert!(rendered.contains("0.60"));
     assert!(
-        !rendered.contains("d2  1.00"),
-        "the second hop's weakest link is 0.5, not the first hop's 1.0: {rendered}"
+        !rendered.contains("d2  0.80"),
+        "the second hop's weakest link is 0.6, not the first hop's 0.8: {rendered}"
     );
     assert!(!rendered.contains("coverage:"));
     assert!(!rendered.contains("resolution:"));
@@ -239,9 +246,8 @@ fn empty_impact_names_what_was_not_traversed() {
     );
     let graph = graph_of(vec![("src/lonely.rs", lonely, vec![])]);
     let stats = ResolutionStats {
-        retargeted: 0,
-        ambiguous: 0,
         unresolved: 3,
+        ..Default::default()
     };
 
     let root = TempDir::new().unwrap();
@@ -286,10 +292,12 @@ fn callers_view_lists_direct_callers_with_provenance() {
     let rendered = render_callers(&graph, root.path(), "foo", 0);
 
     assert!(rendered.contains("Callers of src/a.rs#function:foo"));
-    assert!(rendered.contains("  1.00  parser  calls  src/b.rs#function:bar  (src/b.rs:0)"));
+    assert!(rendered.contains("  0.80  local-name  calls  src/b.rs#function:bar  (src/b.rs:0)"));
     assert!(!rendered.contains("src/c.rs#function:baz"));
 }
 
+// Later stages add fields; the struct update keeps this literal compiling.
+#[allow(clippy::needless_update)]
 #[test]
 fn render_footer_prints_coverage_once() {
     let graph = impact_chain_graph();
@@ -297,6 +305,7 @@ fn render_footer_prints_coverage_once() {
         retargeted: 2,
         ambiguous: 1,
         unresolved: 3,
+        ..Default::default()
     };
 
     let rendered = render_footer(&graph, &stats);

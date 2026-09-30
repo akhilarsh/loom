@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 use crate::context::graph_store::{FileEntry, ResolvedGraph};
 use crate::context::source_graph::{
-    node_id, EdgeProvenance, FileCoverage, NodeLanguage, SourceEdge, SourceEdgeKind, SourceNode,
-    SourceNodeKind, Span,
+    node_id, syntax_confidence, EdgeProvenance, FileCoverage, NodeLanguage, SourceEdge,
+    SourceEdgeKind, SourceNode, SourceNodeKind, Span,
 };
 
 pub(crate) fn file_node(path: &str) -> SourceNode {
@@ -24,6 +24,7 @@ pub(crate) fn file_node(path: &str) -> SourceNode {
         language: NodeLanguage::Rust,
         parser_version: "test".to_string(),
         coverage: FileCoverage::Full,
+        symbol_key: String::new(),
     }
 }
 
@@ -62,6 +63,7 @@ fn entry_of(path: &str, symbols: Vec<SourceNode>, edges: Vec<SourceEdge>) -> Fil
         nodes,
         edges,
         coverage: FileCoverage::Full,
+        imports: Vec::new(),
     }
 }
 
@@ -119,8 +121,8 @@ pub(crate) fn graph_from(files: Vec<(&str, &[&str], Vec<SourceEdge>)>) -> Resolv
 }
 
 /// An edge with fields set exactly as written — the only way to build one the
-/// extractor constructors would refuse (a `Parser` edge left unresolved, or an
-/// inferred edge above the extraction ceiling).
+/// extractor constructors would refuse (a `Structural` edge left unresolved, or
+/// a syntax edge above the extraction ceiling).
 pub(crate) fn edge_at(
     from: &str,
     to: &str,
@@ -135,5 +137,55 @@ pub(crate) fn edge_at(
         provenance,
         confidence,
         symbol: String::new(),
+        sites: Vec::new(),
+        candidates: Vec::new(),
+        receiver: None,
+    }
+}
+
+/// A `Syntax` edge of `kind` leaving `from` and naming `symbol`, with no target
+/// yet: what an extractor emits for a name it could not bind in its own file.
+pub(crate) fn unresolved_edge(
+    from: impl Into<String>,
+    kind: SourceEdgeKind,
+    symbol: impl Into<String>,
+) -> SourceEdge {
+    SourceEdge::syntax(from, kind, symbol, Span::default(), syntax_confidence(kind))
+}
+
+/// A resolved edge as an extractor emits it for a same-file hit: containment is
+/// `Structural`, every other kind `LocalName`.
+pub(crate) fn local_edge(
+    from: impl Into<String>,
+    to: impl Into<String>,
+    kind: SourceEdgeKind,
+    symbol: impl Into<String>,
+) -> SourceEdge {
+    match kind {
+        SourceEdgeKind::Contains => SourceEdge::structural(from, to, symbol),
+        _ => SourceEdge::bound(
+            from,
+            to,
+            kind,
+            symbol,
+            Span::default(),
+            EdgeProvenance::LocalName,
+        ),
+    }
+}
+
+/// The three residue counts a resolution pass reports, in the order they read.
+// Later stages add fields; the struct update keeps this literal compiling.
+#[allow(clippy::needless_update)]
+pub(crate) fn expected_stats(
+    retargeted: usize,
+    ambiguous: usize,
+    unresolved: usize,
+) -> crate::context::resolve::ResolutionStats {
+    crate::context::resolve::ResolutionStats {
+        retargeted,
+        ambiguous,
+        unresolved,
+        ..Default::default()
     }
 }

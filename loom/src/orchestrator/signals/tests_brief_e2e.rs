@@ -228,6 +228,7 @@ fn span_target_node() -> SourceNode {
         language: NodeLanguage::Rust,
         parser_version: "test+v1".to_string(),
         coverage: FileCoverage::Full,
+        symbol_key: String::new(),
     }
 }
 
@@ -249,6 +250,7 @@ fn write_stage_overlay(root: &Path, stage_id: &str, node: &SourceNode) {
             nodes: vec![node.clone()],
             edges: Vec::new(),
             coverage: FileCoverage::Full,
+            imports: Vec::new(),
         },
     );
     let layer = GraphLayer {
@@ -257,6 +259,7 @@ fn write_stage_overlay(root: &Path, stage_id: &str, node: &SourceNode) {
         built_at: None,
         files,
         blob_index: BTreeMap::new(),
+        schema_version: crate::context::source_graph::GRAPH_SCHEMA_VERSION,
     };
     graph_store
         .save_overlay("default", stage_id, &layer)

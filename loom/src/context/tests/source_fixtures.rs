@@ -10,6 +10,7 @@ use crate::context::rank::RankedCandidate;
 use crate::context::schema::{
     Channel, ChunkId, FileCoverage, NodeLanguage, SelectionReason, SourceNode, SourceNodeKind, Span,
 };
+use crate::context::source_graph::{syntax_confidence, EdgeProvenance, SourceEdge, SourceEdgeKind};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -33,6 +34,7 @@ pub(super) fn node(
         language: NodeLanguage::Rust,
         parser_version: "test+v1".to_string(),
         coverage,
+        symbol_key: String::new(),
     }
 }
 
@@ -64,6 +66,7 @@ pub(super) fn graph(files: Vec<(&str, Vec<SourceNode>)>) -> ResolvedGraph {
                 nodes,
                 edges: Vec::new(),
                 coverage: FileCoverage::Full,
+                imports: Vec::new(),
             },
         );
     }
@@ -91,4 +94,25 @@ pub(super) fn source_candidate(id: &str, score: f32, token_count: usize) -> Rank
         matched_term_count: 0,
         confidence_ceiling: None,
     }
+}
+
+/// A resolved edge as an extractor emits it for a same-file hit: containment is
+/// `Structural`, every other kind `LocalName`.
+pub(super) fn local_edge(from: &str, to: &str, kind: SourceEdgeKind, symbol: &str) -> SourceEdge {
+    match kind {
+        SourceEdgeKind::Contains => SourceEdge::structural(from, to, symbol),
+        _ => SourceEdge::bound(
+            from,
+            to,
+            kind,
+            symbol,
+            Span::default(),
+            EdgeProvenance::LocalName,
+        ),
+    }
+}
+
+/// An edge of `kind` that names `symbol` but no target.
+pub(super) fn unresolved_edge(from: &str, kind: SourceEdgeKind, symbol: &str) -> SourceEdge {
+    SourceEdge::syntax(from, kind, symbol, Span::default(), syntax_confidence(kind))
 }

@@ -1,4 +1,6 @@
-use super::source_fixtures::{full_node, graph, node, source_candidate};
+use super::source_fixtures::{
+    full_node, graph, local_edge, node, source_candidate, unresolved_edge,
+};
 use crate::context::config::RetrievalConfig;
 use crate::context::graph_store::ResolvedGraph;
 use crate::context::rank::{RankQuery, RankedCandidate};
@@ -6,7 +8,9 @@ use crate::context::rank_source::{expand_from_seeds_for_test, rank_source};
 use crate::context::schema::{
     Channel, Confidence, FileCoverage, SelectionReason, SourceNode, SourceNodeKind,
 };
-use crate::context::source_graph::{SourceEdge, SourceEdgeKind, UNRESOLVED_TARGET};
+use crate::context::source_graph::{
+    EdgeProvenance, SourceEdge, SourceEdgeKind, Span, UNRESOLVED_TARGET,
+};
 
 const SEED: &str = "src/seed.rs#function:Seed";
 const NEIGHBOUR: &str = "src/neighbour.rs#function:neighbour";
@@ -36,8 +40,15 @@ fn expand(ranked: Vec<RankedCandidate>, graph: &ResolvedGraph) -> Vec<RankedCand
 }
 
 fn resolved_edge(from: &str, to: &str, kind: SourceEdgeKind, confidence: f32) -> SourceEdge {
-    let mut edge = SourceEdge::unresolved(from, kind, to);
-    assert!(edge.resolve_to(to, confidence));
+    let mut edge = SourceEdge::bound(
+        from,
+        to,
+        kind,
+        to,
+        Span::default(),
+        EdgeProvenance::UniqueName,
+    );
+    edge.confidence = confidence;
     edge
 }
 
@@ -52,8 +63,8 @@ fn an_exact_symbol_seed_pulls_in_its_resolved_callers_and_callees_as_graph_neigh
             function(callee, "src/callee.rs"),
         ],
         vec![
-            SourceEdge::parser(SEED, callee, SourceEdgeKind::Calls, "callee"),
-            SourceEdge::parser(caller, SEED, SourceEdgeKind::Calls, "Seed"),
+            local_edge(SEED, callee, SourceEdgeKind::Calls, "callee"),
+            local_edge(caller, SEED, SourceEdgeKind::Calls, "Seed"),
         ],
     );
     let query = RankQuery {
@@ -78,8 +89,8 @@ fn contains_and_imports_edges_never_expand() {
             function(imported, "src/import.rs"),
         ],
         vec![
-            SourceEdge::parser(SEED, contained, SourceEdgeKind::Contains, "child"),
-            SourceEdge::parser(SEED, imported, SourceEdgeKind::Imports, "imported"),
+            local_edge(SEED, contained, SourceEdgeKind::Contains, "child"),
+            local_edge(SEED, imported, SourceEdgeKind::Imports, "imported"),
         ],
     );
 
@@ -97,7 +108,7 @@ fn unresolved_and_low_confidence_edges_never_expand() {
             function(UNRESOLVED_TARGET, "src/unresolved.rs"),
         ],
         vec![
-            SourceEdge::unresolved(SEED, SourceEdgeKind::Calls, "missing"),
+            unresolved_edge(SEED, SourceEdgeKind::Calls, "missing"),
             resolved_edge(SEED, low, SourceEdgeKind::Calls, 0.49),
         ],
     );
@@ -118,7 +129,7 @@ fn a_file_node_is_never_a_neighbour() {
     );
     let fixture = graph_with_edges(
         vec![function(SEED, "src/seed.rs"), file],
-        vec![SourceEdge::parser(
+        vec![local_edge(
             SEED,
             "src/file.rs",
             SourceEdgeKind::References,
@@ -137,7 +148,7 @@ fn a_neighbour_that_is_already_a_candidate_is_not_duplicated() {
             function(SEED, "src/seed.rs"),
             function(NEIGHBOUR, "src/neighbour.rs"),
         ],
-        vec![SourceEdge::parser(
+        vec![local_edge(
             SEED,
             NEIGHBOUR,
             SourceEdgeKind::Calls,
@@ -192,12 +203,7 @@ fn expansion_is_capped_per_seed_and_overall() {
         for neighbour in 0..4 {
             let id = format!("n-{seed}-{neighbour}");
             nodes.push(function(&id, &format!("src/{id}.rs")));
-            edges.push(SourceEdge::parser(
-                &seed_id,
-                &id,
-                SourceEdgeKind::Calls,
-                &id,
-            ));
+            edges.push(local_edge(&seed_id, &id, SourceEdgeKind::Calls, &id));
         }
     }
     let expanded = expand(ranked, &graph_with_edges(nodes, edges));
@@ -212,7 +218,7 @@ fn no_seed_means_no_expansion_and_no_adjacency_work() {
             function(SEED, "src/seed.rs"),
             function(NEIGHBOUR, "src/neighbour.rs"),
         ],
-        vec![SourceEdge::parser(
+        vec![local_edge(
             SEED,
             NEIGHBOUR,
             SourceEdgeKind::Calls,
@@ -231,7 +237,7 @@ fn a_neighbour_scores_below_its_seed_and_carries_only_the_graph_neighbour_reason
             function(SEED, "src/seed.rs"),
             function(NEIGHBOUR, "src/neighbour.rs"),
         ],
-        vec![SourceEdge::parser(
+        vec![local_edge(
             SEED,
             NEIGHBOUR,
             SourceEdgeKind::Implements,
@@ -261,7 +267,7 @@ fn a_neighbour_in_a_test_path_is_downweighted_like_any_other_node() {
             function(SEED, "src/seed.rs"),
             function(test_neighbour, "tests/neighbour.rs"),
         ],
-        vec![SourceEdge::parser(
+        vec![local_edge(
             SEED,
             test_neighbour,
             SourceEdgeKind::Extends,
@@ -310,7 +316,7 @@ fn a_neighbour_without_full_coverage_never_expands() {
     );
     let fixture = graph_with_edges(
         vec![function(SEED, "src/seed.rs"), partial],
-        vec![SourceEdge::parser(
+        vec![local_edge(
             SEED,
             NEIGHBOUR,
             SourceEdgeKind::Calls,

@@ -4,6 +4,7 @@
 //! fixture; what is asserted here is the contract those modules cannot break —
 //! a file never vanishes, and a degraded mode is always labelled.
 
+use super::dialect::{dialect_by_id, GrammarPack, DIALECTS};
 use super::*;
 use crate::context::source_graph::MAX_EXTRACTED_FILE_BYTES;
 use std::path::Path;
@@ -65,30 +66,122 @@ fn an_empty_file_still_produces_one_node_with_a_valid_span() {
 #[test]
 fn parser_version_encodes_grammar_query_and_extractor_revision() {
     let identity = ExtractorIdentity {
+        dialect: "rust",
         grammar_version: "0.24.2",
         query_digest: "sha256:0123456789abcdefdeadbeef".to_string(),
         extractor_version: 3,
     };
-    assert_eq!(identity.to_parser_version(), "0.24.2+0123456789ab+v3");
+    assert_eq!(identity.to_parser_version(), "rust:0.24.2+0123456789ab+v3");
 }
 
 #[cfg(feature = "source-graph")]
 #[test]
-fn every_registered_extractor_claims_a_distinct_language() {
+fn every_registered_extractor_claims_a_distinct_dialect() {
     let extractors = registry();
     assert!(
         !extractors.is_empty(),
         "the source-graph feature is on, so the registry must not be empty"
     );
 
-    let mut languages: Vec<String> = extractors
+    let mut ids: Vec<&str> = extractors
         .iter()
-        .map(|extractor| extractor.language().canonical_name().to_string())
+        .map(|extractor| extractor.dialect().id)
         .collect();
-    let before = languages.len();
-    languages.sort();
-    languages.dedup();
-    assert_eq!(before, languages.len(), "two extractors claim one language");
+    let before = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(before, ids.len(), "two extractors claim one dialect");
+    for extractor in &extractors {
+        let dialect = extractor.dialect();
+        assert!(
+            DIALECTS.iter().any(|row| row.id == dialect.id),
+            "{} is not in DIALECTS",
+            dialect.id
+        );
+        assert_eq!(extractor.cache_identity().dialect, dialect.id);
+    }
+}
+
+#[test]
+fn every_extension_appears_in_exactly_one_dialect() {
+    let mut seen = std::collections::BTreeMap::new();
+    for dialect in DIALECTS {
+        for extension in dialect.extensions {
+            assert_eq!(*extension, extension.to_ascii_lowercase());
+            let previous = seen.insert(*extension, dialect.id);
+            assert!(
+                previous.is_none(),
+                "{extension} claimed by {previous:?} and {}",
+                dialect.id
+            );
+        }
+    }
+}
+
+#[test]
+fn every_dialect_id_is_its_language_name() {
+    for dialect in DIALECTS {
+        assert_eq!(dialect.id, dialect.language.as_str());
+        assert!(dialect_by_id(dialect.id).is_some());
+    }
+}
+
+#[test]
+fn dialect_lookup_lowercases_the_extension() {
+    assert_eq!(dialect_for_path(Path::new("a/B.H")).unwrap().id, "cpp");
+    assert_eq!(
+        dialect_for_path(Path::new("src/Main.RS")).unwrap().id,
+        "rust"
+    );
+    assert!(dialect_for_path(Path::new("notes.md")).is_none());
+    assert!(dialect_for_path(Path::new("Makefile")).is_none());
+}
+
+#[test]
+fn a_known_dialect_without_an_extractor_is_a_named_gap() {
+    let extractors = registry();
+
+    if !GrammarPack::WaveB.compiled() {
+        let extraction = extract_file(&extractors, Path::new("src/Main.java"), b"class A {}");
+        assert_eq!(extraction.nodes.len(), 1);
+        assert_eq!(extraction.nodes[0].language, NodeLanguage::Java);
+        assert_eq!(
+            extraction.nodes[0].parser_version,
+            lexical::LEXICAL_PARSER_VERSION
+        );
+        assert_eq!(
+            extraction.coverage,
+            FileCoverage::LexicalOnly {
+                detail: "grammar pack source-graph-wave-b not compiled in (java)".to_string()
+            }
+        );
+    }
+
+    let tsx_registered = extractors
+        .iter()
+        .any(|extractor| extractor.dialect().id == "tsx");
+    if GrammarPack::Core.compiled() && !tsx_registered {
+        let extraction = extract_file(&extractors, Path::new("src/App.tsx"), b"export {}");
+        assert_eq!(
+            extraction.coverage,
+            FileCoverage::LexicalOnly {
+                detail: "no extractor registered for dialect tsx".to_string()
+            }
+        );
+    }
+}
+
+#[test]
+fn a_gap_and_an_unknown_path_are_told_apart_by_lookup() {
+    let extractors = registry();
+    assert!(matches!(
+        extractor_for(&extractors, Path::new("readme.md")),
+        Lookup::Unknown
+    ));
+    assert!(matches!(
+        extractor_for(&extractors, Path::new("src/lib.rs")),
+        Lookup::Extractor(_) | Lookup::Gap { .. }
+    ));
 }
 
 #[cfg(feature = "source-graph")]
@@ -101,7 +194,7 @@ fn every_registered_extractor_has_a_compilable_query() {
         assert!(
             extraction.is_ok(),
             "{} failed on empty input: {:?}",
-            extractor.language(),
+            extractor.dialect().id,
             extraction.err()
         );
     }
