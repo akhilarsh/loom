@@ -46,7 +46,7 @@ file src/sandbox/settings/tests.rs 1596
 file src/skills/index.rs 564
 file src/verify/duplicate_detection.rs 436
 file src/verify/transitions/state.rs 433
-file tests/adjudication_e2e.rs 585
+file tests/adjudication_e2e.rs 525
 file tests/e2e/tmux_backend.rs 588
 file tests/failure_resume.rs 468
 file tests/integration/merge_conflict_recovery.rs 412
@@ -100,7 +100,7 @@ function src/daemon/server/broadcast.rs run_status_broadcaster 80
 function src/daemon/server/client.rs handle_client_connection 87
 function src/daemon/server/dispute.rs handle_dispute_criteria 91
 function src/daemon/server/lifecycle.rs run_server 133
-function src/daemon/server/lifecycle.rs start 117
+function src/daemon/server/lifecycle.rs start 100
 function src/daemon/server/orchestrator.rs run_orchestrator 89
 function src/daemon/server/status.rs collect_completion_summary 97
 function src/daemon/server/tests.rs test_collect_status_with_stages 77
@@ -234,6 +234,6 @@ function tests/stage_transitions.rs test_stage_transition_workflow 72
 file src/commands/clean/sessions.rs 403
 file src/git/worktree/tests_settings.rs 437
 file src/utils.rs 403
-file src/commands/repair/tests.rs 647
+file src/commands/repair/tests.rs 489
 function src/fs/permissions/tests/write_rules_tests.rs test_ensure_loom_permissions_prunes_legacy_work_write_grants 56
 function src/git/worktree/tests_settings.rs test_create_worktree_settings_adds_resolved_work_permissions_legacy_layout 86
