@@ -22,6 +22,7 @@ use crate::context::source_graph::{file_node_id, EdgeProvenance, SourceEdgeKind}
 use crate::context::{CoverageReport, ResolutionStats};
 
 mod compose;
+pub mod eval_edges;
 mod filters;
 mod find_all;
 mod impact;

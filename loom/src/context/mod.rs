@@ -59,6 +59,7 @@ pub mod census;
 pub mod config;
 pub mod coverage;
 pub mod delivery;
+pub mod eval_edges;
 pub mod extract;
 pub mod fingerprint;
 pub mod freshness;

@@ -16,6 +16,7 @@ use crate::context::view::ViewOrigin;
 use crate::context::window::{read_window, SourceWindow, WindowError};
 use crate::context::ResolutionStats;
 use crate::fs::work_dir::WorkDir;
+use crate::map::views::eval_edges;
 use crate::map::views::snapshot::{identity_of, SnapshotIdentity};
 use crate::map::views::timings::{timed, Timings};
 use crate::map::views::{
@@ -63,12 +64,19 @@ pub struct MapArgs {
         long,
         conflicts_with_all = [
             "outline", "find_all", "impact", "callers", "callees", "references", "window",
+            "eval_edges",
         ]
     )]
     pub census: bool,
     /// Another git work tree to census (needs --census); repeatable
     #[arg(long, value_name = "DIR")]
     pub root: Vec<PathBuf>,
+    /// Score a labelled corpus (or a directory of corpora) against the thresholds
+    #[arg(long, value_name = "DIR")]
+    pub eval_edges: Option<PathBuf>,
+    /// Thresholds file for --eval-edges (default: the published thresholds)
+    #[arg(long, value_name = "FILE", requires = "eval_edges")]
+    pub thresholds: Option<PathBuf>,
     /// Maximum impact traversal depth
     #[arg(long, default_value_t = 3)]
     pub depth: usize,
@@ -125,6 +133,32 @@ struct Loaded {
 /// Execute the map command in a checkout whether or not `loom init` has run.
 pub fn execute(args: MapArgs) -> Result<()> {
     require_view(&args)?;
+    let eval_exit = args
+        .eval_edges
+        .as_deref()
+        .map(|dir| eval_edges_output(dir, &args))
+        .transpose()?;
+    if requested_views(&args) > usize::from(eval_exit.is_some()) {
+        execute_graph_views(&args)?;
+    }
+    match eval_exit {
+        Some(code) if code != 0 => std::process::exit(code),
+        _ => Ok(()),
+    }
+}
+
+/// Evaluate in memory, print the result, and return the exit code it maps to.
+/// It never opens the `ContextStore` or takes a snapshot.
+fn eval_edges_output(dir: &Path, args: &MapArgs) -> Result<i32> {
+    let outcome = eval_edges::run(dir, args.thresholds.as_deref(), args.json)?;
+    println!("{}", outcome.text);
+    if args.json {
+        eprintln!("{}", outcome.summary);
+    }
+    Ok(outcome.exit_code)
+}
+
+fn execute_graph_views(args: &MapArgs) -> Result<()> {
     let started = Instant::now();
     let work_dir = WorkDir::new(".")?;
     let project_root = work_dir
@@ -136,10 +170,10 @@ pub fn execute(args: MapArgs) -> Result<()> {
     let loaded = load_graph(&project_root, &work_dir, &mut timings)?;
     let output = if args.census {
         timed(&mut timings.query, || {
-            census_output(&loaded, &project_root, &args)
+            census_output(&loaded, &project_root, args)
         })?
     } else {
-        view_output(&loaded, &project_root, &args, &mut timings)?
+        view_output(&loaded, &project_root, args, &mut timings)?
     };
     match output {
         Output::Text(text) => println!("{text}"),
@@ -164,7 +198,7 @@ fn require_view(args: &MapArgs) -> Result<()> {
         bail!(
             "loom map needs a view flag: --outline <PATH>, --find-all <SYMBOL>, \
              --impact <SYMBOL_OR_PATH>, --callers <SYMBOL>, --callees <SYMBOL>, \
-             --references <SYMBOL>, --window <ID>, or --census"
+             --references <SYMBOL>, --window <ID>, --census, or --eval-edges <DIR>"
         );
     }
     Ok(())
@@ -180,6 +214,7 @@ fn requested_views(args: &MapArgs) -> usize {
         args.references.is_some(),
         args.window.is_some(),
         args.census,
+        args.eval_edges.is_some(),
     ]
     .into_iter()
     .filter(|present| *present)
