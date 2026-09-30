@@ -157,7 +157,9 @@ impl PathIndex {
     }
 
     /// File node ids sharing `from`'s package scope, excluding `from` itself. Go
-    /// and Java scope a package to a directory; C# and PHP to a namespace.
+    /// and Java scope a package to a directory; C# and PHP to a namespace. No
+    /// other family has a package scope beyond its imports, so asking for one
+    /// finds nothing and records no key.
     pub(super) fn package_files(
         &self,
         from: &str,
@@ -165,13 +167,39 @@ impl PathIndex {
         keys: &mut BTreeSet<String>,
     ) -> Vec<String> {
         let family = dialect.family;
-        keys.insert(pathset_key(family));
         let files = match family {
             "go" | "java" => self.dir_files(directory_of(from), family),
             "csharp" | "php" => self.same_namespace_files(from, family, keys),
-            _ => Vec::new(),
+            _ => return Vec::new(),
         };
+        keys.insert(pathset_key(family));
         files.into_iter().filter(|id| id != from).collect()
+    }
+
+    /// Whether a type declared in `from` can have parts declared in `other`,
+    /// both files of `family`: within one crate for Rust, whose inherent
+    /// `impl` blocks live in the type's own crate; within one namespace for
+    /// C#, whose `partial` parts share it; anywhere for any other family.
+    pub(super) fn may_share_type(
+        &self,
+        family: &str,
+        from: &str,
+        other: &str,
+        keys: &mut BTreeSet<String>,
+    ) -> bool {
+        match family {
+            "rust" => {
+                keys.insert(pathset_key(family));
+                rust::own_crate_root(self, from) == rust::own_crate_root(self, other)
+            }
+            "csharp" => match (self.declared.get(from), self.declared.get(other)) {
+                // Neither declares a namespace: both are in the global one.
+                (None, None) => true,
+                (Some(ours), Some(theirs)) => !ours.is_disjoint(theirs),
+                _ => false,
+            },
+            _ => true,
+        }
     }
 
     /// File node ids declaring `namespace` in `family`.

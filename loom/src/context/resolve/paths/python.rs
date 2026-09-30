@@ -22,6 +22,14 @@ pub(super) fn module_files(paths: &PathIndex, spec: &str, from: &str) -> Vec<Str
 /// A dotted name. The last segment of `from a.b import c` may be an item rather
 /// than a module, so shorter prefixes are tried, but never below two segments:
 /// a lone leading package name is too loose to suffix-match.
+///
+/// A spec written as one segment (`import utils`) is still suffix-matched
+/// whole, anywhere in the graph. That is a trade-off: the package root is not
+/// known, so a project's top-level module can sit under `src/` or at the root
+/// and only a suffix finds it; the cost is that a standard-library or
+/// third-party module sharing a project file's name (`json`, `logging`) is
+/// taken for that file. Ruby's bare `require 'x'` makes the same trade; Go does
+/// not, because a module-local Go import always carries the module path.
 fn absolute(paths: &PathIndex, spec: &str) -> Vec<String> {
     let path = spec.replace('.', "/");
     let found = prefixes(&path, 2)

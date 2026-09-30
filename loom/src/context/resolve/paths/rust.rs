@@ -7,9 +7,11 @@
 //! anchor keyword dropped, which is all a graph with no crate root can offer.
 //!
 //! Any other path (`x::y`) is internal only when its first segment names a module
-//! file (`x.rs`, `x/mod.rs`) or directory under a crate root or under the citing
-//! module's directory. Otherwise the import is external: `use serde::de::*` is
-//! never the `de.rs` of this project.
+//! file (`x.rs`, `x/mod.rs`) or directory under the citing file's own crate root
+//! (the deepest crate-root directory holding it) or under the citing module's
+//! directory. Otherwise the import is external: `use serde::de::*` is never the
+//! `de.rs` of this project, and in a workspace `use log::info;` in one crate is
+//! never another crate's `log.rs`.
 //!
 //! One exception to that: an integration test, bench or example imports its own
 //! crate by Cargo package name (`use demo::add;` in `tests/add_test.rs`), a name
@@ -25,6 +27,8 @@
 //! `self::` and `super::` reach files *below* the module they name but never that
 //! module itself, because the same line means different modules at the top of a
 //! file and inside an inline `mod` block, and extraction does not record which.
+
+use std::collections::BTreeSet;
 
 use super::{directory_of, join, last_segment, prefixes, PathIndex};
 
@@ -103,12 +107,12 @@ fn anchored(paths: &PathIndex, root: &str, relative: &str, from: &str) -> Vec<St
 }
 
 /// Candidates for a path whose first segment is not an anchor keyword: the path
-/// read from each crate root and from the citing module's own directory. Each
-/// probe is exact, so a first segment that is no module file or directory under
-/// either anchor — an external crate — matches nothing.
+/// read from the citing file's own crate root and from the citing module's own
+/// directory. Each probe is exact, so a first segment that is no module file or
+/// directory under either anchor — an external crate — matches nothing.
 fn unanchored(paths: &PathIndex, relative: &str, from: &str) -> Vec<String> {
-    let mut anchors = paths.crate_roots.clone();
-    anchors.insert(module_dir(from));
+    let crate_root = own_crate_root(paths, from).map(str::to_string);
+    let anchors: BTreeSet<String> = crate_root.into_iter().chain([module_dir(from)]).collect();
     let mut matched: Vec<String> = anchors
         .iter()
         .flat_map(|anchor| under(paths, anchor, relative))
@@ -116,6 +120,18 @@ fn unanchored(paths: &PathIndex, relative: &str, from: &str) -> Vec<String> {
     matched.sort();
     matched.dedup();
     matched
+}
+
+/// The crate-root directory `file` belongs to: the deepest one holding it.
+/// `None` for a file outside every crate root — an integration test, bench,
+/// example or build script, or any file of a graph with no crate root.
+pub(super) fn own_crate_root<'a>(paths: &'a PathIndex, file: &str) -> Option<&'a str> {
+    paths
+        .crate_roots
+        .iter()
+        .filter(|root| is_within(file, root))
+        .max_by_key(|root| root.len())
+        .map(String::as_str)
 }
 
 /// Candidates for a path whose first segment names nothing local and is dropped

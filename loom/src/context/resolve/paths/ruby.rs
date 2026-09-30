@@ -3,7 +3,10 @@
 //! A spec starting `./` or `../` is how `require_relative 'x'` arrives: it names a
 //! file next to the importing one and resolves against that directory only. A bare
 //! spec (`require`, `load`) is found on the load path: `lib/<spec>.rb` when that
-//! file exists, else every `<spec>.rb` suffix match.
+//! file exists, else every `<spec>.rb` suffix match. The load path is not known,
+//! so a one-segment spec naming a gem (`require 'json'`) lands on a project
+//! file of that name when one exists: the same trade-off as a one-segment
+//! Python import (`python::absolute`).
 
 use super::{relative_to, PathIndex};
 

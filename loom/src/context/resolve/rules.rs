@@ -6,8 +6,9 @@
 //! decides the edge or hands it to the next; a refusal is carried forward and
 //! only ever withholds rule 7's bind.
 //!
-//! Any change to what rules 1-7 decide bumps `RESOLVER_VERSION`, so a view
-//! resolved by the previous rules is rebuilt rather than served.
+//! Any change to what rules 1-7 decide bumps `RESOLVER_VERSION`
+//! (`context/view/identity.rs`), so a view resolved by the previous rules is
+//! rebuilt rather than served.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -16,17 +17,11 @@ use crate::context::extract::dialect::{dialect_for_path, DialectSpec};
 use crate::context::graph_store::{FileEntry, ResolvedGraph};
 use crate::context::source_graph::{EdgeProvenance, SourceEdge, SourceEdgeKind, MAX_CANDIDATES};
 
-use super::bindings::{self, Step};
+use super::bindings::{self, relative_spec, Step};
 use super::paths::{import_candidates, PathIndex};
 use super::receivers;
-use super::record::record_file;
+use super::record::{name_key, record_file};
 use super::symbols::SymbolIndex;
-
-/// Families whose files share a package scope beyond imports: Go and Java by
-/// directory, C# and PHP by declared namespace (`PathIndex::package_files`).
-/// Asking any other family would only record a `pathset:` key for a lookup
-/// that cannot find anything.
-const PACKAGE_FAMILIES: [&str; 4] = ["go", "java", "csharp", "php"];
 
 /// What resolution decided for one edge.
 pub(super) enum Outcome {
@@ -124,13 +119,35 @@ impl Site<'_> {
         Outcome::Candidates(ids)
     }
 
-    /// Candidates named like `name` in the edge's family, for a call no rule
-    /// may bind: a dynamic receiver, or an edge a refusal fired on.
+    /// Candidates named like `name` in the edge's family, for a member call no
+    /// rule may bind: a dynamic receiver, or a self call whose type has no such
+    /// member.
     pub(super) fn name_candidates(&self, name: &str, keys: &mut BTreeSet<String>) -> Outcome {
         let ids = self
             .symbols()
             .definitions_in_family(self.family(), name, keys);
         self.candidates_only(ids)
+    }
+
+    /// `ids` a bare name can reach from this edge's dialect. One whose bare
+    /// calls never reach members (design 6.2, rule 3) drops every member of a
+    /// type, as extraction does: there a method is only ever named through a
+    /// receiver or a qualifier, so a bare `run()` is never a Go method
+    /// `Widget::run` or a Rust `W::run`. Whether an id is a member depends on
+    /// its owner type's definitions, so the owner's name is recorded.
+    pub(super) fn bare_reachable(
+        &self,
+        mut ids: Vec<String>,
+        keys: &mut BTreeSet<String>,
+    ) -> Vec<String> {
+        if self.dialect.bare_calls_reach_members {
+            return ids;
+        }
+        let symbols = self.symbols();
+        let owners = ids.iter().filter_map(|id| symbols.owner(id));
+        keys.extend(owners.map(|owner| name_key(self.family(), owner)));
+        ids.retain(|id| !symbols.is_member(id));
+        ids
     }
 }
 
@@ -203,10 +220,12 @@ fn call(site: &Site, keys: &mut BTreeSet<String>) -> Outcome {
     }
 }
 
-/// Rule 1: the qualified spelling against node scopes, longest first, then the
-/// qualifier as a module path naming the files `name` is looked up in. A
-/// qualifier that names no file may still be an import's local name (rule 4);
-/// otherwise it is a call out of the graph and stays a gap, because every
+/// Rule 1: a qualified spelling. An import binding its first segment decides
+/// first (rule 4, design 6.2 rule 3): an import of a module outside the graph
+/// leaves the call a gap, and one whose files lack the rest hands it on. Then
+/// the spelling against node scopes, longest first, then the qualifier as a
+/// module path naming the files `name` is looked up in. A qualifier naming
+/// nothing here is a call out of the graph and stays a gap, because every
 /// same-named definition here is then a namesake rather than a candidate.
 fn qualified(
     site: &Site,
@@ -215,31 +234,81 @@ fn qualified(
     name: &str,
     keys: &mut BTreeSet<String>,
 ) -> Outcome {
-    let family = site.family();
     let segments: Vec<&str> = site.edge.symbol.split(separator).collect();
-    for start in 0..segments.len() - 1 {
-        let spelling = segments[start..].join("::");
-        if !site.symbols().lookup(family, &spelling, keys).is_empty() {
-            let ids = site
-                .symbols()
-                .definitions_in_family(family, &spelling, keys);
-            return site.decide(ids, EdgeProvenance::Import);
-        }
+    match bindings::qualified_import(site, &segments, keys) {
+        Step::Decided(outcome) => return outcome,
+        Step::Refused => return Outcome::Unresolved,
+        Step::Next => {}
+    }
+    if let Some(outcome) = scope_match(site, separator, &segments, keys) {
+        return outcome;
     }
     let paths = &site.indexes.paths;
     let files = paths.module_files(qualifier, site.file, site.dialect, keys);
-    if !files.is_empty() {
-        let ids = site
-            .symbols()
-            .definitions_in_files(family, name, &files, keys);
-        return site.decide(ids, EdgeProvenance::Import);
+    if files.is_empty() {
+        return Outcome::Unresolved;
     }
-    bindings::qualified_import(site, &segments, keys).unwrap_or(Outcome::Unresolved)
+    let ids = site
+        .symbols()
+        .definitions_in_files(site.family(), name, &files, keys);
+    site.decide(ids, EdgeProvenance::Import)
+}
+
+/// Rule 1's scope match: the longest suffix of the spelling that node scopes
+/// end in, reached only by dropping leading segments that name something here.
+/// `crate::a::Widget::new` drops `crate::a` to match `Widget::new`;
+/// `std::io::Error::new` never drops `std::io` to reach a local `Error::new`.
+/// An owner (the segment before the name) that only `impl` blocks carry is not
+/// shown to be defined here: `String::from` beside `impl From<Name> for String`
+/// may be std's, so the matches are candidates and nothing binds. `None` when
+/// no such suffix matches.
+fn scope_match(
+    site: &Site,
+    separator: &str,
+    segments: &[&str],
+    keys: &mut BTreeSet<String>,
+) -> Option<Outcome> {
+    let family = site.family();
+    let symbols = site.symbols();
+    for start in 0..segments.len() - 1 {
+        let spelling = segments[start..].join("::");
+        if symbols.lookup(family, &spelling, keys).is_empty()
+            || !placed(site, separator, &segments[..start], keys)
+        {
+            continue;
+        }
+        let ids = symbols.definitions_in_family(family, &spelling, keys);
+        let owner = segments[segments.len() - 2];
+        if symbols.only_implemented(family, owner, keys) {
+            return Some(site.candidates_only(ids));
+        }
+        return Some(site.decide(ids, EdgeProvenance::Import));
+    }
+    None
+}
+
+/// Whether the leading segments a qualified spelling drops name something in
+/// this graph: none at all, a path starting at a root (Rust `crate`, `self`,
+/// `super`, or the empty segment of C++ `::a::f`), or a module path the
+/// dialect's conventions place on files.
+fn placed(site: &Site, separator: &str, dropped: &[&str], keys: &mut BTreeSet<String>) -> bool {
+    let Some(first) = dropped.first() else {
+        return true;
+    };
+    if first.is_empty() || relative_spec(first) {
+        return true;
+    }
+    let path = dropped.join(separator);
+    let paths = &site.indexes.paths;
+    let files = paths.module_files(&path, site.file, site.dialect, keys);
+    !files.is_empty()
 }
 
 /// Rules 4 to 7 for a bare name: a named import, the package, the glob
 /// imports, then graph-wide uniqueness. Rule 4's external module skips rule 6,
 /// and either refusal leaves rule 7 recording candidates instead of binding.
+/// Rules 5 to 7 see only definitions a bare name can reach
+/// ([`Site::bare_reachable`]).
 fn bare(site: &Site, name: &str, keys: &mut BTreeSet<String>) -> Outcome {
     let mut refused = false;
     match bindings::named_import(site, name, keys) {
@@ -257,28 +326,25 @@ fn bare(site: &Site, name: &str, keys: &mut BTreeSet<String>) -> Outcome {
             Step::Next => {}
         }
     }
+    let family = site.family();
+    let found = site.symbols().definitions_in_family(family, name, keys);
+    let ids = site.bare_reachable(found, keys);
     if refused {
-        return site.name_candidates(name, keys);
+        return site.candidates_only(ids);
     }
-    let ids = site
-        .symbols()
-        .definitions_in_family(site.family(), name, keys);
     site.decide(ids, EdgeProvenance::UniqueName)
 }
 
 /// Rule 5: `name` among the other files of the edge's package. `None` when the
-/// package defines nothing by that name.
+/// family has no package scope or the package defines nothing by that name.
 fn package_scope(site: &Site, name: &str, keys: &mut BTreeSet<String>) -> Option<Outcome> {
-    let family = site.family();
-    if !PACKAGE_FAMILIES.contains(&family) {
+    let paths = &site.indexes.paths;
+    let files = paths.package_files(site.file, site.dialect, keys);
+    if files.is_empty() {
         return None;
     }
-    let files = site
-        .indexes
-        .paths
-        .package_files(site.file, site.dialect, keys);
-    let ids = site
-        .symbols()
-        .definitions_in_files(family, name, &files, keys);
+    let symbols = site.symbols();
+    let found = symbols.definitions_in_files(site.family(), name, &files, keys);
+    let ids = site.bare_reachable(found, keys);
     (!ids.is_empty()).then(|| site.decide(ids, EdgeProvenance::Import))
 }

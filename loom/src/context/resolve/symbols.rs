@@ -11,9 +11,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::context::extract::dialect::dialect_for_path;
 use crate::context::graph_store::ResolvedGraph;
-use crate::context::source_graph::SourceNodeKind;
+use crate::context::source_graph::{SourceEdgeKind, SourceNode, SourceNodeKind};
 
+use super::paths::family_of;
 use super::record::{answers_to, name_key};
 
 /// Family -> spelling -> ids of the nodes answering to that spelling.
@@ -32,6 +34,11 @@ pub struct SymbolIndex {
     /// Constructor id -> ids of the types it constructs: a function `T` whose
     /// scope is a type `T`'s scope plus `T` (Java, C#, C++).
     constructors: BTreeMap<String, Vec<String>>,
+    /// Ids of the members of a type. See [`SymbolIndex::is_member`].
+    members: BTreeSet<String>,
+    /// Id -> last name segment of its owner scope (its scope minus the last
+    /// segment), for every node that has one. See [`SymbolIndex::owner`].
+    owners: BTreeMap<String, String>,
 }
 
 impl SymbolIndex {
@@ -82,7 +89,37 @@ impl SymbolIndex {
             ids.sort();
             ids.dedup();
         }
+        (index.members, index.owners) = membership(graph);
         index
+    }
+
+    /// Whether the node `id` is a member of a type: its owner scope (its scope
+    /// minus the last segment) is the scope of a `Type`, `Implementation` or
+    /// `Interface` of its family, wherever that is declared (a Go method
+    /// `Widget::run` beside `type Widget` in another file of the package), such
+    /// a node contains it, or it is a Go method (see [`is_method`]).
+    pub(super) fn is_member(&self, id: &str) -> bool {
+        self.members.contains(id)
+    }
+
+    /// Whether `name` is carried in `family` by `impl` blocks alone. An `impl`
+    /// does not define its type (see [`Self::definitions_in_family`]), and
+    /// `impl From<Name> for String` names a type the graph may not hold at all.
+    pub(super) fn only_implemented(
+        &self,
+        family: &str,
+        name: &str,
+        keys: &mut BTreeSet<String>,
+    ) -> bool {
+        let ids = self.lookup(family, name, keys);
+        !ids.is_empty() && ids.iter().all(|id| self.implementations.contains(id))
+    }
+
+    /// The last name segment of the owner scope of the node `id` (`Widget` for
+    /// `Widget::run`): the name whose definitions decide [`Self::is_member`],
+    /// so a lookup that asked records it. `None` for a top-level node.
+    pub(super) fn owner(&self, id: &str) -> Option<&str> {
+        self.owners.get(id).map(String::as_str)
     }
 
     /// `ids` as the targets of a call. A file is never called, whatever its
@@ -173,6 +210,63 @@ impl SymbolIndex {
     }
 }
 
+/// Ids of every member of a type in `graph`, as [`SymbolIndex::is_member`]
+/// defines one, and every owner name, as [`SymbolIndex::owner`] reports it.
+fn membership(graph: &ResolvedGraph) -> (BTreeSet<String>, BTreeMap<String, String>) {
+    let mut scopes: BTreeSet<(&str, &[String])> = BTreeSet::new();
+    let mut types: BTreeSet<&str> = BTreeSet::new();
+    for node in graph.nodes().filter(|node| declares_members(node.kind)) {
+        if let Some(family) = family_of(&node.path) {
+            scopes.insert((family, node.scope.as_slice()));
+            types.insert(node.id.as_str());
+        }
+    }
+    let mut members = BTreeSet::new();
+    let mut owners = BTreeMap::new();
+    for node in graph.nodes() {
+        let owner = node.scope.split_last().map(|(_, owner)| owner);
+        let (Some(family), Some(owner)) = (family_of(&node.path), owner) else {
+            continue;
+        };
+        let Some(owner_name) = owner.last() else {
+            continue;
+        };
+        owners.insert(node.id.clone(), owner_name.clone());
+        if scopes.contains(&(family, owner)) || is_method(node) {
+            members.insert(node.id.clone());
+        }
+    }
+    let contained = graph
+        .edges()
+        .filter(|edge| edge.kind == SourceEdgeKind::Contains && types.contains(edge.from.as_str()));
+    members.extend(contained.map(|edge| edge.to.clone()));
+    (members, owners)
+}
+
+/// Dialects whose only function scoped under an owner is a method: Go's
+/// `func (s *stack) len()` is `stack::len`, and Go has no other qualified
+/// function.
+const METHOD_SCOPED_DIALECTS: [&str; 1] = ["go"];
+
+/// Whether `node` is a function scoped under its receiver type in a dialect of
+/// [`METHOD_SCOPED_DIALECTS`]: a member even when the graph holds no node of
+/// that type, as when the type's file failed to parse.
+fn is_method(node: &SourceNode) -> bool {
+    node.kind == SourceNodeKind::Function
+        && node.scope.len() > 1
+        && dialect_for_path(&node.path)
+            .is_some_and(|dialect| METHOD_SCOPED_DIALECTS.contains(&dialect.id))
+}
+
+/// Whether a node of `kind` has members: a type, an `impl` block or an
+/// interface (trait).
+pub(super) fn declares_members(kind: SourceNodeKind) -> bool {
+    matches!(
+        kind,
+        SourceNodeKind::Type | SourceNodeKind::Implementation | SourceNodeKind::Interface
+    )
+}
+
 /// Whether a function scope names a constructor: its last two segments are
 /// equal, as in `Widget::Widget`.
 fn constructs(scope: &[String]) -> bool {
@@ -184,4 +278,10 @@ fn constructs(scope: &[String]) -> bool {
 pub(super) fn declared_in(id: &str, file: &str) -> bool {
     id.strip_prefix(file)
         .is_some_and(|rest| rest.starts_with('#'))
+}
+
+/// The path of the file a node id belongs to: everything before the last `#`,
+/// since a path may hold one and `<kind>:<scope>` never does.
+pub(super) fn file_of(id: &str) -> &str {
+    id.rsplit_once('#').map_or(id, |(file, _)| file)
 }
