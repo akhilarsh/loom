@@ -213,3 +213,23 @@ same settings file, the strip must run first — this function does not do it fo
 **Why:** `default_paths` resolved roots from the environment alone and nothing persisted the roots an install chose; the knowledge entry claimed the flagless self-update path "retains configured roots", which held only while the variables stayed exported.
 **Prevention:** A setting that picks where a later automatic step writes must be persisted by the step that chose it, not re-derived from the caller's environment.
 **Fix:** `assets/install/roots.rs` records the roots in `~/.config/loom/install-roots.toml` after each flagless `install-assets`; `default_paths` reads it between the env override and the default.
+
+## StageSummary Is a Wire Type: Status Clients Recompute Attention From Deserialized Data
+
+**What happened:** a brief told an implementer to add merge-resolver facts to `StageSummary` with `#[serde(skip)]` so the dashboard wire would not change. Every daemon-sourced frame would then have shown the default (no live resolver, 0 attempts), because the facts exist only in the daemon's copy.
+
+**Why:** `StatusData` is built in the daemon (`daemon/server/status.rs`), sent as JSON in `Response::StatusUpdate`, and deserialized by both the web broadcaster (`commands/status/web/broadcast.rs` `classify_response`) and the live TUI (`commands/status/ui/tui/app.rs`). Each client calls `attention_entries` on the deserialized stages, so any input to that function must survive serde. Tests that build attention from in-memory stages cannot see the loss.
+
+**Prevention:** a field that `attention_entries` or any renderer reads must be serialized. Use `#[serde(default, skip_serializing_if = "Option::is_none")]` for state-specific facts. The browser's `stageSummarySchema` (`web/src/api/schema.ts`) is `.strict()`, so either add the key there or strip it in `collect_snapshot` before the browser snapshot. Pin it with a test that round-trips through `serde_json` before computing attention.
+
+**Fix:** `merge_resolver_session` and `merge_resolver_attempts` are optional keys, present only on MergeConflict/MergeBlocked stages. They cross the daemon socket, and `without_merge_resolver_facts` (`commands/status/web/model.rs`) strips them from the browser snapshot once attention is built. `the_running_resolver_note_survives_the_daemon_wire` pins the round trip.
+
+## Operator Guidance Keyed on Status Alone Told Operators to Do the Daemon's Work
+
+**What happened:** every `loom status` view (text, TUI, web "what to do") told the operator to run `loom stage merge` for MergeConflict and MergeBlocked while the daemon's merge resolver was already working on them. It said `loom stage retry` for crashes the daemon auto-retries, `loom stage resume` (hook-internal) for a pending question, and a bare `loom stage human-review` beside its three flagged forms, which rendered as four identical truncated lines. Escalation reasons named `loom stage merge` and `retry` for NeedsHumanReview stages, where both commands refuse.
+
+**Why:** the hint came from a fixed status→command table written before the resolver and auto-retry existed. It saw only the status and the id, and nothing checked a suggested command against that command's own state gate.
+
+**Prevention:** guidance for a state must say whether loom is handling it (`automatic`) and read the facts that decide that (a live resolver session, retry eligibility). A command named in a reason or hint must accept the state the stage will be in when the operator reads it; check the command's gate (`require_merge_state`, `skip_retry` retryable set, `human_review` status check) before naming it.
+
+**Fix:** `AttentionEntry` carries `command`, `note` and `automatic` (architecture/status-data-model.md, Attention Rendering). Merge escalations name `human-review --force-complete` through `manual_merge_steps`.

@@ -49,7 +49,7 @@
 | [signal-generation](architecture/signal-generation.md) | Signal assembly: cache, append helpers, prefixes | 202 |
 | [skill-catalog](architecture/skill-catalog.md) | The two skill roots; 63 catalogued skills | 148 |
 | [source-graph](architecture/source-graph.md) | Source graph honesty contract, extractor, limits | 330 |
-| [status-data-model](architecture/status-data-model.md) | Where each loom status field comes from | 196 |
+| [status-data-model](architecture/status-data-model.md) | Where each loom status field comes from | 205 |
 | [terminal-backends](architecture/terminal-backends.md) | Native and tmux session backends, lane resolution | 285 |
 | [test-runner-adapters](architecture/test-runner-adapters.md) | 23 adapters, profiles, quoting, detect | 49 |
 | [token-accounting-and-receipts](architecture/token-accounting-and-receipts.md) | Usage ledger, --compare, criterion cache | 260 |
@@ -108,7 +108,7 @@
 | [codex-navigation](mistakes/codex-navigation.md) | Forbidding reads instead of fixing a slow reader | 52 |
 | [codex-worker-briefing](mistakes/codex-worker-briefing.md) | Codex brief pitfalls: braces, placeholders, path reuse | 70 |
 | [completion-broker-credential](mistakes/completion-broker-credential.md) | Completion broker fallback, dup naming, exit-0 | 179 |
-| [computed-values-and-hidden-couplings](mistakes/computed-values-and-hidden-couplings.md) | Values computed right but unread downstream | 215 |
+| [computed-values-and-hidden-couplings](mistakes/computed-values-and-hidden-couplings.md) | Values computed right but unread downstream | 235 |
 | [concurrency-and-locking](mistakes/concurrency-and-locking.md) | Locked-handle writes and read-mutate-save races | 36 |
 | [daemon-singleton](mistakes/daemon-singleton.md) | Two daemons shared .loom/work/; now flocked | 141 |
 | [detached-spawn-in-tests](mistakes/detached-spawn-in-tests.md) | No process from a test may outlive the test process | 45 |

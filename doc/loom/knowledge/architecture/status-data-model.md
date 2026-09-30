@@ -124,15 +124,24 @@ There is no persisted next-retry timestamp on disk; the backoff window is recomp
 
 ## Attention Rendering (Static View)
 
-Despite the heading (kept because `loom knowledge` cannot rename a section — see concerns.md), this section is now shared by both views. `attention_entries(stages: &[StageSummary]) -> Vec<AttentionEntry>` (`commands/status/render/attention_model.rs:27`) is the single place a stage is judged to need a human; it is re-exported from `commands/status/render/mod.rs:13`. `render/attention.rs` consumes it for the static blocks (`attention.rs:8,18`) and `TuiApp::render` consumes it for the ledger's attention panel (`app.rs:24,288`, feeding `LedgerView.attention`, rendered by `commands/status/ui/tui/ledger/panels.rs`) — the two views cannot diverge on which stages get flagged.
+Despite the heading (kept because `loom knowledge` cannot rename a section — see concerns.md), this section is shared by every view. `attention_entries(stages: &[StageSummary]) -> Vec<AttentionEntry>` (`commands/status/render/attention_model.rs:120`) is the single place a stage is judged to need a human. `render/attention.rs` prints it for the static blocks, `TuiApp::render` feeds it to the ledger's attention panel (`commands/status/ui/tui/ledger/panels.rs`), and `collect_snapshot` puts it on the web wire as `WebAttention` (`commands/status/web/model.rs`). No view can diverge on which stages get flagged or what it says.
 
-Each block/entry carries a title per status: BLOCKED, MERGE CONFLICT, ACCEPTANCE FAILED, MERGE ERROR, NEEDS REVIEW (`attention.rs:84-88`).
+Each entry carries `command: Option<String>` (a shell command the operator should run), `note: Option<String>` (prose, never shown as a copyable command) and `automatic: bool` (loom is handling the state itself). `status_guidance` (:197) maps each status to a label plus guidance:
 
-Hints shown per status (`attention.rs:115-119`): a retry hint for Blocked and stages that finished with failures; a merge hint for MergeConflict and MergeBlocked; a human-review hint for NeedsHumanReview, whose review command takes an approve flag, a force-finish flag, or a reject flag with a reason (`attention.rs:45-71,108-111`).
+| Label | Guidance |
+| --- | --- |
+| MERGE CONFLICT, MERGE ERROR | automatic; the note names the live merge resolver or says one is awaited, with attempts used out of `MAX_MERGE_RESOLVER_ATTEMPTS` (`merge_guidance` :212) |
+| BLOCKED | automatic auto-retry note when `should_auto_retry` holds (crash or timeout under the limit), else as ACCEPTANCE FAILED (`blocked_guidance` :225) |
+| ACCEPTANCE FAILED | `loom stage retry <id>`, plus `--force` and a limit note once `retry_count >= max_retries` (`retry_guidance` :240) |
+| NEEDS REVIEW | no command; `has_human_review_choices` makes every view print the three full `human_review_choices` commands (:102) |
+| NEEDS INPUT | note: answer the question in the stage's terminal (`loom stage resume` is hook-internal and answers nothing) |
+| ADJUDICATING | automatic note |
+| CLEANUP FAILED | `loom worktree remove <id>` |
+| COMPLETION PENDING / BLOCKED, WRITER UNCONFIRMED | note is the blocker's `next_action`; automatic while the stage is Executing; review choices once it is parked in NeedsHumanReview (:146) |
 
-Evidence lines are capped at `MAX_EVIDENCE_LINES=32` (`commands/status/data/sanitize.rs:30`, raised from an original 20 that silently dropped the last line of a full startup-refusal crash — `loom/src/orchestrator/core/crash_classification.rs:210-211` builds up to 21 evidence lines). A cap that bites now pushes an explicit truncation marker rather than staying silent. A cleanup hint (worktree removal) is shown when `cleanup_warning` is set (`attention.rs:171`).
+The merge facts come from `merge_resolver_facts` in `commands/status/data/collector.rs:152`. It is read-only: `live_merge_resolver` scans the loaded sessions and never calls `find_live_merge_session_for_stage`, which deletes stale signal files. They travel as optional `StageSummary` keys because daemon frames are deserialized before attention is built (mistakes/computed-values-and-hidden-couplings.md), and `without_merge_resolver_facts` strips them from the browser snapshot. The TUI header and the web header count only non-automatic entries, and the web groups them under "needs attention" and "handled by loom". The TUI panel height comes from `attention_line_count` (`panels.rs:93`), so a review entry's three commands are never clipped.
 
-The static execution graph's legend comes from `render_legend` (`render/graph.rs:312-325`), driven by `LEGEND_STATUSES` (`graph.rs:27-41`); the live ledger's on-demand legend overlay is separate (`commands/status/ui/tui/ledger/legend.rs`, toggled by `?`).
+Evidence lines are capped at `MAX_EVIDENCE_LINES=32` (`commands/status/data/sanitize.rs`), because `crash_classification.rs` builds up to 21 evidence lines for a startup-refusal crash. A cap that bites pushes an explicit truncation marker.
 
 ## What the Live TUI Renders Today
 
