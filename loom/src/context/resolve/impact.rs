@@ -13,12 +13,19 @@
 //! confidences would instead punish long chains for their length — five fully
 //! bound hops would decay below a single guess, which is precisely backwards.
 //!
+//! ## Candidate sets
+//!
+//! An ambiguous call keeps the ids it could mean. With `follow_candidates`, each
+//! member is walked as a reverse edge at [`AMBIGUOUS_CANDIDATE_CONFIDENCE`], and a
+//! hit whose path used one is flagged `via_candidates`. A `min_confidence` above
+//! that trust requires bound edges throughout.
+//!
 //! ## What a traversal may not claim
 //!
 //! Reachability here is reachability *in the derived graph*, which is not the
-//! program. Edges the extractors could not resolve are dropped before the walk
-//! rather than treated as edges to an "unresolved" hub, so an absent path means
-//! "not found", never "does not exist".
+//! program. Edges the extractors could not resolve, and could not narrow to a
+//! candidate set, are dropped before the walk rather than treated as edges to an
+//! "unresolved" hub, so an absent path means "not found", never "does not exist".
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -26,6 +33,7 @@ use std::path::PathBuf;
 use crate::context::graph_store::ResolvedGraph;
 use crate::context::source_graph::{
     EdgeProvenance, SourceEdge, SourceEdgeKind, SourceNode, SourceNodeKind,
+    AMBIGUOUS_CANDIDATE_CONFIDENCE,
 };
 
 /// One node reached by a reverse traversal, with the trust of the weakest step.
@@ -42,6 +50,8 @@ pub struct ImpactHit {
     pub weakest_provenance: EdgeProvenance,
     /// Kind of the weakest edge on that path.
     pub weakest_kind: SourceEdgeKind,
+    /// True when the path taken passed through a member of a candidate set.
+    pub via_candidates: bool,
 }
 
 /// Filters and bounds for one reverse-impact traversal.
@@ -55,6 +65,11 @@ pub struct ImpactOptions {
     pub limit: usize,
     pub path_prefix: Option<String>,
     pub min_confidence: f32,
+    /// Walk only edges of these provenance classes; empty walks every class.
+    pub provenances: Vec<EdgeProvenance>,
+    /// Walk each member of an ambiguous edge's candidate set at
+    /// [`AMBIGUOUS_CANDIDATE_CONFIDENCE`].
+    pub follow_candidates: bool,
 }
 
 impl Default for ImpactOptions {
@@ -65,15 +80,40 @@ impl Default for ImpactOptions {
             limit: 0,
             path_prefix: None,
             min_confidence: 0.0,
+            provenances: Vec::new(),
+            follow_candidates: true,
         }
     }
 }
 
-/// Reverse-impact hits plus the number removed by [`ImpactOptions::limit`].
+/// Reverse-impact hits plus the numbers removed by [`ImpactOptions::limit`] and
+/// [`ImpactOptions::path_prefix`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImpactResult {
     pub hits: Vec<ImpactHit>,
     pub suppressed: usize,
+    /// Hits `path_prefix` removed.
+    pub filtered_out: usize,
+}
+
+/// One reverse step: an edge, walked through its target or through one member of
+/// its candidate set.
+#[derive(Debug, Clone, Copy)]
+struct Step<'a> {
+    edge: &'a SourceEdge,
+    candidate: bool,
+}
+
+impl Step<'_> {
+    /// A candidate step trusts [`AMBIGUOUS_CANDIDATE_CONFIDENCE`], whatever the
+    /// edge's own confidence says.
+    fn confidence(&self) -> f32 {
+        if self.candidate {
+            AMBIGUOUS_CANDIDATE_CONFIDENCE
+        } else {
+            self.edge.confidence
+        }
+    }
 }
 
 /// The weakest edge seen so far along one path.
@@ -82,17 +122,26 @@ struct Trust {
     min_confidence: f32,
     provenance: EdgeProvenance,
     kind: SourceEdgeKind,
+    via_candidates: bool,
 }
 
 impl Trust {
-    /// Extend a path by `edge`. `None` is the start node, which has no path yet.
-    fn extend(current: Option<Trust>, edge: &SourceEdge) -> Trust {
+    /// Extend a path by `step`. `None` is the start node, which has no path yet.
+    /// The candidate flag is sticky: it survives even when a later, weaker step
+    /// becomes the weakest.
+    fn extend(current: Option<Trust>, step: Step<'_>) -> Trust {
+        let confidence = step.confidence();
+        let via_candidates = step.candidate || current.is_some_and(|t| t.via_candidates);
         match current {
-            Some(trust) if trust.min_confidence <= edge.confidence => trust,
+            Some(trust) if trust.min_confidence <= confidence => Trust {
+                via_candidates,
+                ..trust
+            },
             _ => Trust {
-                min_confidence: edge.confidence,
-                provenance: edge.provenance,
-                kind: edge.kind,
+                min_confidence: confidence,
+                provenance: step.edge.provenance,
+                kind: step.edge.kind,
+                via_candidates,
             },
         }
     }
@@ -104,20 +153,37 @@ impl From<&ImpactHit> for Trust {
             min_confidence: hit.min_confidence,
             provenance: hit.weakest_provenance,
             kind: hit.weakest_kind,
+            via_candidates: hit.via_candidates,
         }
     }
 }
 
-type Reverse<'a> = BTreeMap<&'a str, Vec<&'a SourceEdge>>;
+type Reverse<'a> = BTreeMap<&'a str, Vec<Step<'a>>>;
 type Nodes<'a> = BTreeMap<&'a str, &'a SourceNode>;
 type Frontier<'a> = Vec<(&'a str, Option<Trust>)>;
 
-/// Incoming edges keyed by target, so a level step does not rescan the graph.
-/// Unresolved edges are dropped: they name no target worth walking back from.
-fn reverse_adjacency(graph: &ResolvedGraph) -> Reverse<'_> {
-    let mut reverse: Reverse<'_> = BTreeMap::new();
-    for edge in graph.edges().filter(|edge| !edge.is_unresolved()) {
-        reverse.entry(edge.to.as_str()).or_default().push(edge);
+/// Incoming steps keyed by target, so a level step does not rescan the graph.
+/// An unresolved edge names no target worth walking back from, so it is indexed
+/// only under the candidates it lists, and only when they are followed.
+fn reverse_adjacency<'a>(graph: &'a ResolvedGraph, options: &ImpactOptions) -> Reverse<'a> {
+    let mut reverse: Reverse<'a> = BTreeMap::new();
+    for edge in graph.edges() {
+        if !edge.is_unresolved() {
+            let step = Step {
+                edge,
+                candidate: false,
+            };
+            reverse.entry(edge.to.as_str()).or_default().push(step);
+        }
+        if options.follow_candidates {
+            for id in &edge.candidates {
+                let step = Step {
+                    edge,
+                    candidate: true,
+                };
+                reverse.entry(id.as_str()).or_default().push(step);
+            }
+        }
     }
     reverse
 }
@@ -142,11 +208,11 @@ impl<'a> Walk<'a> {
     ) -> Frontier<'a> {
         let mut discovered: Vec<&'a str> = Vec::new();
         for (id, carried) in frontier {
-            for &edge in reverse.get(*id).into_iter().flatten() {
-                if !edge_is_allowed(edge, options) {
+            for &step in reverse.get(*id).into_iter().flatten() {
+                if !step_is_allowed(step, options) {
                     continue;
                 }
-                let from = edge.from.as_str();
+                let from = step.edge.from.as_str();
                 // The start node is the query's subject, never a result; skipping
                 // it is also what makes a cycle back to it terminate.
                 if from == self.start {
@@ -155,7 +221,7 @@ impl<'a> Walk<'a> {
                 let Some(&node) = nodes.get(from) else {
                     continue;
                 };
-                if self.record(node, depth, Trust::extend(*carried, edge)) {
+                if self.record(node, depth, Trust::extend(*carried, step)) {
                     discovered.push(from);
                 }
             }
@@ -187,6 +253,7 @@ impl<'a> Walk<'a> {
                     hit.min_confidence = trust.min_confidence;
                     hit.weakest_provenance = trust.provenance;
                     hit.weakest_kind = trust.kind;
+                    hit.via_candidates = trust.via_candidates;
                 }
             }
             return false;
@@ -200,6 +267,7 @@ impl<'a> Walk<'a> {
             min_confidence: trust.min_confidence,
             weakest_provenance: trust.provenance,
             weakest_kind: trust.kind,
+            via_candidates: trust.via_candidates,
         });
         true
     }
@@ -219,7 +287,8 @@ impl<'a> Walk<'a> {
 /// Apply edge filters while expanding the graph. Filtering here, rather than
 /// retaining hits afterward, prevents a rejected edge from becoming a bridge
 /// to otherwise-matching nodes farther away.
-fn edge_is_allowed(edge: &SourceEdge, options: &ImpactOptions) -> bool {
+fn step_is_allowed(step: Step<'_>, options: &ImpactOptions) -> bool {
+    let edge = step.edge;
     let kind_allowed = if options.kinds.is_empty() {
         !matches!(
             edge.kind,
@@ -228,7 +297,9 @@ fn edge_is_allowed(edge: &SourceEdge, options: &ImpactOptions) -> bool {
     } else {
         options.kinds.contains(&edge.kind)
     };
-    kind_allowed && edge.confidence >= options.min_confidence
+    let provenance_allowed =
+        options.provenances.is_empty() || options.provenances.contains(&edge.provenance);
+    kind_allowed && provenance_allowed && step.confidence() >= options.min_confidence
 }
 
 /// Breadth-first reverse traversal with edge, path, confidence, and result bounds.
@@ -237,10 +308,11 @@ pub fn impact_with(graph: &ResolvedGraph, start_id: &str, options: &ImpactOption
         return ImpactResult {
             hits: Vec::new(),
             suppressed: 0,
+            filtered_out: 0,
         };
     }
     let nodes: Nodes<'_> = graph.nodes().map(|node| (node.id.as_str(), node)).collect();
-    let reverse = reverse_adjacency(graph);
+    let reverse = reverse_adjacency(graph, options);
     let mut walk = Walk {
         start: start_id,
         hits: Vec::new(),
@@ -257,9 +329,11 @@ pub fn impact_with(graph: &ResolvedGraph, start_id: &str, options: &ImpactOption
     }
 
     let mut hits = walk.finish();
+    let before_filter = hits.len();
     if let Some(prefix) = &options.path_prefix {
         hits.retain(|hit| hit.path.to_string_lossy().starts_with(prefix));
     }
+    let filtered_out = before_filter - hits.len();
     let suppressed = if options.limit > 0 && hits.len() > options.limit {
         let suppressed = hits.len() - options.limit;
         hits.truncate(options.limit);
@@ -267,7 +341,11 @@ pub fn impact_with(graph: &ResolvedGraph, start_id: &str, options: &ImpactOption
     } else {
         0
     };
-    ImpactResult { hits, suppressed }
+    ImpactResult {
+        hits,
+        suppressed,
+        filtered_out,
+    }
 }
 
 /// Compatibility traversal retaining the original all-edge-kinds semantics.
