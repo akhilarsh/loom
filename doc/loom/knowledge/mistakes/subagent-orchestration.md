@@ -108,3 +108,13 @@ the only reason attribution does not reach every commit.
 - Opus stays the default main-session tier for standard stages; the operator overrides per stage.
 
 **Fix:** report sections 4.2, 4.6 and 4.7 rewritten to these decisions before the plan was authored.
+
+## Stage State Read From a Transcript Was Stale
+
+**What happened:** after mining stage transcripts, the main agent told the operator a stage was still waiting on them, because the stage's last transcript message asked the operator to rerun completion and `ListAgents` listed a session with that name as busy. The stage had been merged some time before, and the plan was already in integration-verify.
+
+**Why:** a transcript records what a session said, not what happened afterwards. Operator actions, later sessions and merges do not appear in it.
+
+**Prevention:** before telling the operator anything about a stage's current state, read it from `loom status` or the stage file. Treat transcripts as evidence of past behavior only.
+
+**Fix:** the operator corrected it.

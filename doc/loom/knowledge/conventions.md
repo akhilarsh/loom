@@ -241,3 +241,7 @@ The README documents what loom does now. A fixed bug gets no warning box, mechan
 ## Verification v2 Conventions
 
 Plan authoring for `version: 2`, shell-quoting adapter commands, relay `RequestKind` additions, wave briefs and the pre-commit gate: [plan-yaml-and-hooks](conventions/plan-yaml-and-hooks.md).
+
+## Work That Needs a Loom Plan Goes Entirely Into the Plan
+
+When a set of related changes needs a loom plan for any part of it, the whole set goes into the plan. No part is done directly beforehand: work split across a direct session and a plan loses the plan's review gate, integrity checks and knowledge distillation for the direct part. Owner direction, 2026-09-30.

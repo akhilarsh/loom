@@ -211,3 +211,9 @@ than only in `concerns/`.
   [Completion Recovery](../architecture/completion-recovery.md) warns the stage-sandbox read
   deny-list names only the tokens. Confirm with a probe rather than by reading — that file's
   confidentiality is what keeps forged completion evidence out.
+
+## Stage Agents Stop and Report Instead of Disputing or Blocking
+
+Stage agents often end a turn by describing what is wrong and waiting for the operator, instead of filing `loom stage dispute-criteria` (or `dispute-findings`, `dispute-contract`) or blocking the stage. Some agents give "it would end the session" as the reason. That is wrong: ending the session is the intended cost of a dispute, and the daemon respawns a fresh session on the verdict. Only a genuine human-only need (credentials, an install the sandbox's network rules forbid) justifies stopping, and even then the stage should be blocked with a reason, not left idle.
+
+Plan authoring has the matching duty. A plan must check every network, install, credential and other human-dependent requirement under the stage sandbox before `loom run`, so the chance that a stage needs a human is as small as possible. Owner direction, 2026-09-30.

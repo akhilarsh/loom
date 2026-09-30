@@ -11,7 +11,7 @@
 | [architecture.md](architecture.md) | High-level component relationships, data flow, module dependencies | 244 |
 | [entry-points.md](entry-points.md) | Key files agents should read first | 245 |
 | [patterns.md](patterns.md) | Architectural patterns discovered in the codebase | 186 |
-| [conventions.md](conventions.md) | Coding conventions discovered in the codebase | 243 |
+| [conventions.md](conventions.md) | Coding conventions discovered in the codebase | 247 |
 | [mistakes.md](mistakes.md) | Mistakes made and lessons learned - what to avoid | 250 |
 | [stack.md](stack.md) | Dependencies, frameworks, and tooling used in the project | 119 |
 | [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 235 |
@@ -140,7 +140,7 @@
 | [store-without-consumer](mistakes/store-without-consumer.md) | A store written but never read | 94 |
 | [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, file ownership | 285 |
 | [subagent-liveness-and-watch](mistakes/subagent-liveness-and-watch.md) | Subagent alive/done/dead detection; watch traps | 321 |
-| [subagent-orchestration](mistakes/subagent-orchestration.md) | Delegation model, defect reports, gotchas | 110 |
+| [subagent-orchestration](mistakes/subagent-orchestration.md) | Delegation model, defect reports, gotchas | 120 |
 | [test-concurrency-and-fixtures](mistakes/test-concurrency-and-fixtures.md) | Racy tests: fds, ETXTBSY, serial env, stdin hangs | 210 |
 | [testing-and-lint](mistakes/testing-and-lint.md) | Lint/test discipline: --all-targets, --no-fail-fast | 326 |
 | [tests-that-cannot-fail](mistakes/tests-that-cannot-fail.md) | Tests that pass whether the bug is present | 274 |
@@ -157,7 +157,7 @@
 
 | Topic | Blurb | Lines |
 | --- | --- | --- |
-| [agent-rule-bending-hardening](concerns/agent-rule-bending-hardening.md) | Checks an agent can bend, and the hardening backlog | 213 |
+| [agent-rule-bending-hardening](concerns/agent-rule-bending-hardening.md) | Checks an agent can bend, and the hardening backlog | 219 |
 | [automatic-knowledge-source-graph-followups](concerns/automatic-knowledge-source-graph-followups.md) | Knowledge-plan followups: retrieval gap, stopwording | 61 |
 | [code-quality-and-hook-debt](concerns/code-quality-and-hook-debt.md) | Oversized units, duplicated tables, hook debt | 195 |
 | [codex-heartbeat-starvation](concerns/codex-heartbeat-starvation.md) | Heartbeat starvation from long codex runs | 73 |
