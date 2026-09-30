@@ -1,5 +1,5 @@
 use super::*;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 #[derive(Debug, Parser)]
 struct MapHarness {
@@ -14,8 +14,19 @@ fn map_flags_parse_with_the_contract_defaults() {
     assert_eq!(parsed.args.depth, 3);
     assert_eq!(parsed.args.limit, 50);
     assert_eq!(parsed.args.min_confidence, 0.0);
-    assert_eq!(parsed.args.kinds.len(), 6);
+    assert_eq!(
+        parsed.args.kinds,
+        vec![
+            SourceEdgeKind::Calls,
+            SourceEdgeKind::References,
+            SourceEdgeKind::Implements,
+            SourceEdgeKind::Extends,
+        ]
+    );
+    assert_eq!(parsed.args.window_lines, 60);
+    assert!(parsed.args.evidence.is_empty());
     assert!(!parsed.args.json);
+    assert!(!parsed.args.timings);
 }
 
 #[test]
@@ -50,6 +61,76 @@ fn map_without_a_view_flag_names_all_available_views() {
     assert_eq!(
         error,
         "loom map needs a view flag: --outline <PATH>, --find-all <SYMBOL>, \
-         --impact <SYMBOL_OR_PATH>, --callers <SYMBOL>, or --callees <SYMBOL>"
+         --impact <SYMBOL_OR_PATH>, --callers <SYMBOL>, --callees <SYMBOL>, \
+         --references <SYMBOL>, --window <ID>, or --census"
     );
+}
+
+#[test]
+fn every_new_view_flag_counts_as_a_view() {
+    for argv in [
+        vec!["map", "--references", "x"],
+        vec!["map", "--window", "src/a.rs#function:a"],
+        vec!["map", "--census"],
+    ] {
+        let parsed = MapHarness::try_parse_from(argv.clone()).unwrap();
+        assert!(require_view(&parsed.args).is_ok(), "{argv:?}");
+    }
+}
+
+#[test]
+fn evidence_and_lang_parse_registry_names() {
+    let parsed = MapHarness::try_parse_from([
+        "map",
+        "--impact",
+        "t",
+        "--evidence",
+        "import,receiver",
+        "--lang",
+        "python",
+    ])
+    .unwrap();
+
+    assert_eq!(
+        parsed.args.evidence,
+        vec![EdgeProvenance::Import, EdgeProvenance::Receiver]
+    );
+    assert_eq!(parsed.args.lang.as_deref(), Some("python"));
+    assert!(MapHarness::try_parse_from(["map", "--impact", "t", "--evidence", "guess"]).is_err());
+    assert!(MapHarness::try_parse_from(["map", "--impact", "t", "--lang", "cobol"]).is_err());
+}
+
+#[test]
+fn census_takes_roots_and_no_other_view() {
+    let parsed =
+        MapHarness::try_parse_from(["map", "--census", "--root", "../a", "--root", "../b"])
+            .unwrap();
+    assert_eq!(parsed.args.root.len(), 2);
+
+    let stray = MapHarness::try_parse_from(["map", "--root", "../a", "--find-all", "x"]).unwrap();
+    assert_eq!(
+        require_view(&stray.args).unwrap_err().to_string(),
+        "--root only applies to --census"
+    );
+    assert!(MapHarness::try_parse_from(["map", "--census", "--find-all", "x"]).is_err());
+}
+
+#[test]
+fn help_describes_direct_one_hop_neighbours_and_lists_the_new_flags() {
+    let help = MapHarness::command().render_long_help().to_string();
+
+    assert!(help.contains("one hop over call edges"), "{help}");
+    assert!(!help.contains("transitive callers"), "{help}");
+    for flag in [
+        "--references",
+        "--window",
+        "--window-lines",
+        "--census",
+        "--root",
+        "--lang",
+        "--timings",
+        "--evidence",
+    ] {
+        assert!(help.contains(flag), "help lacks {flag}: {help}");
+    }
 }
