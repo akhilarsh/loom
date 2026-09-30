@@ -2,18 +2,21 @@
 //! class: excluded, vendored, generated, eligible or unsupported.
 
 use anyhow::{bail, Context, Result};
+use nix::fcntl::AtFlags;
+use nix::sys::stat::{fstatat, FileStat};
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
-use std::fs::OpenOptions;
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{Read, Seek, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::Path;
+use std::time::Duration;
 
 use crate::context::extract::dialect::{dialect_for_path, DialectSpec};
 use crate::context::refresh::excluded;
-use crate::git::runner::{run_git, NO_HOOKS_ARGS};
+use crate::fs::safe_fs::{open_safely, safe_open_dirfd};
+use crate::git::runner::{run_git_pinned, run_git_pinned_within, GIT_READ_TIMEOUT};
 
 const SYMLINK_MODE: &str = "120000";
 const GITLINK_MODE: &str = "160000";
@@ -60,10 +63,11 @@ pub(super) struct Tracked {
 }
 
 impl Tracked {
-    fn full_path(&self, root: &Path) -> PathBuf {
+    /// The path beneath the checkout root.
+    fn relative_path(&self) -> &Path {
         match &self.non_utf8 {
-            Some(raw) => root.join(OsStr::from_bytes(raw)),
-            None => root.join(&self.path),
+            Some(raw) => Path::new(OsStr::from_bytes(raw)),
+            None => Path::new(&self.path),
         }
     }
 }
@@ -97,7 +101,7 @@ pub(super) struct Attributes {
 /// is everything after the first tab, so spaces and non-ASCII survive. A path
 /// that is not UTF-8 is kept with its raw bytes.
 pub(super) fn tracked_files(root: &Path) -> Result<Vec<Tracked>> {
-    let output = run_git(&["ls-files", "-s", "-z"], root)?;
+    let output = run_git_pinned(&["ls-files", "-s", "-z"], None, root)?;
     if !output.status.success() {
         bail!(
             "git ls-files failed in {}: {}",
@@ -139,42 +143,31 @@ pub(super) fn tracked_files(root: &Path) -> Result<Vec<Tracked>> {
 
 /// Ask git once for the attributes of every path in `paths`.
 ///
-/// Paths go through stdin, never argv, so thousands of long paths stay under
-/// `ARG_MAX`. A separate thread writes stdin while this thread drains stdout
-/// (and stderr), so neither pipe can fill and stall git.
+/// Paths go through a file on stdin, never argv, so thousands of long paths
+/// stay under `ARG_MAX`. A file has no writer to stall against a full stdout
+/// pipe, and the deadline covers the whole call: git blocked reading a
+/// `.gitattributes` that is a FIFO is killed when it runs out.
 pub(super) fn attributes(root: &Path, paths: &[&str]) -> Result<Attributes> {
+    attributes_within(root, paths, GIT_READ_TIMEOUT)
+}
+
+/// [`attributes`] under an explicit `timeout`.
+pub(super) fn attributes_within(
+    root: &Path,
+    paths: &[&str],
+    timeout: Duration,
+) -> Result<Attributes> {
     if paths.is_empty() {
         return Ok(Attributes::default());
     }
-    let mut child = Command::new("git")
-        .args(NO_HOOKS_ARGS)
-        .args([
-            "check-attr",
-            "--stdin",
-            "-z",
-            "linguist-vendored",
-            "linguist-generated",
-        ])
-        .env("LC_ALL", "C")
-        .env("LANG", "C")
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("Failed to execute: git check-attr")?;
-    let mut stdin = child.stdin.take().context("git check-attr has no stdin")?;
-    let output = std::thread::scope(|scope| {
-        scope.spawn(move || {
-            for path in paths {
-                if stdin.write_all(path.as_bytes()).is_err() || stdin.write_all(&[0]).is_err() {
-                    break;
-                }
-            }
-            // `stdin` drops here: git reads until EOF before it answers.
-        });
-        child.wait_with_output()
-    })?;
+    let args = [
+        "check-attr",
+        "--stdin",
+        "-z",
+        "linguist-vendored",
+        "linguist-generated",
+    ];
+    let output = run_git_pinned_within(&args, Some(path_list(paths)?), root, timeout)?;
     if !output.status.success() {
         bail!(
             "git check-attr failed in {}: {}",
@@ -183,6 +176,20 @@ pub(super) fn attributes(root: &Path, paths: &[&str]) -> Result<Attributes> {
         );
     }
     Ok(parse_attributes(&output.stdout))
+}
+
+/// `paths`, each NUL-terminated, in an unnamed temp file rewound for reading.
+fn path_list(paths: &[&str]) -> Result<File> {
+    let mut bytes = Vec::new();
+    for path in paths {
+        bytes.extend_from_slice(path.as_bytes());
+        bytes.push(0);
+    }
+    let mut list = tempfile::tempfile().context("Failed to create the check-attr path list")?;
+    list.write_all(&bytes)
+        .and_then(|()| list.rewind())
+        .context("Failed to write the check-attr path list")?;
+    Ok(list)
 }
 
 /// `-z` output is `<path> NUL <attribute> NUL <value> NUL` per pair.
@@ -243,18 +250,35 @@ pub(super) fn classify(
     })
 }
 
-/// A regular file's size from `symlink_metadata`, so a link is never followed.
-/// Symlinks and gitlinks are sized 0 without touching their targets.
+/// A regular file's size without following a symlink at any path component:
+/// the parent directory is opened beneath `root` with every symlink refused,
+/// and the name is `fstatat`ed unfollowed. Symlinks and gitlinks are sized 0
+/// without touching their targets. `None` when the file is gone, or no longer
+/// reachable that way.
 fn size_of(root: &Path, tracked: &Tracked) -> Option<u64> {
     if tracked.kind != EntryKind::Regular {
         return Some(0);
     }
-    let metadata = std::fs::symlink_metadata(tracked.full_path(root)).ok()?;
-    Some(if metadata.file_type().is_file() {
-        metadata.len()
+    let stat = stat_unfollowed(root, tracked.relative_path()).ok()?;
+    let is_file = stat.st_mode & libc::S_IFMT == libc::S_IFREG;
+    Some(if is_file {
+        u64::try_from(stat.st_size).unwrap_or(0)
     } else {
         0
     })
+}
+
+fn stat_unfollowed(root: &Path, relative: &Path) -> Result<FileStat> {
+    let root_fd = safe_open_dirfd(root)?;
+    let name = relative.file_name().context("tracked path has no name")?;
+    let parent = match relative.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        Some(dir) => {
+            let flags = libc::O_DIRECTORY | libc::O_RDONLY | libc::O_NONBLOCK;
+            open_safely(root_fd.as_raw_fd(), dir, flags, 0)?
+        }
+        None => root_fd,
+    };
+    Ok(fstatat(&parent, name, AtFlags::AT_SYMLINK_NOFOLLOW)?)
 }
 
 fn is_vendored(path: &str, attributes: &Attributes) -> bool {
@@ -265,20 +289,11 @@ fn is_vendored(path: &str, attributes: &Attributes) -> bool {
 }
 
 /// Whether the first [`MARKER_SCAN_BYTES`] of the file hold a generated
-/// marker. The file is opened `O_NOFOLLOW | O_NONBLOCK` and only after
-/// `symlink_metadata` says it is a regular file, so a link swapped in since
-/// enumeration, or a FIFO, is never read.
+/// marker. The file is opened beneath `root` with a symlink refused at every
+/// component, `O_NONBLOCK`, and read only once `fstat` says it is a regular
+/// file, so a link swapped in since enumeration, or a FIFO, is never read.
 fn has_generated_marker(root: &Path, path: &str) -> bool {
-    let full = root.join(path);
-    let is_file = std::fs::symlink_metadata(&full).is_ok_and(|m| m.file_type().is_file());
-    if !is_file {
-        return false;
-    }
-    let Ok(file) = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(&full)
-    else {
+    let Some(file) = open_regular(root, Path::new(path)) else {
         return false;
     };
     let mut head = Vec::new();
@@ -289,3 +304,13 @@ fn has_generated_marker(root: &Path, path: &str) -> bool {
         .iter()
         .any(|marker| head.windows(marker.len()).any(|window| window == *marker))
 }
+
+fn open_regular(root: &Path, relative: &Path) -> Option<File> {
+    let root_fd = safe_open_dirfd(root).ok()?;
+    let flags = libc::O_RDONLY | libc::O_NONBLOCK;
+    let file = File::from(open_safely(root_fd.as_raw_fd(), relative, flags, 0).ok()?);
+    file.metadata().ok()?.is_file().then_some(file)
+}
+
+#[cfg(test)]
+mod tests;

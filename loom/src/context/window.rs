@@ -11,6 +11,7 @@ use std::path::Path;
 
 use crate::context::graph_store::ResolvedGraph;
 use crate::context::source_graph::{body_hash, FileCoverage, Span, MAX_EXTRACTED_FILE_BYTES};
+use crate::context::untrusted::{flatten_char, inline_safe};
 use crate::fs::safe_read::{is_not_found, read_bounded, OverLimit};
 
 /// The whole lines a node or site covers, truncated to the caller's line cap.
@@ -39,15 +40,19 @@ pub enum WindowError {
     },
 }
 
+/// The id comes from the caller and the path from a tracked file name, so
+/// neither reaches the terminal with a control character in it.
 impl fmt::Display for WindowError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            WindowError::UnknownId(id) => write!(f, "unknown id: {id}"),
+            WindowError::UnknownId(id) => write!(f, "unknown id: {}", inline_safe(id)),
             WindowError::ChangedSinceSnapshot { path } => {
-                write!(f, "changed since snapshot: {path}")
+                write!(f, "changed since snapshot: {}", inline_safe(path))
             }
             WindowError::Unreadable { path, detail } => {
-                write!(f, "cannot read {path}: {detail}")
+                // The detail ends in the cause, so it is flattened, never cut.
+                let detail: String = detail.chars().map(flatten_char).collect();
+                write!(f, "cannot read {}: {detail}", inline_safe(path))
             }
         }
     }

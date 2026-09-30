@@ -5,7 +5,7 @@ use crate::context::schema::{
     estimate_tokens, Confidence, ContextItem, ItemKind, TextSearchHint, UnmetRequirement,
     BRIEF_FRAME_TOKENS,
 };
-use crate::context::untrusted::inline_safe;
+use crate::context::untrusted::{flatten_char, inline_safe, terminal_safe};
 use std::ops::Range;
 
 /// One knowledge item's full rendering: its list entry, plus its fenced
@@ -158,12 +158,16 @@ pub(crate) fn render_source_entry(item: &ContextItem) -> String {
 /// The source window attached to `item` as an indented fenced block under its
 /// entry, tagged with the language of the file, or an empty string when the
 /// item carries none. The fence outgrows any backtick run in the window, so
-/// quoted source cannot close it early.
+/// quoted source cannot close it early. The window is tracked file text that
+/// reaches a terminal (`loom knowledge context`), so it goes through
+/// [`terminal_safe`] first: an ESC byte never survives, and what
+/// [`rendered_item_tokens`] charges is what is rendered.
 pub(crate) fn render_source_window(item: &ContextItem) -> String {
     let Some(window) = &item.window else {
         return String::new();
     };
-    let fence = fence_for(window);
+    let window = terminal_safe(window);
+    let fence = fence_for(&window);
     let language = language_for_path(&item.pointer.path);
     let tag = language.as_str();
     let tag = if tag
@@ -255,13 +259,12 @@ pub(crate) fn render_unmet_line(requirement: &UnmetRequirement) -> String {
 
 /// `text` as an inline code span, verbatim: the delimiter is a backtick run one
 /// longer than the longest run in `text`, so nothing inside can close it early.
-/// Control characters (a newline would end the line the span sits on) become
-/// spaces; text that starts or ends with a backtick is padded, per CommonMark.
+/// Control, whitespace and format characters (a newline or U+2028 would end the
+/// line the span sits on, a bidi override would reorder it) become spaces, as
+/// [`flatten_char`] has it; text that starts or ends with a backtick is padded,
+/// per CommonMark.
 pub(crate) fn inline_code(text: &str) -> String {
-    let text: String = text
-        .chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect();
+    let text: String = text.chars().map(flatten_char).collect();
     let delimiter = "`".repeat(longest_backtick_run(&text) + 1);
     let pad = if text.starts_with('`') || text.ends_with('`') {
         " "

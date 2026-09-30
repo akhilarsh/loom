@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::context::refresh::EXCLUDED_ROOTS;
+use crate::context::untrusted::inline_safe;
 
 /// Schema tag at the top of the JSON form.
 pub const CENSUS_SCHEMA: &str = "loom-census/1";
@@ -168,15 +169,19 @@ fn totals_line(totals: &ClassTotals, symbol: Count) -> String {
     )
 }
 
+/// The text form names directories and extensions taken from tracked paths,
+/// which a repository controls; each goes through `inline_safe` so a control
+/// character in a name never reaches the terminal. The JSON form escapes them.
 impl fmt::Display for RootCensus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let root = inline_safe(&self.root);
         match (self.coverage_source, self.parse) {
             (CoverageSource::InMemory, Some(parse)) => writeln!(
                 f,
-                "root {} [in-memory extraction: {} files parsed, {} bytes read, {} ms]",
-                self.root, parse.files_parsed, parse.bytes_read, parse.elapsed_ms
+                "root {root} [in-memory extraction: {} files parsed, {} bytes read, {} ms]",
+                parse.files_parsed, parse.bytes_read, parse.elapsed_ms
             )?,
-            _ => writeln!(f, "root {} [resolved graph]", self.root)?,
+            _ => writeln!(f, "root {root} [resolved graph]")?,
         }
         for subproject in &self.subprojects {
             for (dialect, coverage) in &subproject.by_dialect {
@@ -184,7 +189,7 @@ impl fmt::Display for RootCensus {
                     f,
                     "  {}  {}  files {}  bytes {}  symbol-level {}/{} files {}, {}/{} bytes {}  \
                      parse-errors {}  extractor {}",
-                    subproject.path,
+                    inline_safe(&subproject.path),
                     dialect,
                     coverage.files,
                     coverage.bytes,
@@ -257,8 +262,10 @@ impl fmt::Display for CensusReport {
             for (extension, count) in top {
                 writeln!(
                     f,
-                    "  {extension}  {} files  {} bytes",
-                    count.files, count.bytes
+                    "  {}  {} files  {} bytes",
+                    inline_safe(&extension),
+                    count.files,
+                    count.bytes
                 )?;
             }
         }

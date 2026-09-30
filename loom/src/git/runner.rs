@@ -9,17 +9,30 @@ use std::path::Path;
 use std::process::{Command, Output};
 use std::time::Duration;
 
-const GIT_READ_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const GIT_READ_TIMEOUT: Duration = Duration::from_secs(15);
 const GIT_MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
 const GIT_NETWORK_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Global git args that point `core.hooksPath` at `/dev/null` for every git
-/// command loom runs itself. `core.hooksPath` in this repository is a
-/// TRACKED directory (`loom/.githooks`), so a stage or branch can plant an
-/// executable hook there; without this, loom's own merges, commits, and
-/// worktree operations would run whatever hook the checked-out tree
-/// currently holds, unsandboxed. Must precede the subcommand in argv.
-pub const NO_HOOKS_ARGS: [&str; 2] = ["-c", "core.hooksPath=/dev/null"];
+/// Global git args that switch off the two config keys through which a
+/// checked-out tree makes git run its code, on every git command loom runs
+/// itself. Must precede the subcommand in argv.
+///
+/// - `core.hooksPath` here is a TRACKED directory (`loom/.githooks`), so a
+///   stage or branch can plant an executable hook there that loom's own
+///   merges, commits, and worktree operations would run, unsandboxed.
+/// - `core.fsmonitor` names a command git runs on every index read (`status`,
+///   `ls-files`, `diff`), and any `.git/config` can set it, so a directory
+///   loom merely inspects could run code as the user.
+pub const NO_HOOKS_ARGS: [&str; 4] = [
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+];
+
+mod pinned;
+pub(crate) use pinned::run_git_pinned_within;
+pub use pinned::{run_git_pinned, run_git_pinned_checked};
 
 fn git_timeout(args: &[&str]) -> Duration {
     match args.first().copied() {
@@ -32,6 +45,32 @@ fn git_timeout(args: &[&str]) -> Duration {
     }
 }
 
+fn git_command(
+    program: &str,
+    exec_args: &[&str],
+    env: &[(&str, &OsStr)],
+    repo_root: &Path,
+) -> Command {
+    let mut command = Command::new(program);
+    command
+        .args(exec_args)
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .envs(env.iter().copied())
+        .current_dir(repo_root);
+    command
+}
+
+fn run_bounded_git(
+    mut command: Command,
+    exec_args: &[&str],
+    label: &str,
+    timeout: Duration,
+) -> Result<Output> {
+    crate::process::run_bounded_output(&mut command, timeout, label.to_string())
+        .with_context(|| format!("Failed to execute: git {}", exec_args.join(" ")))
+}
+
 fn run_git_program(
     program: &str,
     exec_args: &[&str],
@@ -40,15 +79,20 @@ fn run_git_program(
     repo_root: &Path,
     timeout: Duration,
 ) -> Result<Output> {
-    let mut command = Command::new(program);
-    command
-        .args(exec_args)
-        .env("LC_ALL", "C")
-        .env("LANG", "C")
-        .envs(env.iter().copied())
-        .current_dir(repo_root);
-    crate::process::run_bounded_output(&mut command, timeout, label.to_string())
-        .with_context(|| format!("Failed to execute: git {}", exec_args.join(" ")))
+    let command = git_command(program, exec_args, env, repo_root);
+    run_bounded_git(command, exec_args, label, timeout)
+}
+
+/// `args` behind [`NO_HOOKS_ARGS`], the argv every runner call executes.
+fn global_args<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let mut exec_args = Vec::with_capacity(NO_HOOKS_ARGS.len() + args.len());
+    exec_args.extend_from_slice(&NO_HOOKS_ARGS);
+    exec_args.extend_from_slice(args);
+    exec_args
+}
+
+fn git_label(args: &[&str]) -> String {
+    format!("git {}", args.first().unwrap_or(&"command"))
 }
 
 /// Run a git command and return the raw Output.
@@ -69,10 +113,8 @@ pub fn run_git(args: &[&str], repo_root: &Path) -> Result<Output> {
 
 /// [`run_git`] with `env` added to this one command's environment.
 pub fn run_git_with_env(args: &[&str], env: &[(&str, &OsStr)], repo_root: &Path) -> Result<Output> {
-    let mut exec_args = Vec::with_capacity(NO_HOOKS_ARGS.len() + args.len());
-    exec_args.extend_from_slice(&NO_HOOKS_ARGS);
-    exec_args.extend_from_slice(args);
-    let label = format!("git {}", args.first().unwrap_or(&"command"));
+    let exec_args = global_args(args);
+    let label = git_label(args);
     run_git_program("git", &exec_args, env, &label, repo_root, git_timeout(args))
 }
 
@@ -85,7 +127,10 @@ pub fn run_git_with_env(args: &[&str], env: &[(&str, &OsStr)], repo_root: &Path)
 /// * `args` - Git command arguments
 /// * `repo_root` - Working directory for the git command
 pub fn run_git_checked(args: &[&str], repo_root: &Path) -> Result<String> {
-    let output = run_git(args, repo_root)?;
+    stdout_of_success(args, run_git(args, repo_root)?, repo_root)
+}
+
+fn stdout_of_success(args: &[&str], output: Output, repo_root: &Path) -> Result<String> {
     if !output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -176,7 +221,7 @@ mod tests {
 
     /// Set up isolated from ambient host git config (never mutates
     /// process-wide environment; each command carries its own overrides).
-    fn isolated_git(root: &Path, args: &[&str]) -> Output {
+    pub(super) fn isolated_git(root: &Path, args: &[&str]) -> Output {
         Command::new("git")
             .args(args)
             .current_dir(root)
@@ -187,7 +232,7 @@ mod tests {
             .unwrap()
     }
 
-    fn isolated_git_ok(root: &Path, args: &[&str]) {
+    pub(super) fn isolated_git_ok(root: &Path, args: &[&str]) {
         let output = isolated_git(root, args);
         assert!(
             output.status.success(),
