@@ -15,11 +15,6 @@ fn crate_graph(files: Vec<(&'static str, FileEntry)>) -> ResolvedGraph {
     graph_of(entries)
 }
 
-/// An unresolved edge of `kind` leaving `from`, naming `symbol`.
-fn seeking(from: &str, kind: SourceEdgeKind, symbol: &str) -> Vec<SourceEdge> {
-    vec![unresolved_edge(from, kind, symbol)]
-}
-
 /// A file with no symbols, present only as a path something can match.
 fn empty_file(path: &'static str) -> (&'static str, FileEntry) {
     (path, source_file(path, &[], vec![]))

@@ -7,9 +7,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::context::graph_store::{FileEntry, ResolvedGraph};
+use crate::context::resolve::ResolutionStats;
 use crate::context::source_graph::{
-    node_id, syntax_confidence, EdgeProvenance, FileCoverage, NodeLanguage, SourceEdge,
-    SourceEdgeKind, SourceNode, SourceNodeKind, Span,
+    node_id, syntax_confidence, EdgeProvenance, FileCoverage, ImportBinding, NodeLanguage,
+    SourceEdge, SourceEdgeKind, SourceNode, SourceNodeKind, Span,
 };
 
 pub(crate) fn file_node(path: &str) -> SourceNode {
@@ -174,18 +175,89 @@ pub(crate) fn local_edge(
     }
 }
 
+/// An unresolved edge of `kind` leaving `from`, naming `symbol`.
+pub(crate) fn seeking(from: &str, kind: SourceEdgeKind, symbol: &str) -> Vec<SourceEdge> {
+    vec![unresolved_edge(from, kind, symbol)]
+}
+
+/// An import binding of `name` (`None`: the whole module) from `path`, bound
+/// under `alias` when given.
+pub(crate) fn binding(path: &str, name: Option<&str>, alias: Option<&str>) -> ImportBinding {
+    ImportBinding {
+        path: path.to_string(),
+        name: name.map(str::to_string),
+        alias: alias.map(str::to_string),
+        glob: false,
+        site: Span::default(),
+    }
+}
+
+/// A glob import of `path`: `use x::*`, `using A.B;`, `#include "x.h"`.
+pub(crate) fn glob_binding(path: &str) -> ImportBinding {
+    ImportBinding {
+        glob: true,
+        ..binding(path, None, None)
+    }
+}
+
+/// Canonical id of a symbol with the given scope.
+pub(crate) fn nested_id(path: &str, kind: SourceNodeKind, scope: &[&str]) -> String {
+    nested_node(path, kind, scope).id
+}
+
+/// Symbol nodes of a hand-built file, as `(kind, scope)` pairs.
+pub(crate) type Symbols<'a> = &'a [(SourceNodeKind, &'a [&'a str])];
+
+/// A file entry for a hand-built dialect fixture: a file node plus one node per
+/// `(kind, scope)`, the edges extracted from it, and its import bindings.
+pub(crate) fn dialect_file(
+    path: &str,
+    symbols: Symbols,
+    edges: Vec<SourceEdge>,
+    imports: Vec<ImportBinding>,
+) -> FileEntry {
+    let nodes = symbols
+        .iter()
+        .map(|(kind, scope)| nested_node(path, *kind, scope))
+        .collect();
+    FileEntry {
+        imports,
+        ..entry_of(path, nodes, edges)
+    }
+}
+
+/// A graph of entries built by this module, each keyed by its file node's path.
+pub(crate) fn graph_of_files(entries: Vec<FileEntry>) -> ResolvedGraph {
+    ResolvedGraph {
+        files: entries
+            .into_iter()
+            .map(|entry| (entry.nodes[0].id.clone(), entry))
+            .collect(),
+        ..ResolvedGraph::default()
+    }
+}
+
 /// The three residue counts a resolution pass reports, in the order they read.
-// Later stages add fields; the struct update keeps this literal compiling.
-#[allow(clippy::needless_update)]
-pub(crate) fn expected_stats(
-    retargeted: usize,
-    ambiguous: usize,
-    unresolved: usize,
-) -> crate::context::resolve::ResolutionStats {
-    crate::context::resolve::ResolutionStats {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Residue {
+    pub(crate) retargeted: usize,
+    pub(crate) ambiguous: usize,
+    pub(crate) unresolved: usize,
+}
+
+/// Stats equal a residue when the three counts match, whatever their
+/// `by_provenance`: a test about the per-provenance counts asserts them itself.
+impl PartialEq<Residue> for ResolutionStats {
+    fn eq(&self, residue: &Residue) -> bool {
+        (self.retargeted, self.ambiguous, self.unresolved)
+            == (residue.retargeted, residue.ambiguous, residue.unresolved)
+    }
+}
+
+pub(crate) fn expected_stats(retargeted: usize, ambiguous: usize, unresolved: usize) -> Residue {
+    Residue {
         retargeted,
         ambiguous,
         unresolved,
-        ..Default::default()
     }
 }

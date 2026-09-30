@@ -5,240 +5,205 @@
 //! [`UNRESOLVED_TARGET`](crate::context::source_graph::UNRESOLVED_TARGET): the
 //! grammar that parsed the call site never saw the definition. This module is
 //! the only place holding the whole graph at once, so it is the only place that
-//! can turn some of those guesses into targets.
+//! can turn some of those gaps into targets.
 //!
-//! **What it may claim.** An unresolved edge may be retargeted when the name it
-//! recorded has exactly one definition in the entire graph, bound as
-//! [`EdgeProvenance::UniqueName`] at its ceiling — above the extraction-time
-//! ceiling, below certainty. A call written with a path — `crate::a::b()`,
-//! `super::b()`, `Widget::new()` — is matched on that path, which carries more
-//! evidence than the bare name at its end and binds as [`EdgeProvenance::Import`]:
-//! the qualified spelling is tried against every node's scope, and failing that
-//! the qualifier is matched onto files and the name is looked up only inside
-//! them. A qualifier naming nothing here is a call into a dependency, so the
-//! edge stays a gap — resolving it against a namesake elsewhere in the graph
-//! would be a fabrication. Imports are matched against file paths by the rules
-//! in `paths`, and both only ever resolve when exactly one candidate is left.
+//! **What it acts on.** Only an unresolved `Syntax` call, reference or import
+//! with no candidates. An edge the extractor bound is never rewritten, and a
+//! candidate set found at extraction is same-file ambiguity, which is final.
+//! Binding goes through `SourceEdge::bind`, which accepts only `Receiver`,
+//! `Import` and `UniqueName`, at the confidence ceiling of that class.
 //!
-//! **What it may never claim.**
+//! **Families.** Every lookup is keyed by the resolution family of the edge's
+//! file (`ecmascript` joins TypeScript, TSX and JavaScript; `c` joins C and
+//! C++; every other dialect is its own), so nothing ever binds across
+//! families: a Python call never lands on a Go definition.
 //!
-//! - *Never a complete call graph.* Resolution raises confidence where it can
-//!   justify it and leaves the rest alone; [`ResolutionStats`] exists so a caller
-//!   reports that residue instead of implying completeness.
-//! - *Two candidates is ambiguity, not a coin flip.* Two definitions of one name
-//!   leave the edge unresolved. Guessing would be indistinguishable from knowing,
-//!   which is the failure this subsystem exists to avoid. The single exception is
-//!   an `impl` block, which is indexed under its type's name without defining it
-//!   (see `SymbolIndex::definitions`) — everything else contests.
-//! - *An edge the extractor bound is never rewritten or downgraded.* A
-//!   [`EdgeProvenance::Structural`] or [`EdgeProvenance::LocalName`] edge already
-//!   has both endpoints from one file; name matching cannot improve on that.
-//! - *Only a bound class the evidence supports.* Retargeting goes through
-//!   `SourceEdge::bind`, which accepts only `Receiver`, `Import` and
-//!   `UniqueName`.
+//! **Rules**, in order, for a call or reference (the first that decides wins):
+//!
+//! 1. *Qualified spelling* (`a::b::n`, `A.B.n`): matched against node scopes,
+//!    longest first; failing that, the qualifier is mapped onto module files by
+//!    the dialect's path conventions and `n` is looked up inside them. A
+//!    qualifier naming nothing here is a call into a dependency and stays a gap
+//!    unless an import binds its first segment (rule 4).
+//! 2. *Other receiver* (`obj.m()`, `ns.m()`): when the receiver is an import's
+//!    local name, `m` is looked up in the files the import names. Any other
+//!    receiver is a value of unknown type and is never bound.
+//! 3. *Self receiver* (`self.m()`, `this.m()`): the members named `m` of the
+//!    enclosing type, wherever its parts are declared.
+//! 4. *Named or aliased import*: the imported name in the files the import
+//!    names.
+//! 5. *Package scope*: the other files of the edge's Go or Java package
+//!    directory, or of its C# or PHP namespace.
+//! 6. *Glob imports*: the files of every glob import that resolves.
+//! 7. *Unique name*: the only definition of the name in the family.
+//!
+//! Rules 1 to 6 bind with [`EdgeProvenance::Import`] (rule 3 with
+//! [`EdgeProvenance::Receiver`]) when exactly one definition is left, and rule 7
+//! with [`EdgeProvenance::UniqueName`]. Imports edges bind to the one file their
+//! module spec names.
+//!
+//! **Refusals.** A named import whose module matches no file, or a glob import
+//! that does not resolve, is a name bound outside this graph: rule 7 may no
+//! longer bind it, because the definition that happens to be unique here is a
+//! namesake. The refused edge still records its same-family namesakes as
+//! candidates, so impact analysis keeps its recall.
+//!
+//! **Candidate sets.** Two or more definitions are never a coin flip: the edge
+//! stays unresolved and lists them as `candidates`, sorted, at most
+//! [`MAX_CANDIDATES`](crate::context::source_graph::MAX_CANDIDATES); beyond that
+//! the list stays empty. A dynamic receiver lists even a single namesake as a
+//! candidate and binds nothing. A lone candidate that is the edge's own origin
+//! resolves nothing. An `impl` block is indexed under its type's name without
+//! defining it, so it never contests the type.
+//!
+//! **Never a complete call graph.** Resolution raises confidence where the
+//! evidence justifies it and leaves the rest alone; [`ResolutionStats`] exists
+//! so a caller reports that residue instead of implying completeness.
+//!
+//! **Recording.** [`resolve_graph_recording`] and [`resolve_edges`] return the
+//! lookup keys each edge consulted, and [`touched_keys`] the keys a file's nodes
+//! answer to, so an incremental relink re-resolves exactly the edges a changed
+//! file can affect.
 //!
 //! [`impact`](fn@impact) walks the result backwards and reports, for every node
 //! reached, the confidence of the *weakest* edge on the path taken — so a chain
-//! passing through one guess is never presented as stronger than that guess. It
-//! lives in the private `impact` submodule and is re-exported here, so every
-//! caller keeps one path: `crate::context::resolve::impact`.
+//! passing through one guess is never presented as stronger than that guess.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
 
 use crate::context::graph_store::ResolvedGraph;
 use crate::context::source_graph::{EdgeProvenance, SourceEdge, SourceEdgeKind};
 
+mod bindings;
 mod impact;
 mod neighbors;
 mod paths;
+mod receivers;
+mod record;
+mod rules;
 mod symbols;
 
 pub use impact::{impact, impact_with, ImpactHit, ImpactOptions, ImpactResult};
 pub use neighbors::{direct_callees, direct_callers, Neighbor};
-pub(crate) use symbols::node_names;
+pub(crate) use record::node_names;
+pub use record::{touched_keys, EdgeKeys, EdgeRef};
 pub use symbols::SymbolIndex;
 
-use paths::{import_candidates, PathIndex};
+use rules::{Indexes, Outcome, Resolution};
 
-/// What resolution did, so a view can report it instead of implying completeness.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// What the edges of a graph say after resolution, so a view can report the
+/// residue instead of implying completeness. A pure count over the edges: the
+/// same graph always gives the same stats.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolutionStats {
-    /// Unresolved edges retargeted onto a unique definition.
+    /// Edges bound with `Import`, `Receiver` or `UniqueName` provenance: every
+    /// cross-file bind, plus the `Receiver` binds extraction made itself.
     pub retargeted: usize,
-    /// Edges left unresolved because two or more definitions matched.
+    /// Edges left unresolved with a candidate set.
     pub ambiguous: usize,
-    /// Edges still pointing at `UNRESOLVED_TARGET` after resolution.
+    /// Edges pointing at `UNRESOLVED_TARGET`, candidates or not.
     pub unresolved: usize,
+    /// Every edge but `Contains`, counted by its provenance's `as_str()`.
+    pub by_provenance: BTreeMap<String, usize>,
 }
 
-/// What resolution did to one edge.
-enum Outcome {
-    Retargeted,
-    Ambiguous,
-    Unresolved,
-}
-
-/// Point `edge` at `target` with `provenance`, through the one primitive allowed
-/// to raise a syntax edge above the extraction-time ceiling.
-///
-/// That ceiling governs a guess made from a single file; this match was checked
-/// against the whole graph, which is why the raise is justified. Going through
-/// `SourceEdge::bind` rather than assigning the fields keeps the limit
-/// structural: the confidence is the provenance's ceiling, and it refuses
-/// outright on an edge that is not an unresolved `Syntax` edge, so resolution
-/// can neither overwrite what the grammar proved nor relitigate its own earlier
-/// decision.
-///
-/// Returns whether the edge was eligible; an ineligible edge is left untouched.
-fn retarget(edge: &mut SourceEdge, target: &str, provenance: EdgeProvenance) -> bool {
-    edge.bind(target, provenance)
-}
-
-/// What looking up one edge's written name found.
-struct Found {
-    /// Targets the edge could name.
-    targets: Vec<String>,
-    /// Whether the name was contested by two or more candidates *before* `impl`
-    /// blocks were filtered out — so that a name genuinely fought over by
-    /// several definitions still reports as ambiguous even when the filter
-    /// leaves nothing behind.
-    contested: bool,
-    /// The evidence class a unique target binds with.
-    provenance: EdgeProvenance,
-}
-
-/// What `edge`'s written name could refer to.
-///
-/// `from` is the path of the file the edge was extracted from, which is what a
-/// relative path (`self::`, `super::`) is written against.
-fn candidates_for(
-    edge: &SourceEdge,
-    from: &str,
-    symbols: &SymbolIndex,
-    paths: &PathIndex,
-) -> Found {
-    match edge.kind {
-        SourceEdgeKind::Calls | SourceEdgeKind::References if !edge.symbol.is_empty() => {
-            call_candidates(&edge.symbol, from, symbols, paths)
-        }
-        SourceEdgeKind::Imports if !edge.symbol.is_empty() => Found {
-            targets: import_candidates(&edge.symbol, from, paths),
-            contested: false,
-            provenance: EdgeProvenance::Import,
-        },
-        // Containment, implementation and inheritance edges are emitted with both
-        // endpoints inside one file. An unresolved one is a fact about the
-        // extractor, not something a name match is entitled to repair.
-        _ => Found {
-            targets: Vec::new(),
-            contested: false,
-            provenance: EdgeProvenance::UniqueName,
-        },
-    }
-}
-
-/// Targets a call could name, strongest evidence first.
-///
-/// 1. The qualified spelling, longest first: `Widget::new` matches the `new`
-///    inside `impl Widget` and no other, which is the whole reason the extractor
-///    keeps the path.
-/// 2. The qualifier as a module path, which scopes the search for the bare name
-///    to the files it named: `crate::codex::run` is the `run` in `codex.rs`,
-///    however many other `run`s the project has. A qualifier the graph cannot
-///    place — `String::from` names a type this project never defined — leaves
-///    the edge unresolved, because every `from` in the graph is then a namesake
-///    rather than a candidate.
-///
-/// `Self::helper()` reaches this function as the bare symbol `helper`: the Rust
-/// extractor captures `Self` as the call's receiver and, where the enclosing
-/// type defines the member, binds the edge at extraction with Receiver
-/// provenance. The edge carries no `Self::` qualifier for this function to
-/// resolve.
-fn call_candidates(symbol: &str, from: &str, symbols: &SymbolIndex, paths: &PathIndex) -> Found {
-    let segments: Vec<&str> = symbol.split("::").collect();
-    let Some((name, qualifier)) = segments.split_last().filter(|(_, rest)| !rest.is_empty()) else {
-        return by_name(symbols, symbol, EdgeProvenance::UniqueName);
-    };
-
-    for start in 0..qualifier.len() {
-        let spelling = segments[start..].join("::");
-        if !symbols.lookup(&spelling).is_empty() {
-            return by_name(symbols, &spelling, EdgeProvenance::Import);
-        }
-    }
-
-    // The files the qualifier names decide. A name none of them defines is
-    // somewhere the path did not point — an external crate, or an item
-    // re-exported from further down — so the definitions elsewhere in the graph
-    // are namesakes rather than rival candidates, and the edge stays a gap.
-    let module = import_candidates(&qualifier.join("::"), from, paths);
-    let inside = symbols.definitions_in(name, &module);
-    Found {
-        contested: inside.len() >= 2,
-        targets: inside,
-        provenance: EdgeProvenance::Import,
-    }
-}
-
-/// Definitions of one written name, with its contest status.
-fn by_name(symbols: &SymbolIndex, name: &str, provenance: EdgeProvenance) -> Found {
-    Found {
-        targets: symbols.definitions(name),
-        contested: symbols.contested(name),
-        provenance,
-    }
-}
-
-/// Resolve one unresolved syntax edge against the whole-graph indexes.
-fn resolve_edge(
-    edge: &mut SourceEdge,
-    from: &str,
-    symbols: &SymbolIndex,
-    paths: &PathIndex,
-) -> Outcome {
-    let found = candidates_for(edge, from, symbols, paths);
-    match found.targets.as_slice() {
-        // `retarget` refusing means the edge was not the unresolved syntax
-        // edge this pass is meant to act on. Report what actually happened
-        // rather than claiming a retarget that did not occur.
-        [only] if *only != edge.from => {
-            if retarget(edge, only, found.provenance) {
-                Outcome::Retargeted
-            } else {
-                Outcome::Unresolved
-            }
-        }
-        // A lone candidate that is the edge's own origin resolves nothing, and
-        // neither does an empty set — but either can still be a contested name.
-        [_] | [] if !found.contested => Outcome::Unresolved,
-        _ => Outcome::Ambiguous,
-    }
-}
-
-/// Rewrite the unresolved edges of `graph` in place where the evidence justifies it.
+/// Resolve every eligible edge of `graph` in place; returns
+/// [`resolution_stats`] of the result.
 pub fn resolve_graph(graph: &mut ResolvedGraph) -> ResolutionStats {
-    let symbols = SymbolIndex::build(graph);
-    let paths = PathIndex::build(graph);
-    let mut stats = ResolutionStats::default();
+    resolve_graph_recording(graph).0
+}
 
-    for (path, entry) in graph.files.iter_mut() {
-        for edge in entry.edges.iter_mut() {
-            // Every class but `Syntax` already has both endpoints, from
-            // something stronger than a name match. Never rewritten, and never
-            // counted: they are not part of the residue.
-            if edge.provenance != EdgeProvenance::Syntax || !edge.is_unresolved() {
-                continue;
-            }
-            match resolve_edge(edge, path, &symbols, &paths) {
-                Outcome::Retargeted => stats.retargeted += 1,
-                Outcome::Ambiguous => {
-                    stats.ambiguous += 1;
-                    stats.unresolved += 1;
-                }
-                Outcome::Unresolved => stats.unresolved += 1,
-            }
+/// [`resolve_graph`], also returning the lookup keys each resolved edge
+/// consulted.
+pub fn resolve_graph_recording(graph: &mut ResolvedGraph) -> (ResolutionStats, EdgeKeys) {
+    let edges: BTreeSet<EdgeRef> = graph
+        .files
+        .iter()
+        .flat_map(|(path, entry)| {
+            entry
+                .edges
+                .iter()
+                .enumerate()
+                .filter(|(_, edge)| rules::eligible(edge))
+                .map(move |(index, _)| EdgeRef {
+                    path: path.clone(),
+                    index,
+                })
+        })
+        .collect();
+    let keys = resolve_edges(graph, &edges);
+    (resolution_stats(graph), keys)
+}
+
+/// Resolve only `edges`, against indexes over the whole graph, and return the
+/// keys each consulted. A reference to no edge, or to one resolution does not
+/// act on, is skipped. Each edge's outcome depends only on the graph's nodes
+/// and import bindings, never on another edge, so resolving a subset gives
+/// those edges exactly what a full resolution would.
+pub fn resolve_edges(graph: &mut ResolvedGraph, edges: &BTreeSet<EdgeRef>) -> EdgeKeys {
+    let resolutions = resolve_selected(graph, edges);
+    let mut consulted = EdgeKeys::new();
+    for (edge_ref, Resolution { outcome, keys }) in resolutions {
+        let entry = graph.files.get_mut(&edge_ref.path);
+        if let Some(edge) = entry.and_then(|entry| entry.edges.get_mut(edge_ref.index)) {
+            apply(edge, outcome);
+        }
+        consulted.insert(edge_ref, keys);
+    }
+    consulted
+}
+
+/// Count the edges of `graph` as they stand.
+pub fn resolution_stats(graph: &ResolvedGraph) -> ResolutionStats {
+    let mut stats = ResolutionStats::default();
+    for edge in graph.edges() {
+        stats.unresolved += usize::from(edge.is_unresolved());
+        stats.ambiguous += usize::from(!edge.candidates.is_empty());
+        stats.retargeted += usize::from(matches!(
+            edge.provenance,
+            EdgeProvenance::Import | EdgeProvenance::Receiver | EdgeProvenance::UniqueName
+        ));
+        if edge.kind != SourceEdgeKind::Contains {
+            let provenance = edge.provenance.as_str().to_string();
+            *stats.by_provenance.entry(provenance).or_default() += 1;
         }
     }
-
     stats
+}
+
+/// Decide every selected edge against one read-only view of the graph, before
+/// any of them is rewritten.
+fn resolve_selected(
+    graph: &ResolvedGraph,
+    edges: &BTreeSet<EdgeRef>,
+) -> Vec<(EdgeRef, Resolution)> {
+    let indexes = Indexes::build(graph);
+    edges
+        .iter()
+        .filter_map(|edge_ref| {
+            let entry = graph.files.get(&edge_ref.path)?;
+            let edge = entry.edges.get(edge_ref.index)?;
+            rules::eligible(edge).then(|| {
+                let resolution = rules::resolve(edge, &edge_ref.path, entry, &indexes);
+                (edge_ref.clone(), resolution)
+            })
+        })
+        .collect()
+}
+
+/// Write one outcome onto its edge. Candidates keep the extraction-time
+/// provenance and confidence; only a bind raises them.
+fn apply(edge: &mut SourceEdge, outcome: Outcome) {
+    match outcome {
+        Outcome::Bound(target, provenance) => {
+            let bound = edge.bind(target, provenance);
+            debug_assert!(bound, "only eligible edges are resolved");
+        }
+        Outcome::Candidates(ids) => edge.candidates = ids,
+        Outcome::Unresolved => {}
+    }
 }
 
 #[cfg(test)]
@@ -249,5 +214,25 @@ pub(crate) mod fixtures;
 mod tests;
 
 #[cfg(test)]
+#[path = "resolve/tests_import_edges.rs"]
+mod tests_import_edges;
+
+#[cfg(test)]
 #[path = "resolve/tests_qualified.rs"]
 mod tests_qualified;
+
+#[cfg(test)]
+#[path = "resolve/tests_paths.rs"]
+mod tests_paths;
+
+#[cfg(test)]
+#[path = "resolve/tests_paths_packages.rs"]
+mod tests_paths_packages;
+
+#[cfg(test)]
+#[path = "resolve/tests_rules.rs"]
+mod tests_rules;
+
+#[cfg(test)]
+#[path = "resolve/tests_recording.rs"]
+mod tests_recording;
