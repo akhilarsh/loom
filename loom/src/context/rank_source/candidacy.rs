@@ -32,13 +32,16 @@
 //! spelled like a word is exactly what the gate above already declined, and
 //! re-admitting it here would undo that decision one step later.
 //!
-//! What this costs, written down here so nobody rediscovers it as a bug: asking
-//! `what does tokenize do` no longer reaches `fn tokenize`, because `tokenize`
-//! is one lowercase word and nothing in the prompt says it is code. Writing it
-//! as `` `tokenize` `` does, through the exact-symbol rung and at the top of
-//! tier 1. Multi-word names need no back-ticks at all: `where is reconcile
-//! source graph called` still reaches `reconcile_source_graph`, because the
-//! prompt supplied `reconcile`, `source` AND `graph`.
+//! What this costs, written down here so nobody rediscovers it as a bug: a
+//! one-word name in prose never reaches its node through this rule, because
+//! `tokenize` is one lowercase word and nothing in the sentence says it is
+//! code. Three spellings do reach it. Back-ticks (`` `tokenize` ``) earn the
+//! exact-symbol rung at the top of tier 1. A whole-query symbol question
+//! (`what does tokenize do`) is routed by `intent` and `routing`, which admit
+//! the exact node at low confidence without touching this rule. Multi-word
+//! names need neither: `where is reconcile source graph called` reaches
+//! `reconcile_source_graph`, because the prompt supplied `reconcile`, `source`
+//! AND `graph`.
 
 use crate::context::lexical::{name_parts, ExactGate};
 use crate::context::rank::RankQuery;

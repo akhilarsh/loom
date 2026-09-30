@@ -27,8 +27,11 @@
 
 mod candidacy;
 mod expand;
+pub mod intent;
 mod paths;
+mod routing;
 
+pub use expand::MAX_EXPANDED_TOKENS;
 pub use paths::normalize_dependency_path;
 
 use crate::context::config::RetrievalConfig;
@@ -129,15 +132,8 @@ pub fn rank_source_channel_cached(
         config,
         cache,
     );
-    let gate = ExactGate::new(
-        &query.text,
-        &corpus.document_frequencies,
-        config.df_ident_max,
-    );
-
-    let scored = score_nodes(query, &nodes, &corpus, &gate, config);
-    let ranked = sorted_candidates(scored);
-    let ranked = expand_from_seeds(ranked, graph, config);
+    let (ranked, routed_tokens) = routing::score_and_route(query, graph, &nodes, &corpus, config);
+    let ranked = expand_from_seeds(ranked, graph, config, routed_tokens);
     rank_order(ranked, graph, corpus.dropped_terms)
 }
 
@@ -204,13 +200,15 @@ pub fn rank_source(
 }
 
 /// Score every node against the query, keeping each surviving candidate beside
-/// the `(path, line_start)` key its ties break on.
+/// the `(path, line_start)` key its ties break on. `lexical_weight` scales each
+/// node's lexical contribution and never its rungs.
 fn score_nodes<'a>(
     query: &RankQuery,
     nodes: &[&'a SourceNode],
     corpus: &LexicalCorpus,
     gate: &ExactGate<'_>,
     config: &RetrievalConfig,
+    lexical_weight: f32,
 ) -> Vec<ScoredNode<'a>> {
     let corpus_size = nodes.len() as f32;
     // Collected once per pass, not once per node: the candidacy test below asks
@@ -234,6 +232,7 @@ fn score_nodes<'a>(
                 &surviving,
                 corpus_size,
                 index,
+                lexical_weight,
             )
             .map(|candidate| ScoredNode {
                 candidate,
@@ -255,6 +254,7 @@ fn score_node(
     surviving: &BTreeSet<&str>,
     corpus_size: f32,
     index: usize,
+    lexical_weight: f32,
 ) -> Option<RankedCandidate> {
     let mut rungs = withhold_partial_coverage(node, score_exact_rungs(query, node, gate));
     // Deliberately after the coverage guard: partial extraction says nothing
@@ -271,7 +271,7 @@ fn score_node(
         && (!rungs.is_empty() || admits_lexical_evidence(query, node, surviving, gate));
     if lexical_admitted {
         rungs.reasons.push(SelectionReason::Lexical);
-        rungs.score += lexical_score;
+        rungs.score += lexical_score * lexical_weight;
     }
     if rungs.is_empty() {
         return None;
@@ -287,6 +287,7 @@ fn score_node(
         token_count: estimate_node_tokens(node),
         matched_term_count,
         confidence_ceiling,
+        via: None,
     })
 }
 
@@ -373,5 +374,5 @@ pub(super) fn expand_from_seeds_for_test(
     graph: &ResolvedGraph,
     config: &RetrievalConfig,
 ) -> Vec<RankedCandidate> {
-    expand_from_seeds(ranked, graph, config)
+    expand_from_seeds(ranked, graph, config, 0)
 }

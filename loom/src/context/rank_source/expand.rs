@@ -3,13 +3,18 @@
 use super::{estimate_node_tokens, paths::apply_test_path_factor};
 use crate::context::config::RetrievalConfig;
 use crate::context::graph_store::ResolvedGraph;
-use crate::context::rank::{RankedCandidate, BOOST_EXACT_SYMBOL};
+use crate::context::pack::neighbor_explanation;
+use crate::context::rank::{EdgeDirection, NeighborVia, RankedCandidate, BOOST_EXACT_SYMBOL};
 use crate::context::schema::{
-    Channel, ChunkId, Confidence, FileCoverage, SelectionReason, SourceNode, SourceNodeKind,
+    estimate_tokens, Channel, ChunkId, Confidence, FileCoverage, SelectionReason, SourceNode,
+    SourceNodeKind,
 };
 use crate::context::source_graph::{SourceEdge, SourceEdgeKind};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Ceiling on the estimated rendered tokens of the neighbours one query admits,
+/// routed (`routing`) and expanded together.
+pub const MAX_EXPANDED_TOKENS: usize = 300;
 pub(super) const MAX_EXPANSION_SEEDS: usize = 5;
 pub(super) const MAX_NEIGHBORS_PER_SEED: usize = 4;
 pub(super) const MAX_EXPANDED: usize = 12;
@@ -39,35 +44,62 @@ pub(super) const MAX_EXAMINED_NEIGHBORS_PER_SEED: usize = 32;
 /// `BOOST_EXACT_PATH` = 100) outrank exactly that kind of direct hit.
 /// Deriving the cap from the same factor keeps the invariant true regardless
 /// of which file the direct match lives in.
-fn max_neighbor_score(config: &RetrievalConfig) -> f32 {
+pub(super) fn max_neighbor_score(config: &RetrievalConfig) -> f32 {
     BOOST_EXACT_SYMBOL * config.test_path_factor
+}
+
+/// Estimated rendered tokens of `node` as a neighbour reached over `via`: the
+/// node itself and the explanation rendered beside it.
+pub(super) fn neighbour_tokens(node: &SourceNode, via: &NeighborVia) -> usize {
+    estimate_node_tokens(node) + estimate_tokens(&neighbor_explanation(via))
 }
 
 type Adjacency<'a> = BTreeMap<&'a str, Vec<&'a SourceEdge>>;
 
-/// Each seed's score paired with the neighbours it reached, in the order the
-/// accept walk examines them. Named because the pair of that list and the id
-/// set it covers is `resolve_seed_neighbours`'s whole output.
-type SeedNeighbours<'a> = Vec<(f32, Vec<(&'a str, f32)>)>;
+/// One neighbour a seed reached: its id, the confidence of the edge that
+/// reached it, that edge, and the edge's direction relative to the neighbour.
+type Neighbour<'a> = (&'a str, f32, &'a SourceEdge, EdgeDirection);
+
+/// One seed's id and score with the neighbours it reached, in the order the
+/// accept walk examines them.
+struct SeedReach<'a> {
+    id: String,
+    score: f32,
+    neighbours: Vec<Neighbour<'a>>,
+}
 
 /// Mutable state threaded through one expansion pass: the growing candidate
 /// list, the id set it already carries, how many neighbours have been
-/// accepted overall, and an id index over the graph so accepting a neighbour
-/// costs a map probe rather than a scan of every node.
+/// accepted overall, the estimated rendered tokens of those neighbours, and an
+/// id index over the graph so accepting a neighbour costs a map probe rather
+/// than a scan of every node.
 struct Expansion<'a> {
     ranked: Vec<RankedCandidate>,
     existing: BTreeSet<String>,
     expanded: usize,
+    tokens: usize,
+    token_capped: bool,
     nodes_by_id: BTreeMap<&'a str, &'a SourceNode>,
+}
+
+impl Expansion<'_> {
+    /// True once no further neighbour may be admitted: the count cap is met or
+    /// the next neighbour would pass [`MAX_EXPANDED_TOKENS`].
+    fn is_full(&self) -> bool {
+        self.expanded == MAX_EXPANDED || self.token_capped
+    }
 }
 
 /// Add graph neighbours of the strongest exact-rung candidates as tier-2 candidates.
 /// `ranked` is the channel's scored list BEFORE truncation to `MAX_SOURCE_CANDIDATES`,
-/// sorted strongest first. Returns the list with neighbours appended (unsorted).
+/// sorted strongest first. `routed_tokens` is what intent routing already spent
+/// of [`MAX_EXPANDED_TOKENS`]. Returns the list with neighbours appended
+/// (unsorted).
 pub(super) fn expand_from_seeds(
     ranked: Vec<RankedCandidate>,
     graph: &ResolvedGraph,
     config: &RetrievalConfig,
+    routed_tokens: usize,
 ) -> Vec<RankedCandidate> {
     let seeds: Vec<(String, f32)> = ranked
         .iter()
@@ -93,13 +125,15 @@ pub(super) fn expand_from_seeds(
         ranked,
         existing,
         expanded: 0,
+        tokens: routed_tokens,
+        token_capped: false,
         nodes_by_id,
     };
-    for (seed_score, neighbours) in per_seed {
-        if state.expanded == MAX_EXPANDED {
+    for reach in per_seed {
+        if state.is_full() {
             break;
         }
-        append_neighbours(neighbours, seed_score, config, &mut state);
+        append_neighbours(reach, config, &mut state);
     }
     state.ranked
 }
@@ -114,16 +148,20 @@ fn resolve_seed_neighbours<'a>(
     seeds: &[(String, f32)],
     forward: &Adjacency<'a>,
     reverse: &Adjacency<'a>,
-) -> (SeedNeighbours<'a>, BTreeSet<&'a str>) {
-    let mut per_seed: SeedNeighbours = Vec::with_capacity(seeds.len());
+) -> (Vec<SeedReach<'a>>, BTreeSet<&'a str>) {
+    let mut per_seed = Vec::with_capacity(seeds.len());
     let mut wanted_ids: BTreeSet<&str> = BTreeSet::new();
     for (seed_id, seed_score) in seeds {
-        let neighbours: Vec<(&str, f32)> = neighbours_for_seed(seed_id, forward, reverse)
+        let neighbours: Vec<Neighbour<'a>> = neighbours_for_seed(seed_id, forward, reverse)
             .into_iter()
             .take(MAX_EXAMINED_NEIGHBORS_PER_SEED)
             .collect();
-        wanted_ids.extend(neighbours.iter().map(|(id, _)| *id));
-        per_seed.push((*seed_score, neighbours));
+        wanted_ids.extend(neighbours.iter().map(|(id, ..)| *id));
+        per_seed.push(SeedReach {
+            id: seed_id.clone(),
+            score: *seed_score,
+            neighbours,
+        });
     }
     (per_seed, wanted_ids)
 }
@@ -179,23 +217,37 @@ fn build_seed_adjacencies<'a>(
     (forward, reverse)
 }
 
+/// The neighbours of one seed, strongest edge first. A forward edge (the seed
+/// is the caller) reaches a neighbour the seed calls, so the neighbour sits at
+/// the `Incoming` end; a reverse edge reaches a neighbour that calls the seed,
+/// which is `Outgoing` from the neighbour's side.
 fn neighbours_for_seed<'a>(
     seed_id: &str,
     forward: &Adjacency<'a>,
     reverse: &Adjacency<'a>,
-) -> Vec<(&'a str, f32)> {
+) -> Vec<Neighbour<'a>> {
     let mut neighbours = Vec::new();
     for edge in forward.get(seed_id).into_iter().flatten() {
         if eligible_edge(edge) {
-            neighbours.push((edge.to.as_str(), edge.confidence));
+            neighbours.push((
+                edge.to.as_str(),
+                edge.confidence,
+                *edge,
+                EdgeDirection::Incoming,
+            ));
         }
     }
     for edge in reverse.get(seed_id).into_iter().flatten() {
         if eligible_edge(edge) {
-            neighbours.push((edge.from.as_str(), edge.confidence));
+            neighbours.push((
+                edge.from.as_str(),
+                edge.confidence,
+                *edge,
+                EdgeDirection::Outgoing,
+            ));
         }
     }
-    neighbours.sort_by(|(a_id, a_confidence), (b_id, b_confidence)| {
+    neighbours.sort_by(|(a_id, a_confidence, ..), (b_id, b_confidence, ..)| {
         b_confidence
             .total_cmp(a_confidence)
             .then_with(|| a_id.cmp(b_id))
@@ -214,15 +266,26 @@ fn eligible_edge(edge: &SourceEdge) -> bool {
         && edge.confidence >= MIN_NEIGHBOR_EDGE_CONFIDENCE
 }
 
-fn append_neighbours(
-    neighbours: Vec<(&str, f32)>,
-    seed_score: f32,
-    config: &RetrievalConfig,
-    state: &mut Expansion<'_>,
-) {
+/// The edge that introduced a neighbour, as the explanation rendered beside it
+/// will name it. A zero line is a span the extractor never positioned.
+fn neighbor_via(seed_id: &str, edge: &SourceEdge, direction: EdgeDirection) -> NeighborVia {
+    NeighborVia {
+        seed: seed_id.to_string(),
+        edge_kind: edge.kind,
+        direction,
+        provenance: edge.provenance,
+        site_line: edge
+            .sites
+            .first()
+            .map(|site| site.line_start)
+            .filter(|line| *line > 0),
+    }
+}
+
+fn append_neighbours(reach: SeedReach<'_>, config: &RetrievalConfig, state: &mut Expansion<'_>) {
     let mut added_for_seed = 0;
-    for (id, _) in neighbours {
-        if added_for_seed == MAX_NEIGHBORS_PER_SEED || state.expanded == MAX_EXPANDED {
+    for (id, _, edge, direction) in reach.neighbours {
+        if added_for_seed == MAX_NEIGHBORS_PER_SEED || state.is_full() {
             break;
         }
         // Cheapest rejection first: a set probe, before the node lookup.
@@ -236,9 +299,15 @@ fn append_neighbours(
         {
             continue;
         }
+        let via = neighbor_via(&reach.id, edge, direction);
+        let tokens = neighbour_tokens(node, &via);
+        if state.tokens + tokens > MAX_EXPANDED_TOKENS {
+            state.token_capped = true;
+            break;
+        }
         let score = apply_test_path_factor(
             node,
-            (seed_score * NEIGHBOR_SCORE_FACTOR).min(max_neighbor_score(config)),
+            (reach.score * NEIGHBOR_SCORE_FACTOR).min(max_neighbor_score(config)),
             config,
         );
         state.ranked.push(RankedCandidate {
@@ -249,8 +318,10 @@ fn append_neighbours(
             token_count: estimate_node_tokens(node),
             matched_term_count: 0,
             confidence_ceiling: Some(Confidence::Medium),
+            via: Some(via),
         });
         state.existing.insert(id.to_string());
+        state.tokens += tokens;
         added_for_seed += 1;
         state.expanded += 1;
     }

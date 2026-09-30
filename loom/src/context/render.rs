@@ -1,7 +1,9 @@
 //! Shared per-item rendering for context consumers.
 
+use crate::context::extract::lexical::language_for_path;
 use crate::context::schema::{
-    estimate_tokens, Confidence, ContextItem, ItemKind, UnmetRequirement, BRIEF_FRAME_TOKENS,
+    estimate_tokens, Confidence, ContextItem, ItemKind, TextSearchHint, UnmetRequirement,
+    BRIEF_FRAME_TOKENS,
 };
 use crate::context::untrusted::inline_safe;
 use std::ops::Range;
@@ -110,6 +112,11 @@ pub(crate) fn render_excerpt_block(excerpt: &str) -> String {
 /// A backtick fence at least one longer than the longest backtick run already
 /// present in `text`, and never shorter than 3.
 pub(crate) fn fence_for(text: &str) -> String {
+    "`".repeat((longest_backtick_run(text) + 1).max(3))
+}
+
+/// The length of the longest run of consecutive backticks in `text`.
+fn longest_backtick_run(text: &str) -> usize {
     let mut longest = 0usize;
     let mut current = 0usize;
     for ch in text.chars() {
@@ -120,7 +127,7 @@ pub(crate) fn fence_for(text: &str) -> String {
             current = 0;
         }
     }
-    "`".repeat((longest + 1).max(3))
+    longest
 }
 
 /// One item's fragment of a grouped source bullet: `` `<name>` <kind>
@@ -128,15 +135,53 @@ pub(crate) fn fence_for(text: &str) -> String {
 /// does not split into `<path>#<kind>:<scope>`
 /// (`context::source_graph::node_id`) — a fallback that renders the whole id
 /// rather than inventing a name that could mislead. The parentheses carry a
-/// trailing `; medium` or `; low` for a demoted item — see [`render_reasons`].
+/// trailing `; medium` or `; low` for a demoted item — see [`render_reasons`] —
+/// then `; <explanation>` for a graph neighbour and `; <caveat>` for a trust
+/// warning. Both are untrusted-adjacent (they quote a seed id and a path), so
+/// both go through [`inline_safe`]. A window is not part of the entry: see
+/// [`render_source_window`].
 pub(crate) fn render_source_entry(item: &ContextItem) -> String {
     let mut parts = match parse_source_identity(item.id.as_str()) {
         Some((kind, name)) => vec![format!("`{}`", inline_safe(name)), inline_safe(kind)],
         None => vec![format!("`{}`", inline_safe(item.id.as_str()))],
     };
     parts.extend(render_span(item));
-    parts.push(format!("({})", render_reasons(item)));
+    let mut notes = render_reasons(item);
+    for extra in [&item.explanation, &item.caveat].into_iter().flatten() {
+        notes.push_str("; ");
+        notes.push_str(&inline_safe(extra));
+    }
+    parts.push(format!("({notes})"));
     parts.join(" ")
+}
+
+/// The source window attached to `item` as an indented fenced block under its
+/// entry, tagged with the language of the file, or an empty string when the
+/// item carries none. The fence outgrows any backtick run in the window, so
+/// quoted source cannot close it early.
+pub(crate) fn render_source_window(item: &ContextItem) -> String {
+    let Some(window) = &item.window else {
+        return String::new();
+    };
+    let fence = fence_for(window);
+    let language = language_for_path(&item.pointer.path);
+    let tag = language.as_str();
+    let tag = if tag
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '+')
+    {
+        tag
+    } else {
+        "text"
+    };
+    let mut out = format!("  {fence}{tag}\n");
+    for line in window.lines() {
+        out.push_str("  ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(&format!("  {fence}\n"));
+    out
 }
 
 /// Split a source node id (`<path>#<kind>:<scope>`, see
@@ -152,7 +197,7 @@ fn parse_source_identity(id: &str) -> Option<(&str, &str)> {
 pub(crate) fn rendered_item_tokens(item: &ContextItem) -> usize {
     let rendered = match item.kind {
         ItemKind::KnowledgeChunk => render_knowledge_item(item),
-        ItemKind::SourceNode => render_source_entry(item),
+        ItemKind::SourceNode => render_source_entry(item) + &render_source_window(item),
     };
     estimate_tokens(&rendered)
 }
@@ -206,6 +251,42 @@ pub(crate) fn render_unmet_line(requirement: &UnmetRequirement) -> String {
         requirement.needed_tokens,
         requirement.available_tokens,
     )
+}
+
+/// `text` as an inline code span, verbatim: the delimiter is a backtick run one
+/// longer than the longest run in `text`, so nothing inside can close it early.
+/// Control characters (a newline would end the line the span sits on) become
+/// spaces; text that starts or ends with a backtick is padded, per CommonMark.
+pub(crate) fn inline_code(text: &str) -> String {
+    let text: String = text
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let delimiter = "`".repeat(longest_backtick_run(&text) + 1);
+    let pad = if text.starts_with('`') || text.ends_with('`') {
+        " "
+    } else {
+        ""
+    };
+    format!("{delimiter}{pad}{text}{pad}{delimiter}")
+}
+
+/// The `Literal text:` line a pack with a [`TextSearchHint`] renders: the graph
+/// does not index bodies, so this names the search to run instead. The command
+/// is printed as [`TextSearchHint::for_pattern`] built it, in a code span.
+/// Shared by the stage brief and the CLI so both print, and the brief charges,
+/// the same bytes.
+pub(crate) fn render_literal_text_line(hint: &TextSearchHint) -> String {
+    format!(
+        "Literal text: the graph does not index bodies; run {}",
+        inline_code(&hint.command)
+    )
+}
+
+/// Estimated tokens the brief spends on the [`render_literal_text_line`] of
+/// `hint`, including the blank line that follows it.
+pub(crate) fn literal_text_tokens(hint: &TextSearchHint) -> usize {
+    estimate_tokens(&format!("{}\n\n", render_literal_text_line(hint)))
 }
 
 /// Estimated tokens of the whole brief `items` and `unmet` would render to:

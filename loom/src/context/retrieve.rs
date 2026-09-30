@@ -12,13 +12,15 @@
 
 mod channels;
 mod graph;
+mod request;
+pub(crate) mod windows;
 
 use crate::context::config::RetrievalConfig;
 use crate::context::fuse::fuse;
 use crate::context::graph_store::ResolvedGraph;
 use crate::context::ingest::ingest;
 use crate::context::local_overlay::OverlayScope;
-use crate::context::pack::{pack, PackRequest};
+use crate::context::pack::pack;
 use crate::context::refresh::{evaluate, refresh};
 use crate::context::schema::{
     Channel, ContextPack, Freshness, LifecyclePolicy, RequiredRepresentation,
@@ -29,7 +31,7 @@ use crate::fs::knowledge::KnowledgeDir;
 use crate::fs::work_dir::WorkDir;
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 /// Everything a stage-scoped retrieval needs to be reproducible.
@@ -61,6 +63,19 @@ pub struct StageQuery {
     /// me", so a dirty checkout needs its working-tree overlay applied to the
     /// committed base.
     pub overlay: OverlayScope,
+    /// Which surface asked, which decides what a pack may carry (source windows).
+    pub surface: Surface,
+}
+
+/// The delivery surface a [`StageQuery`] is built for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surface {
+    /// The stage signal's Knowledge Brief.
+    StageBrief,
+    /// `loom knowledge context`.
+    Cli,
+    /// The prompt hook and the subagent worker brief.
+    Hook,
 }
 
 impl StageQuery {
@@ -76,7 +91,14 @@ impl StageQuery {
             dependency_paths: Vec::new(),
             scope: Channel::all().to_vec(),
             overlay: OverlayScope::Local,
+            surface: Surface::StageBrief,
         }
+    }
+
+    /// The same query, built for `surface`.
+    pub fn with_surface(mut self, surface: Surface) -> Self {
+        self.surface = surface;
+        self
     }
 }
 
@@ -302,26 +324,13 @@ pub fn retrieve_for_stage(query: &StageQuery, budget_tokens: usize) -> Result<Co
     }
     let graph = graph_load.graph;
 
-    check_require_ids(query, &catalog, graph.as_ref())?;
+    request::check_require_ids(query, &catalog, graph.as_ref())?;
 
-    let chunks_by_id: BTreeMap<&str, &_> = catalog
-        .chunks
-        .iter()
-        .map(|chunk| (chunk.id.as_str(), chunk))
-        .collect();
-    let ranked = channels::rank_channels_cached(
-        &query.scope,
-        &channels::build_rank_query(query),
-        &catalog,
-        &chunks_by_id,
-        graph.as_ref(),
-        query.lifecycle,
-        &config,
-        Some(roots.store.root()),
-    );
+    let ranked =
+        channels::rank_stage_channels(query, &catalog, graph.as_ref(), &config, roots.store.root());
     let fused = fuse(&ranked.lists);
 
-    let request = build_pack_request(
+    let request = request::build_pack_request(
         query,
         budget_tokens,
         state,
@@ -329,47 +338,12 @@ pub fn retrieve_for_stage(query: &StageQuery, budget_tokens: usize) -> Result<Co
         ranked.surviving_terms,
         graph_load.degraded,
     );
-    Ok(pack(&request, &fused, &catalog.chunks, graph.as_ref()))
-}
-
-/// Reject a `--require-id` this query's scope cannot possibly hold.
-///
-/// `graph` is offered to the check only when the source channel is actually in
-/// scope: see [`reject_unknown_require_ids`]'s doc comment for why accepting a
-/// source-node id for a query that will never rank source nodes reintroduces
-/// the exact silent no-op that function exists to prevent.
-fn check_require_ids(
-    query: &StageQuery,
-    catalog: &Catalog,
-    graph: Option<&ResolvedGraph>,
-) -> Result<()> {
-    let source_graph = query
-        .scope
-        .contains(&Channel::Source)
-        .then_some(graph)
-        .flatten();
-    reject_unknown_require_ids(catalog, source_graph, &query.required_ids)
-}
-
-fn build_pack_request(
-    query: &StageQuery,
-    budget_tokens: usize,
-    state: StoreState,
-    dropped_terms: Vec<String>,
-    surviving_terms: Vec<String>,
-    degraded: Option<String>,
-) -> PackRequest {
-    PackRequest {
-        query: query.text.clone(),
-        scope: query.scope.clone(),
-        budget_tokens,
-        structural_freshness: state.structural,
-        semantic_freshness: state.semantic,
-        dropped_terms,
-        surviving_terms,
-        required_representation: query.required_representation,
-        degraded,
+    let mut retrieved = pack(&request, &fused, &catalog.chunks, graph.as_ref());
+    if let (Some(graph), Some(project_root)) = (graph.as_ref(), graph_load.project_root.as_deref())
+    {
+        windows::attach_windows(&mut retrieved, graph, project_root, query.surface);
     }
+    Ok(retrieved)
 }
 
 #[cfg(test)]

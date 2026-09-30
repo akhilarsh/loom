@@ -1,5 +1,6 @@
 //! Reservation of explicitly required candidates before optional packing.
 
+use super::source_item::stamp_snapshot_caveat;
 use super::{build_item, knowledge_twin, tentative_total, PackRequest};
 use crate::context::rank::RankedCandidate;
 use crate::context::render::{rendered_brief_tokens, rendered_chrome_tokens};
@@ -112,7 +113,7 @@ fn reserve(
         .iter()
         .filter(|candidate| candidate.reasons.contains(&SelectionReason::ExplicitId))
     {
-        let Some(item) = build_item(
+        let Some(mut item) = build_item(
             candidate,
             chunks,
             nodes,
@@ -122,6 +123,9 @@ fn reserve(
             reservation.omitted += 1;
             continue;
         };
+        // Stamped before pricing: the caveat is rendered, so a fit decision made
+        // without it could admit an item the finished pack pushes over budget.
+        stamp_snapshot_caveat(&mut item, request.semantic_freshness.state());
 
         match fit_decision(budget_tokens, &reservation, candidate, &item) {
             Ok(()) => {
