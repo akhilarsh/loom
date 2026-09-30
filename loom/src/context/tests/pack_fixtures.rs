@@ -44,6 +44,7 @@ pub(super) fn candidate(
         token_count,
         matched_term_count: 1,
         confidence_ceiling: None,
+        via: None,
     }
 }
 
@@ -70,10 +71,14 @@ pub(super) fn request_with_raw_budget(budget_tokens: usize) -> PackRequest {
         scope: vec![Channel::Knowledge],
         budget_tokens,
         structural_freshness: Freshness::default(),
-        semantic_freshness: Freshness::default(),
+        semantic_freshness: Freshness {
+            revision: "test-rev".into(),
+            ..Freshness::default()
+        },
         dropped_terms: Vec::new(),
         surviving_terms: vec!["query".to_string()],
         required_representation: RequiredRepresentation::Full,
         degraded: None,
+        text_search: None,
     }
 }

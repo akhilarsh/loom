@@ -111,6 +111,9 @@ fn estimated_item(id: &str, token_count: usize) -> ContextItem {
         excerpt: None,
         truncated: false,
         matched_term_count: 0,
+        explanation: None,
+        caveat: None,
+        window: None,
     }
 }
 
@@ -122,12 +125,16 @@ fn recompute_estimate_adds_the_brief_frame_to_item_tokens() {
         budget_tokens: 1_000,
         estimated_tokens: 0,
         structural_freshness: Freshness::default(),
-        semantic_freshness: Freshness::default(),
+        semantic_freshness: Freshness {
+            revision: "test-rev".into(),
+            ..Freshness::default()
+        },
         items: vec![estimated_item("first", 12), estimated_item("second", 30)],
         unmet_required: Vec::new(),
         omitted: OmissionSummary::default(),
         dropped_terms: Vec::new(),
         degraded: None,
+        text_search: None,
     };
 
     let chrome =

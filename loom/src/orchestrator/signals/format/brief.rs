@@ -21,11 +21,11 @@
 //! `doc/PROPOSAL-retrieval-precision.md` §4 (recommendations 7, 8, 17) and its
 //! Appendix A.7/A.8/A.17 for the token-cost case this rework answers.
 //!
-//! Body-excerpt enrichment for source nodes (the same proposal's §4 item 7b)
-//! was considered and deferred: node bodies are not stored in the graph —
-//! `context::extract::treesitter::collect` keeps only a node's first line as
-//! its `signature` — and reading files at render time would cross the
-//! worktree/overlay boundary this renderer has no business crossing.
+//! A source item renders no body of its own: node bodies are not stored in the
+//! graph, and this renderer never reads files. Retrieval may attach up to two
+//! verbatim windows (`context::retrieve::windows`), which render as indented
+//! fenced blocks under the path bullet. A query for literal text adds one
+//! `Literal text:` line naming the search to run instead.
 //!
 //! Every excerpt quoted here is UNTRUSTED: it is prose and source comments
 //! that could contain anything, including text shaped like instructions. The
@@ -47,8 +47,9 @@
 #[cfg(test)]
 use crate::context::render::fence_for;
 use crate::context::render::{
-    render_knowledge_item, render_source_entry, render_source_group_prefix, render_unmet_line,
-    source_groups, KNOWLEDGE_HEADING, SOURCE_HEADING,
+    render_knowledge_item, render_literal_text_line, render_source_entry,
+    render_source_group_prefix, render_source_window, render_unmet_line, source_groups,
+    KNOWLEDGE_HEADING, SOURCE_HEADING,
 };
 use crate::context::schema::{ContextItem, ContextPack, Freshness, ItemKind};
 use crate::context::untrusted::inline_safe;
@@ -77,6 +78,11 @@ pub(crate) fn format_knowledge_brief(
     out.push_str("\n\n");
     out.push_str(&render_knowledge_section(pack));
     out.push_str(&render_source_section(pack));
+    // The `Literal text:` line; `recompute_estimate` charges the same text.
+    if let Some(hint) = &pack.text_search {
+        out.push_str(&render_literal_text_line(hint));
+        out.push_str("\n\n");
+    }
     out.push_str(&render_unmet_requirements(pack));
     out.push_str(&format!(
         "Omitted: {} weaker matches.\n\nPull more with:\n\n{}\n",
@@ -180,16 +186,21 @@ fn render_source_section(pack: &ContextPack) -> String {
 }
 
 /// One path's bullet: every item at that path, adjacent in pack order,
-/// joined by ` — ` onto a single line. Grouping is render-only — it does not
-/// reorder items, and merges only a CONSECUTIVE run: pack order is the
-/// ranker's answer and this renderer does not get to second-guess it.
+/// joined by ` — ` onto a single line, followed by the source window of each
+/// item that carries one. Grouping is render-only — it does not reorder
+/// items, and merges only a CONSECUTIVE run: pack order is the ranker's
+/// answer and this renderer does not get to second-guess it.
 fn render_source_group(group: &[&ContextItem]) -> String {
     let entries: Vec<String> = group.iter().map(|item| render_source_entry(item)).collect();
-    format!(
+    let mut out = format!(
         "{}{}\n",
         render_source_group_prefix(&group[0].pointer.path),
         entries.join(" — ")
-    )
+    );
+    for item in group {
+        out.push_str(&render_source_window(item));
+    }
+    out
 }
 
 #[cfg(test)]

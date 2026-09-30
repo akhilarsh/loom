@@ -31,6 +31,9 @@ fn item(id: &str, content_hash: &str) -> ContextItem {
         excerpt: Some(format!("body of {id}")),
         truncated: false,
         matched_term_count: 0,
+        explanation: None,
+        caveat: None,
+        window: None,
     }
 }
 
@@ -44,12 +47,16 @@ fn pack_with(items: Vec<ContextItem>, structural_revision: &str) -> ContextPack 
             revision: structural_revision.to_string(),
             ..Freshness::default()
         },
-        semantic_freshness: Freshness::default(),
+        semantic_freshness: Freshness {
+            revision: "test-rev".into(),
+            ..Freshness::default()
+        },
         items,
         unmet_required: Vec::new(),
         omitted: OmissionSummary::default(),
         dropped_terms: Vec::new(),
         degraded: None,
+        text_search: None,
     }
 }
 

@@ -54,6 +54,9 @@ fn lexical_item(id: &str) -> ContextItem {
         excerpt: Some(format!("## {id}\n\nfixture")),
         truncated: false,
         matched_term_count: 0,
+        explanation: None,
+        caveat: None,
+        window: None,
     }
 }
 
@@ -71,6 +74,7 @@ fn pack(items: Vec<ContextItem>) -> ContextPack {
         omitted: OmissionSummary::default(),
         dropped_terms: Vec::new(),
         degraded: None,
+        text_search: None,
     }
 }
 

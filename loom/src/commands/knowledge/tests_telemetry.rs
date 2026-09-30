@@ -79,6 +79,7 @@ fn context_pull_without_a_work_dir_creates_no_state_dir() {
         omitted: OmissionSummary::default(),
         dropped_terms: Vec::new(),
         degraded: None,
+        text_search: None,
     };
     emit_context_pulled(&None, 12, 100, &pack);
 

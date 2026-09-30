@@ -93,6 +93,7 @@ pub(super) fn source_candidate(id: &str, score: f32, token_count: usize) -> Rank
         token_count,
         matched_term_count: 0,
         confidence_ceiling: None,
+        via: None,
     }
 }
 

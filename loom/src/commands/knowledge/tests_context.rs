@@ -232,6 +232,9 @@ fn item_with_confidence(confidence: Confidence) -> ContextItem {
         excerpt: None,
         truncated: false,
         matched_term_count: 0,
+        explanation: None,
+        caveat: None,
+        window: None,
     }
 }
 
@@ -310,6 +313,7 @@ fn pack_with(dropped_terms: Vec<String>, degraded: Option<String>) -> ContextPac
         omitted: OmissionSummary::default(),
         dropped_terms,
         degraded,
+        text_search: None,
     }
 }
 

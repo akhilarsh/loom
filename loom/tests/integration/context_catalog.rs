@@ -63,6 +63,7 @@ fn pack_request(query: &str, budget_tokens: usize) -> PackRequest {
         surviving_terms: Vec::new(),
         required_representation: RequiredRepresentation::default(),
         degraded: None,
+        text_search: None,
     }
 }
 

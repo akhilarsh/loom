@@ -15,10 +15,12 @@ use crate::context::local_overlay::OverlayScope;
 use crate::context::refresh::{clean_generation, short_revision, working_tree};
 use crate::context::store::ContextStore;
 use crate::fs::work_dir::WorkDir;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(super) struct GraphLoad {
     pub graph: Option<ResolvedGraph>,
+    /// The checkout the graph's paths are relative to, for reading source back.
+    pub project_root: Option<PathBuf>,
     pub degraded: Option<String>,
     pub working_tree_stale: Option<String>,
 }
@@ -27,6 +29,7 @@ impl GraphLoad {
     fn empty() -> Self {
         Self {
             graph: None,
+            project_root: None,
             degraded: None,
             working_tree_stale: None,
         }
@@ -37,9 +40,12 @@ impl GraphLoad {
 /// on any error, alongside an A.11 degradation message when the base layer
 /// for a non-empty semantic revision could not be found.
 ///
+/// The graph is [`GraphStore::view`]'s, so expansion sees cross-file edges. When
+/// the view cannot be built this falls back to [`GraphStore::resolved`]'s
+/// unresolved graph and says so in the degraded message.
+///
 /// `overlay.resolve` always yields a `(plan, stage)` pair, so this always asks
-/// [`GraphStore::resolved`] for the overlay-applied view — never `None` for
-/// the stage. That distinction matters on its own: with `None`, `resolved`
+/// for the overlay-applied view — never `None` for the stage. That distinction matters on its own: with `None`, `resolved`
 /// reads only the base layer, and a base miss there becomes an *empty* graph
 /// rather than a missing one, silently dropping an overlay the query should
 /// have read. [`OverlayScope::Local`] resolves to the `(plan, stage)` address
@@ -64,7 +70,7 @@ impl GraphLoad {
 /// an *empty* base rather than an error) AND nothing published an overlay to
 /// cover for it either, so the resolved graph has no files at all.
 /// [`degraded_reason`] turns THAT combination into the message
-/// `super::build_pack_request` carries out to `ContextPack::degraded`. A
+/// `super::request::build_pack_request` carries out to `ContextPack::degraded`. A
 /// missing base alone is NOT this condition — see this module's doc comment
 /// and [`degraded_reason`]'s own — so a checkout with a healthy overlay, or
 /// one with a genuinely empty published base, both read as `Semantic:
@@ -87,11 +93,19 @@ pub(super) fn load_resolved_graph(
     let Ok(overlay_layer) = graph_store.load_overlay(&plan, &stage) else {
         return GraphLoad::empty();
     };
-    let Ok(graph) = graph_store.resolved(semantic_revision, Some((&plan, &stage))) else {
-        return GraphLoad::empty();
+    let (graph, view_note) = match graph_store.view(semantic_revision, Some((&plan, &stage))) {
+        Ok(view) => (view.graph, None),
+        Err(error) => {
+            let Ok(graph) = graph_store.resolved(semantic_revision, Some((&plan, &stage))) else {
+                return GraphLoad::empty();
+            };
+            let note =
+                format!("resolved view unavailable ({error}); cross-file edges are not resolved");
+            (graph, Some(note))
+        }
     };
 
-    let degraded = degraded_reason(semantic_revision, &graph);
+    let degraded = degraded_reason(semantic_revision, &graph).or(view_note);
     let working_tree_stale = working_tree(project_root)
         .ok()
         .and_then(|tree| match overlay_layer {
@@ -105,6 +119,7 @@ pub(super) fn load_resolved_graph(
         });
     GraphLoad {
         graph: Some(graph),
+        project_root: Some(project_root.to_path_buf()),
         degraded,
         working_tree_stale,
     }

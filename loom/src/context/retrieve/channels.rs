@@ -253,6 +253,32 @@ pub(super) fn build_rank_query(query: &StageQuery) -> RankQuery {
     }
 }
 
+/// Rank every channel `query.scope` requests, reading and maintaining the
+/// lexical index under `cache_root`.
+pub(super) fn rank_stage_channels(
+    query: &StageQuery,
+    catalog: &Catalog,
+    graph: Option<&ResolvedGraph>,
+    config: &RetrievalConfig,
+    cache_root: &Path,
+) -> RankedChannels {
+    let chunks_by_id: BTreeMap<&str, &_> = catalog
+        .chunks
+        .iter()
+        .map(|chunk| (chunk.id.as_str(), chunk))
+        .collect();
+    rank_channels_cached(
+        &query.scope,
+        &build_rank_query(query),
+        catalog,
+        &chunks_by_id,
+        graph,
+        query.lifecycle,
+        config,
+        Some(cache_root),
+    )
+}
+
 #[cfg(test)]
 #[path = "channels/tests.rs"]
 mod tests;

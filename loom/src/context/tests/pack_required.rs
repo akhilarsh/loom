@@ -330,5 +330,6 @@ fn required_source_candidate(id: &str) -> RankedCandidate {
         token_count: 1,
         matched_term_count: 0,
         confidence_ceiling: None,
+        via: None,
     }
 }

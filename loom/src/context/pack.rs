@@ -7,18 +7,22 @@
 
 pub(crate) mod excerpt;
 mod required;
+mod source_item;
 pub(crate) mod twins;
 
+use crate::context::freshness::GraphState;
 use crate::context::graph_store::ResolvedGraph;
 use crate::context::rank::RankedCandidate;
-use crate::context::render::{rendered_brief_tokens, rendered_item_tokens};
+use crate::context::render::{literal_text_tokens, rendered_brief_tokens, rendered_item_tokens};
 use crate::context::schema::{
-    Channel, ChunkId, ContextItem, ContextPack, Coverage, Freshness, ItemKind, KnowledgeChunk,
-    LifecycleState, OmissionSummary, RequiredRepresentation, SourceNode, SourcePointer,
-    UnmetRequirement,
+    Channel, Confidence, ContextItem, ContextPack, Coverage, FileCoverage, Freshness, ItemKind,
+    KnowledgeChunk, OmissionSummary, RequiredRepresentation, SourceNode, SourcePointer,
+    TextSearchHint, UnmetRequirement,
 };
 use excerpt::bounded_excerpt;
 use required::reserve_within_budget;
+pub(crate) use source_item::neighbor_explanation;
+use source_item::{build_source_item, stamp_snapshot_caveat};
 use twins::{details_before_summaries, explicitly_required, knowledge_twin};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -50,6 +54,56 @@ pub struct PackRequest {
     /// detects a missing base graph (A.11) only has to fill this field in
     /// `retrieve_for_stage`, with no further plumbing.
     pub degraded: Option<String>,
+    /// The text search to suggest when the query asked for literal text; copied
+    /// onto [`ContextPack::text_search`].
+    pub text_search: Option<TextSearchHint>,
+}
+
+/// Multiplier on the score of a source candidate that carries a trust caveat:
+/// once for a partly parsed file, once more for a snapshot that is not current.
+const CAVEAT_SCORE_FACTOR: f32 = 0.6;
+
+/// `ranked` with each caveated source candidate's score scaled by
+/// [`CAVEAT_SCORE_FACTOR`], re-ordered so the walk in `select` sees the
+/// demotion. The list is returned untouched when nothing is demoted.
+///
+/// Scores are not comparable across fusion tiers (`fuse`'s module doc), so the
+/// re-sort keeps tier 1 (any exact rung) ahead of tier 2 and orders by score
+/// only inside a tier. The sort is stable, so candidates whose score did not
+/// change keep the order fusion gave them.
+fn apply_caveat_factors(
+    ranked: &[RankedCandidate],
+    nodes: &BTreeMap<&str, &SourceNode>,
+    state: GraphState,
+) -> Vec<RankedCandidate> {
+    let mut adjusted = ranked.to_vec();
+    let mut demoted = false;
+    for candidate in adjusted
+        .iter_mut()
+        .filter(|candidate| candidate.channel == Channel::Source)
+    {
+        let partial = nodes
+            .get(candidate.id.as_str())
+            .is_some_and(|node| !matches!(node.coverage, FileCoverage::Full));
+        let caveats = i32::from(partial) + i32::from(state != GraphState::Current);
+        if caveats > 0 {
+            candidate.score *= CAVEAT_SCORE_FACTOR.powi(caveats);
+            demoted = true;
+        }
+    }
+    if demoted {
+        // `from_reasons` is not `Low` exactly when an exact rung fired, which
+        // is fusion's tier-1 test.
+        let tier1 = |candidate: &RankedCandidate| {
+            Confidence::from_reasons(&candidate.reasons) != Confidence::Low
+        };
+        adjusted.sort_by(|a, b| {
+            tier1(b)
+                .cmp(&tier1(a))
+                .then_with(|| b.score.total_cmp(&a.score))
+        });
+    }
+    adjusted
 }
 
 fn summary(chunk: &KnowledgeChunk) -> String {
@@ -102,79 +156,9 @@ fn build_chunk_item(
         excerpt: Some(excerpt),
         truncated,
         matched_term_count: candidate.matched_term_count,
-    })
-}
-
-/// Build one `ContextItem` from a ranked candidate and its backing source node.
-///
-/// `state` is always [`LifecycleState::Active`]: a source node has no curation
-/// lifecycle (draft/deprecated/superseded) the way a hand-written knowledge
-/// chunk does — it is simply whatever the code on disk currently says. Do not
-/// try to derive one from `node.coverage`; that describes extraction quality,
-/// not trustworthiness.
-///
-/// `content_hash` is `node.body_hash`, already `sha256:<hex>` over this node's
-/// exact source bytes — strictly more precise than the owning file's hash for
-/// the delivery-record suppression `ContextItem::content_hash` feeds, since it
-/// changes only when this node's own bytes do.
-///
-/// Under [`RequiredRepresentation::Compact`], `excerpt` goes through
-/// [`bounded_excerpt`], never `crate::utils::truncate_for_display`:
-/// `bounded_excerpt` is what enforces the documented contract on
-/// `ContextItem::excerpt` (bounded by `schema::EXCERPT_MAX_TOKENS`, truncated
-/// text ends with the schema truncation marker on its own line). A signature
-/// is short, so this is nearly always a no-op, but using the other helper
-/// would silently make source items the only ones in the corpus violating
-/// that contract.
-///
-/// Under [`RequiredRepresentation::Full`] — the default, and what every
-/// `--require-id` reservation gets unless the caller asks for `Compact` —
-/// `excerpt` is `node.signature.clone()` verbatim, with no bound at all:
-/// `Full` exists precisely to let a caller demand the whole unit regardless
-/// of `EXCERPT_MAX_TOKENS`, so the bound above does not apply to it.
-///
-/// No file reads here or anywhere else in the packer: retrieval is a pure
-/// function of bytes already loaded into the `SourceNode`, not of the working
-/// tree at query time.
-fn build_source_item(
-    candidate: &RankedCandidate,
-    node: &SourceNode,
-    terms: &[String],
-    representation: RequiredRepresentation,
-) -> ContextItem {
-    let (excerpt, truncated) = match representation {
-        RequiredRepresentation::Full => (node.signature.clone(), false),
-        RequiredRepresentation::Compact => bounded_excerpt(&node.signature, terms),
-    };
-    finalize_item(ContextItem {
-        id: ChunkId::from(node.id.as_str()),
-        kind: ItemKind::SourceNode,
-        pointer: SourcePointer {
-            path: node.path.clone(),
-            anchor: String::new(),
-            line_start: Some(node.span.line_start),
-            line_end: Some(node.span.line_end),
-        },
-        summary: format!(
-            "{} {} - {}:{}-{}",
-            node.kind.as_str(),
-            node.scope.join("::"),
-            node.path.display(),
-            node.span.line_start,
-            node.span.line_end
-        ),
-        source: Channel::Source,
-        token_count: 0,
-        score: candidate.score,
-        reasons: candidate.reasons.clone(),
-        // See `build_chunk_item`: the cap rides on the candidate, not the
-        // reasons, so both item builders must ask the candidate.
-        confidence: candidate.confidence(),
-        state: LifecycleState::Active,
-        content_hash: node.body_hash.clone(),
-        excerpt: Some(excerpt),
-        truncated,
-        matched_term_count: candidate.matched_term_count,
+        explanation: None,
+        caveat: None,
+        window: None,
     })
 }
 
@@ -301,7 +285,7 @@ fn select_optional(
             selection.omitted += 1;
             continue;
         }
-        let Some(item) = build_item(
+        let Some(mut item) = build_item(
             candidate,
             chunks,
             nodes,
@@ -311,6 +295,7 @@ fn select_optional(
             selection.omitted += 1;
             continue;
         };
+        stamp_snapshot_caveat(&mut item, request.semantic_freshness.state());
         // The unmet list is final by now — `reserve_within_budget` has run —
         // so this prices against the same chrome the finished pack renders.
         if tentative_total(&selection.items, &selection.unmet_required, &item)
@@ -367,9 +352,18 @@ pub fn pack(
         .flat_map(|graph| graph.nodes())
         .map(|node| (node.id.as_str(), node))
         .collect();
-    let selected = select(request, ranked, &chunk_lookup, &node_lookup);
+    let ranked = apply_caveat_factors(ranked, &node_lookup, request.semantic_freshness.state());
+    // The `Literal text:` line is chrome outside every item: hold its cost back
+    // so `recompute_estimate`, which charges it, still lands within the budget.
+    let selection_request = PackRequest {
+        budget_tokens: request
+            .budget_tokens
+            .saturating_sub(request.text_search.as_ref().map_or(0, literal_text_tokens)),
+        ..request.clone()
+    };
+    let selected = select(&selection_request, &ranked, &chunk_lookup, &node_lookup);
 
-    let omitted_summary = build_omission_summary(ranked, &selected.items, selected.omitted);
+    let omitted_summary = build_omission_summary(&ranked, &selected.items, selected.omitted);
     let mut pack = ContextPack {
         query: request.query.clone(),
         scope: request.scope.clone(),
@@ -384,6 +378,7 @@ pub fn pack(
         omitted: omitted_summary,
         dropped_terms: request.dropped_terms.clone(),
         degraded: request.degraded.clone(),
+        text_search: request.text_search.clone(),
     };
     pack.recompute_estimate();
     pack

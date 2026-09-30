@@ -40,6 +40,9 @@ fn item(id: &str, excerpt: Option<&str>) -> ContextItem {
         excerpt: excerpt.map(str::to_string),
         truncated: false,
         matched_term_count: 0,
+        explanation: None,
+        caveat: None,
+        window: None,
     })
 }
 
@@ -103,6 +106,7 @@ fn pack(items: Vec<ContextItem>, omitted: usize) -> ContextPack {
         },
         dropped_terms: Vec::new(),
         degraded: None,
+        text_search: None,
     }
 }
 

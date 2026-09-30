@@ -3,7 +3,7 @@
 use crate::context::config::RetrievalConfig;
 use crate::context::delivery::{self, DeliveryRecord};
 use crate::context::rank_source::normalize_dependency_path;
-use crate::context::retrieve::{retrieve_for_stage, StageQuery};
+use crate::context::retrieve::{retrieve_for_stage, StageQuery, Surface};
 use crate::context::schema::{ContextItem, ContextPack, UnmetRequirement};
 use crate::fs::locking::{atomic_write_locked, locked_dir_update};
 use crate::fs::work_dir::WorkDir;
@@ -163,7 +163,7 @@ fn retrieve_pack(config: &Config, payload: &HookPayload, paths: &[String]) -> Op
     text.push_str(&payload.tool_input.description);
     text.push('\n');
     text.push_str(&payload.tool_input.prompt);
-    let mut query = StageQuery::new(&config.work_dir, text);
+    let mut query = StageQuery::new(&config.work_dir, text).with_surface(Surface::Hook);
     query.overlay = StageQuery::stage_overlay_scope(&config.stage);
     query.stage_dependency_ids = delivery::dependency_chunk_ids(
         &config.work_dir,
