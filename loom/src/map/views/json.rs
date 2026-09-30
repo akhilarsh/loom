@@ -48,6 +48,8 @@ pub fn find_all_json(graph: &ResolvedGraph, symbol: &str) -> Value {
     })
 }
 
+// Later stages add fields; the struct update keeps this literal compiling.
+#[allow(clippy::needless_update)]
 pub fn impact_json(
     graph: &ResolvedGraph,
     project_root: &Path,
@@ -73,6 +75,7 @@ pub fn impact_json(
                 limit: args.limit,
                 path_prefix: args.path_prefix.clone(),
                 min_confidence: args.min_confidence,
+                ..Default::default()
             },
         );
         suppressed += result.suppressed;
@@ -105,6 +108,12 @@ pub fn footer_json(graph: &ResolvedGraph, stats: &ResolutionStats) -> Value {
         "edges": coverage.edges,
         "edges_by_provenance": coverage.edges_by_provenance,
         "unresolved_edges": coverage.unresolved_edges,
+        "bytes": coverage.bytes,
+        "symbol_level_bytes": coverage.symbol_level_bytes,
+        "unsupported_files": coverage.unsupported_files,
+        "unsupported_bytes": coverage.unsupported_bytes,
+        "by_dialect": coverage.by_dialect,
+        "gaps": coverage.gaps,
         "base_revision": safe(&coverage.base_revision),
         "overlaid_files": coverage.overlaid_files,
         "resolution": {
@@ -308,9 +317,33 @@ mod tests {
                 "edges",
                 "edges_by_provenance",
                 "unresolved_edges",
+                "bytes",
+                "symbol_level_bytes",
+                "unsupported_files",
+                "unsupported_bytes",
+                "by_dialect",
+                "gaps",
                 "base_revision",
                 "overlaid_files",
                 "resolution",
+            ],
+        );
+        assert!(footer["by_dialect"].is_object());
+        assert!(footer["gaps"].is_array());
+        let rust = &footer["by_dialect"]["rust"];
+        assert_keys(
+            rust,
+            &[
+                "files",
+                "bytes",
+                "symbol_level_files",
+                "symbol_level_bytes",
+                "files_by_status",
+                "edges_by_provenance",
+                "unresolved_edges",
+                "ambiguous_edges",
+                "extractor",
+                "capabilities",
             ],
         );
         assert_keys(
