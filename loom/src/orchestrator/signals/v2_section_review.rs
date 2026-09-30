@@ -36,10 +36,11 @@ pub(super) fn append_review_gate(content: &mut String, stage: &Stage, work_dir: 
          severity; suggestions never do.\n\n",
     );
     content.push_str(&format!(
-        "- Spawn a `loom-code-reviewer` for the stage diff. Only that agent type is recorded: \
-         when it stops, a hook records the `loom-review` block ending its final message as the \
-         next review round. A final message without a valid block is recorded as malformed and \
-         counts for nothing.\n\
+        "- Spawn a `loom-code-reviewer` BY AGENT TYPE, without `name`, for the stage diff. Only \
+         that type is recorded: when it stops, a hook records the `loom-review` block from its \
+         `SubagentHandback` report, or from its final message when it hands back nothing, as \
+         the next review round. Neither carrying a valid block records a malformed round, \
+         which counts for nothing.\n\
          - Paste the output of `loom stage review status {id}` into every re-review brief. It \
          lists the rounds, every open finding with its id, whether the latest round matches the \
          current worktree, and the files changed since that round.\n\
@@ -60,7 +61,9 @@ fn append_dispute_commands(content: &mut String, stage_id: &str) {
         "- A finding you judge wrong can be disputed instead of fixed: \
          `loom stage dispute-findings {stage_id} --finding <id> ... --reason ...`, repeating \
          `--finding` for each finding. File every dispute from one review round in one \
-         command: each dispute sends the stage to adjudication and ends this session.\n\
+         command: filing a dispute ends your turn and sends the stage to adjudication; loom retires \
+         your session when the verdict is applied, or when the dispute escalates to human \
+         review.\n\
          - `loom stage complete` also fails on a test-integrity event (tests or assertions \
          removed, an assertion or ratchet file changed); `loom stage review integrity \
          {stage_id}` lists them. Revert the change behind each one, or dispute them with \

@@ -95,10 +95,11 @@ Subagents write code and report; the main agent owns verification and all git op
 
 ### 6. SUBAGENTS
 
-Load the `loom-orchestration` skill before spawning: it holds the shapes table, the file-ownership table, the coordinator and worker preambles, and the waiting protocol. Three rules bind every spawn:
+Load the `loom-orchestration` skill before spawning: it holds the shapes table, the file-ownership table, the coordinator and worker preambles, and the waiting protocol. Four rules bind every spawn:
 
 - Group small tasks into ONE subagent, never one per task or file; two subagents never write one file.
 - Subagents are ONE-SHOT: brief completely, wait, harvest once, let it end. A follow-up is a fresh spawn of the same type.
+- Never pass `name` to a subagent spawn (agent teams are the exception): a named spawn idles as a teammate instead of stopping, so `loom subagents watch` cannot bind it and a named `loom-code-reviewer` records no review round.
 - Inside a loom stage, wait with one background `loom subagents watch`, never a poll loop. Outside a stage it exits 5 (it needs `LOOM_STAGE_ID`, `LOOM_SESSION_ID`, `LOOM_WORK_DIR`): a background Agent-tool subagent reports its own completion, so wait for that notification and never poll.
 
 ### 7. SKILLS, AGENTS, AND MODEL CHOICE

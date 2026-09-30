@@ -270,8 +270,9 @@ fn handle_response(dispute: &Dispute, wording: &Wording, response: Response) -> 
             println!();
             println!(
                 "The stage is now in NeedsAdjudication and this session's turn is over. When \
-                 the verdict is applied, the daemon writes this session's handoff, retires it, \
-                 and starts a fresh session {}. Do not continue working the stage and do not \
+                 the verdict is applied, or when the dispute escalates to human review, the \
+                 daemon writes this session's handoff and retires it; a verdict then starts a \
+                 fresh session {}. Do not continue working the stage and do not \
                  run `loom stage complete` — this session may end now.",
                 wording.successor
             );

@@ -130,6 +130,11 @@ subagent. A follow-up, or continuation after a ceiling, is a FRESH spawn of the 
 with the prior report and remaining items. Messaging one still `tool-wait`/`generating` differs,
 and is rare.
 
+**Never pass `name` to a subagent spawn** (agent teams, which name teammates deliberately, are the
+exception). A named spawn becomes a teammate with id `<name>@session-<uuid8>` that goes idle
+instead of stopping, so `loom subagents watch` cannot bind it and a named `loom-code-reviewer`
+records no review round.
+
 **2-level cap:** main agent → coordinators → workers. Spawn coordinators as `general-purpose` with
 an explicit `model` override — the engineer agent types carry no Task tool and run as leaves, so
 they cannot coordinate. Spawn workers BY AGENT TYPE — untyped ones inherit the main session model.
@@ -154,7 +159,7 @@ CLAUDE.md is already in your context; the rules below are the ones that bind you
 COORDINATOR ROLE - YOU ARE A SUBAGENT COORDINATING WORKERS (ONE LEVEL ONLY):
 - You own ONE territory: [TERRITORY]. Never touch files outside it.
 - Partition your territory into DISJOINT worker file sets - two workers writing one file = LOST WORK
-- Spawn workers via the Task tool BY AGENT TYPE (loom-software-engineer = sonnet); include the WORKER PREAMBLE as the first lines of EVERY worker prompt; spawn independent workers in ONE message
+- Spawn workers via the Task tool BY AGENT TYPE (loom-software-engineer = sonnet) and never pass `name`; include the WORKER PREAMBLE as the first lines of EVERY worker prompt; spawn independent workers in ONE message
 - Workers NEVER spawn subagents - they are LEAVES (loom caps the tree at 2 levels)
 - Delegate implementation; write at most small glue/fixes within your territory
 - AT MOST ONE narrowly-scoped check over the files your workers wrote (e.g. `cargo test <your_module>::`), run ONCE; skip it if you are unsure. The MAIN AGENT compiles, tests, lints, and fixes.
@@ -244,7 +249,7 @@ the worktree. A contract that is itself wrong is disputed, never edited:
 
 **The review loop** (standard and integration-verify stages):
 
-1. Spawn a `loom-code-reviewer` BY AGENT TYPE for the stage diff. Only that type is recorded:
+1. Spawn a `loom-code-reviewer` BY AGENT TYPE, without `name`, for the stage diff. Only that type is recorded:
    when it stops, a hook records the `loom-review` block from its `SubagentHandback` report, or
    from its final message when it hands back nothing, as the next review round. Neither carrying a
    valid block records a malformed round, which counts for nothing.
@@ -256,8 +261,9 @@ the worktree. A contract that is itself wrong is disputed, never edited:
    either fixed and re-reviewed, or disputed. It closes when a later round lists it under
    `resolved`, or when the judge rules it `dismiss` or `defer`; `uphold` leaves it open.
 4. Dispute a round's findings in one command:
-   `loom stage dispute-findings <stage-id> --finding <id> ... --reason "..."`. Every dispute
-   sends the stage to adjudication and ends your session. A stage may file 3 disputes of each
+   `loom stage dispute-findings <stage-id> --finding <id> ... --reason "..."`. Filing a dispute
+   ends your turn and sends the stage to adjudication; loom retires your session when the verdict
+   is applied, or when the dispute escalates to human review. A stage may file 3 disputes of each
    kind (findings, contract, integrity); one more escalates it to `NeedsHumanReview`.
 
 **Review order (plan v2):** fix every finding, run the full gate, then run the final review round, then complete. Edit nothing after the final review round: any edit, formatting included, changes the change fingerprint and needs another round. A commit does not change it.
