@@ -2,6 +2,7 @@
 //! `git rev-parse HEAD` (`semantic_freshness_against_head`, `short_revision`).
 
 use super::*;
+use crate::context::freshness::GraphState;
 use crate::context::store::StoreState;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -119,7 +120,7 @@ fn semantic_stays_fresh_when_head_matches_the_stored_revision() {
 }
 
 #[test]
-fn a_non_git_directory_passes_the_stored_semantic_freshness_through_unchanged() {
+fn a_non_git_directory_reports_the_stored_semantic_layer_unavailable() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
     let knowledge_root = root.join("doc/loom/knowledge");
@@ -142,9 +143,14 @@ fn a_non_git_directory_passes_the_stored_semantic_freshness_through_unchanged() 
 
     let state = evaluate(&store, &knowledge_root).unwrap();
 
+    assert_eq!(state.semantic.state(), GraphState::Unavailable);
     assert_eq!(
-        state.semantic, stored,
-        "no git repository must leave the stored semantic freshness untouched"
+        state.semantic.revision, stored.revision,
+        "the stored revision names the base on disk and is kept"
+    );
+    assert!(
+        state.semantic.detail.is_some(),
+        "an unavailable verdict needs a detail"
     );
 }
 

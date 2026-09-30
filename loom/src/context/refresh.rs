@@ -22,7 +22,7 @@ mod source_graph;
 
 pub use semantic::{SemanticLayer, SemanticOutcome, SOURCE_GRAPH_PREFIX};
 pub use snapshot::{ensure_snapshot, SnapshotAction, SnapshotOutcome, SnapshotPolicy};
-pub(crate) use source_graph::{clean_generation, working_tree};
+pub(crate) use source_graph::{clean_generation, excluded, working_tree, EXCLUDED_ROOTS};
 pub use source_graph::{
     mark_semantic_stale, reconcile_source_graph, SourceGraphCounters, SourceGraphOutcome,
     SourceGraphScope,
@@ -60,6 +60,7 @@ fn structural_freshness(stored: &Freshness, current_revision: &str) -> Freshness
             computed_at: stored.computed_at,
             stale: true,
             detail: Some("knowledge tree changed since the catalog was built".to_string()),
+            unavailable: false,
         }
     } else {
         Freshness {
@@ -93,11 +94,11 @@ fn structural_freshness(stored: &Freshness, current_revision: &str) -> Freshness
 /// start one. `revision` itself always stays the STORED value — that is the
 /// layer actually on disk, and what `load_resolved_graph`
 /// (`context/retrieve.rs`) keys the base read by; only `stale`/`detail`
-/// change. A knowledge root whose project cannot be resolved, or a project
-/// with no git HEAD (not a repository, no commits, `git` unavailable),
-/// degrades to passing the stored semantic freshness through unchanged — a
-/// missing git repository is data, not a crash
-/// (`refresh/source_graph.rs`'s module doc).
+/// change. A knowledge root whose project cannot be resolved degrades to
+/// passing the stored semantic freshness through unchanged. A project with no
+/// git HEAD (not a repository, no commits, `git` unavailable) is reported
+/// `unavailable` with the stored revision kept — a missing git repository is
+/// data, not a crash (`refresh/source_graph.rs`'s module doc).
 pub fn evaluate(store: &ContextStore, knowledge_root: &Path) -> Result<StoreState> {
     Ok(evaluate_inner(store, knowledge_root)?.state)
 }
@@ -169,15 +170,21 @@ fn take_fingerprint_pass_count() -> usize {
 /// Read-only: no rebuild, no write, no reconcile. Only `stale`/`detail` are
 /// ever changed — `revision` is returned exactly as `stored` held it, because
 /// that is the base layer actually on disk (see [`evaluate`]'s doc comment).
-/// When the project root cannot be derived from `knowledge_root`, or the
-/// project has no resolvable git HEAD, `stored` is returned completely
-/// unchanged — this must never invent a verdict from an unusable comparison.
+/// When the project root cannot be derived from `knowledge_root`, `stored` is
+/// returned completely unchanged — this must never invent a verdict from an
+/// unusable comparison. A project with no resolvable git HEAD is reported
+/// `unavailable` (the stored `revision` kept), so no surface reads it as
+/// current.
 fn semantic_freshness_against_head(knowledge_root: &Path, stored: Freshness) -> Freshness {
     let Some(project_root) = semantic::derive_project_root(knowledge_root) else {
         return stored;
     };
     let Some(head) = source_graph::head_revision(project_root) else {
-        return stored;
+        return Freshness {
+            revision: stored.revision,
+            computed_at: stored.computed_at,
+            ..Freshness::unavailable("project has no resolvable git HEAD")
+        };
     };
     if head == stored.revision {
         return stored;
@@ -192,6 +199,7 @@ fn semantic_freshness_against_head(knowledge_root: &Path, stored: Freshness) -> 
             short_revision(&stored.revision),
             short_revision(&head)
         )),
+        unavailable: false,
     }
 }
 
@@ -292,6 +300,7 @@ fn rebuild_and_persist(
         computed_at: Some(Utc::now()),
         stale: false,
         detail: None,
+        unavailable: false,
     };
 
     // `update_state` re-reads `state.json` under the lock rather than reusing
@@ -315,6 +324,10 @@ fn rebuild_and_persist(
 #[cfg(test)]
 #[path = "refresh/tests_freshness.rs"]
 mod tests_freshness;
+
+#[cfg(test)]
+#[path = "refresh/tests_states.rs"]
+mod tests_states;
 
 #[cfg(test)]
 #[path = "refresh/tests_snapshot.rs"]

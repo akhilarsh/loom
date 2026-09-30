@@ -86,7 +86,7 @@ mod rules;
 mod symbols;
 
 pub use impact::{impact, impact_with, ImpactHit, ImpactOptions, ImpactResult};
-pub use neighbors::{direct_callees, direct_callers, Neighbor};
+pub use neighbors::{direct_callees, direct_callers, direct_references, Neighbor};
 pub(crate) use record::node_names;
 pub use record::{touched_keys, EdgeKeys, EdgeRef};
 pub use symbols::SymbolIndex;
@@ -236,3 +236,7 @@ mod tests_rules;
 #[cfg(test)]
 #[path = "resolve/tests_recording.rs"]
 mod tests_recording;
+
+#[cfg(test)]
+#[path = "resolve/tests_candidates.rs"]
+mod tests_candidates;

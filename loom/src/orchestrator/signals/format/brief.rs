@@ -138,11 +138,7 @@ fn render_status_line(pack: &ContextPack, query_inputs: &str) -> String {
 }
 
 fn freshness_word(freshness: &Freshness) -> &'static str {
-    if freshness.stale {
-        "stale"
-    } else {
-        "current"
-    }
+    freshness.state().as_str()
 }
 
 /// The `### Knowledge` section: every knowledge-chunk item, in pack order.

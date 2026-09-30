@@ -232,28 +232,10 @@ impl Drop for CwdGuard {
 /// the test that drives `loom map` stays focused on the checkout it runs in.
 fn outline_src_rs_args() -> crate::commands::map::MapArgs {
     use crate::commands::map::MapArgs;
-    use crate::context::source_graph::SourceEdgeKind;
+    use clap::Parser;
 
-    MapArgs {
-        outline: Some("src.rs".to_string()),
-        find_all: None,
-        impact: None,
-        callers: None,
-        callees: None,
-        depth: 3,
-        kinds: vec![
-            SourceEdgeKind::Contains,
-            SourceEdgeKind::Imports,
-            SourceEdgeKind::Calls,
-            SourceEdgeKind::References,
-            SourceEdgeKind::Implements,
-            SourceEdgeKind::Extends,
-        ],
-        limit: 50,
-        path: None,
-        min_confidence: 0.0,
-        json: true,
-    }
+    MapArgs::try_parse_from(["map", "--outline", "src.rs", "--json"])
+        .expect("the outline arguments parse")
 }
 
 #[test]
@@ -298,6 +280,8 @@ fn reused_base_outcome() -> SnapshotOutcome {
         overlay: None,
         counters: SourceGraphCounters::default(),
         elapsed: Duration::ZERO,
+        persisted: true,
+        serving: None,
     }
 }
 
@@ -315,6 +299,8 @@ fn updated_overlay_outcome() -> SnapshotOutcome {
             ..Default::default()
         },
         elapsed: Duration::from_millis(410),
+        persisted: true,
+        serving: None,
     }
 }
 
@@ -330,6 +316,8 @@ fn rebuilt_base_outcome() -> SnapshotOutcome {
             ..Default::default()
         },
         elapsed: Duration::from_millis(12_300),
+        persisted: true,
+        serving: None,
     }
 }
 
@@ -342,6 +330,8 @@ fn unavailable_outcome() -> SnapshotOutcome {
         overlay: None,
         counters: SourceGraphCounters::default(),
         elapsed: Duration::from_millis(20),
+        persisted: true,
+        serving: None,
     }
 }
 

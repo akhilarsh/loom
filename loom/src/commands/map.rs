@@ -1,23 +1,37 @@
 //! Map command - read-only queries over the derived source graph.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
-use colored::Colorize;
+use serde_json::Value;
 
+use crate::context::census::{self, CensusOptions};
+use crate::context::freshness::GraphState;
 use crate::context::graph_store::{GraphStore, ResolvedGraph};
-use crate::context::refresh::{ensure_snapshot, SnapshotAction, SnapshotPolicy};
-use crate::context::source_graph::SourceEdgeKind;
+use crate::context::refresh::{ensure_snapshot, SnapshotAction, SnapshotOutcome, SnapshotPolicy};
+use crate::context::source_graph::{EdgeProvenance, SourceEdgeKind};
 use crate::context::store::ContextStore;
+use crate::context::window::{read_window, SourceWindow, WindowError};
 use crate::context::{resolve_graph, ResolutionStats};
 use crate::fs::work_dir::WorkDir;
-use crate::map::views::ImpactArgs;
+use crate::map::views::snapshot::{load_graph as load_layers, SnapshotIdentity};
+use crate::map::views::timings::{timed, Timings};
+use crate::map::views::{
+    human_text, human_views, json_payload, json_views, parse_language, parse_provenance,
+    ViewContext, ViewFilters, ViewOptions, ViewQuery,
+};
 
 const EDGE_KIND_NAMES: &str = "contains, imports, calls, references, implements, extends";
 
+/// Exit code of `--window` for an id the graph does not name.
+const EXIT_UNKNOWN_ID: i32 = 2;
+/// Exit code of `--window` for a file edited since the snapshot.
+const EXIT_CHANGED_SINCE_SNAPSHOT: i32 = 3;
+
 /// Arguments for `loom map`. Lives here rather than in the CLI enum so the
 /// command owns its own surface.
-#[derive(Debug, clap::Args)]
+#[derive(Debug, clap::Parser)]
 pub struct MapArgs {
     /// Print the indexed symbols of one file, in source order
     #[arg(long, value_name = "PATH")]
@@ -28,12 +42,32 @@ pub struct MapArgs {
     /// Print what reaches a symbol or file, with path confidence
     #[arg(long, value_name = "SYMBOL_OR_PATH")]
     pub impact: Option<String>,
-    /// Print direct and transitive callers of a symbol
+    /// Print direct callers (one hop over call edges) with their call sites
     #[arg(long, value_name = "SYMBOL")]
     pub callers: Option<String>,
-    /// Print direct and transitive callees of a symbol
+    /// Print direct callees (one hop over call edges) with their call sites
     #[arg(long, value_name = "SYMBOL")]
     pub callees: Option<String>,
+    /// Print direct references (one hop over reference edges) with their sites
+    #[arg(long, value_name = "SYMBOL")]
+    pub references: Option<String>,
+    /// Print the exact source of a node id or a site id (path@start-end)
+    #[arg(long, value_name = "ID")]
+    pub window: Option<String>,
+    /// Maximum lines --window prints
+    #[arg(long, default_value_t = 60)]
+    pub window_lines: usize,
+    /// Print what the graph can and cannot see in this checkout and any --root
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "outline", "find_all", "impact", "callers", "callees", "references", "window",
+        ]
+    )]
+    pub census: bool,
+    /// Another git work tree to census (needs --census); repeatable
+    #[arg(long, value_name = "DIR")]
+    pub root: Vec<PathBuf>,
     /// Maximum impact traversal depth
     #[arg(long, default_value_t = 3)]
     pub depth: usize,
@@ -42,40 +76,94 @@ pub struct MapArgs {
         long,
         value_name = "LIST",
         value_delimiter = ',',
-        default_value = "contains,imports,calls,references,implements,extends",
+        default_value = "calls,references,implements,extends",
         value_parser = parse_edge_kind
     )]
     pub kinds: Vec<SourceEdgeKind>,
-    /// Maximum impact/caller/callee rows; zero means unlimited
+    /// Comma-separated evidence classes impact may traverse (default: all)
+    #[arg(
+        long,
+        value_name = "LIST",
+        value_delimiter = ',',
+        value_parser = parse_provenance
+    )]
+    pub evidence: Vec<EdgeProvenance>,
+    /// Maximum rows per view; zero means unlimited
     #[arg(long, default_value_t = 50)]
     pub limit: usize,
-    /// Restrict impact hits to a project-relative path prefix
+    /// Restrict hits to a project-relative path prefix (whole path components)
     #[arg(long, value_name = "PREFIX")]
     pub path: Option<String>,
+    /// Restrict hits to one language (dialect id, such as rust or python)
+    #[arg(long, value_name = "DIALECT", value_parser = parse_language)]
+    pub lang: Option<String>,
     /// Minimum edge confidence included in impact traversal
     #[arg(long, default_value_t = 0.0)]
     pub min_confidence: f32,
     /// Emit one machine-readable JSON object
     #[arg(long)]
     pub json: bool,
+    /// Print per-phase wall time and peak memory on stderr (and in --json)
+    #[arg(long)]
+    pub timings: bool,
+}
+
+/// What a request prints on stdout.
+enum Output {
+    Text(String),
+    Json(Value),
+}
+
+/// The resolved graph a request is answered from.
+struct Loaded {
+    graph: ResolvedGraph,
+    stats: ResolutionStats,
+    snapshot: SnapshotIdentity,
 }
 
 /// Execute the map command in a checkout whether or not `loom init` has run.
 pub fn execute(args: MapArgs) -> Result<()> {
     require_view(&args)?;
+    let started = Instant::now();
     let work_dir = WorkDir::new(".")?;
     let project_root = work_dir
         .project_root()
         .context("Could not determine project root")?
         .to_path_buf();
-    run_views(&project_root, &work_dir, &args)
+
+    let mut timings = Timings::default();
+    let loaded = load_graph(&project_root, &work_dir, &mut timings)?;
+    let output = if args.census {
+        timed(&mut timings.query, || {
+            census_output(&loaded, &project_root, &args)
+        })?
+    } else {
+        view_output(&loaded, &project_root, &args, &mut timings)?
+    };
+    match output {
+        Output::Text(text) => println!("{text}"),
+        Output::Json(mut payload) => {
+            if args.timings {
+                payload["timings"] = timings.to_json(started.elapsed());
+            }
+            println!("{}", serde_json::to_string(&payload)?);
+        }
+    }
+    if args.timings {
+        eprintln!("{}", timings.summary(started.elapsed()));
+    }
+    Ok(())
 }
 
 fn require_view(args: &MapArgs) -> Result<()> {
+    if !args.root.is_empty() && !args.census {
+        bail!("--root only applies to --census");
+    }
     if requested_views(args) == 0 {
         bail!(
             "loom map needs a view flag: --outline <PATH>, --find-all <SYMBOL>, \
-             --impact <SYMBOL_OR_PATH>, --callers <SYMBOL>, or --callees <SYMBOL>"
+             --impact <SYMBOL_OR_PATH>, --callers <SYMBOL>, --callees <SYMBOL>, \
+             --references <SYMBOL>, --window <ID>, or --census"
         );
     }
     Ok(())
@@ -88,152 +176,132 @@ fn requested_views(args: &MapArgs) -> usize {
         args.impact.is_some(),
         args.callers.is_some(),
         args.callees.is_some(),
+        args.references.is_some(),
+        args.window.is_some(),
+        args.census,
     ]
     .into_iter()
     .filter(|present| *present)
     .count()
 }
 
-fn run_views(project_root: &Path, work_dir: &WorkDir, args: &MapArgs) -> Result<()> {
-    let (graph, stats) = load_graph(project_root, work_dir)?;
-    let impact_args = ImpactArgs {
-        depth: args.depth,
-        kinds: args.kinds.clone(),
-        limit: args.limit,
-        path_prefix: args.path.clone(),
-        min_confidence: args.min_confidence,
+fn census_output(loaded: &Loaded, project_root: &Path, args: &MapArgs) -> Result<Output> {
+    let options = CensusOptions {
+        roots: args.root.clone(),
+    };
+    let report = census::run(&options, Some((project_root, &loaded.graph)))?;
+    Ok(if args.json {
+        Output::Json(serde_json::to_value(&report)?)
+    } else {
+        Output::Text(report.to_string().trim_end().to_string())
+    })
+}
+
+fn view_output(
+    loaded: &Loaded,
+    project_root: &Path,
+    args: &MapArgs,
+    timings: &mut Timings,
+) -> Result<Output> {
+    let query = timed(&mut timings.query, || {
+        build_query(loaded, project_root, args)
+    })?;
+    let ctx = ViewContext {
+        graph: &loaded.graph,
+        project_root,
+        stats: &loaded.stats,
+        snapshot: &loaded.snapshot,
     };
     if args.json {
-        print_json_views(&graph, project_root, &stats, args, &impact_args)
+        let views = timed(&mut timings.query, || json_views(&ctx, &query));
+        Ok(Output::Json(timed(&mut timings.render, || {
+            json_payload(&ctx, views)
+        })))
     } else {
-        print_human_views(&graph, project_root, &stats, args, &impact_args);
-        Ok(())
+        let views = timed(&mut timings.query, || human_views(&ctx, &query));
+        Ok(Output::Text(timed(&mut timings.render, || {
+            human_text(&ctx, views)
+        })))
     }
 }
 
-fn print_human_views(
-    graph: &ResolvedGraph,
+fn build_query(loaded: &Loaded, project_root: &Path, args: &MapArgs) -> Result<ViewQuery> {
+    let window = args
+        .window
+        .as_deref()
+        .map(|id| read_source_window(loaded, project_root, id, args.window_lines))
+        .transpose()?;
+    Ok(ViewQuery {
+        outline: args.outline.clone(),
+        find_all: args.find_all.clone(),
+        impact: args.impact.clone(),
+        callers: args.callers.clone(),
+        callees: args.callees.clone(),
+        references: args.references.clone(),
+        window,
+        options: ViewOptions {
+            depth: args.depth,
+            kinds: args.kinds.clone(),
+            limit: args.limit,
+            min_confidence: args.min_confidence,
+            provenances: args.evidence.clone(),
+            filters: ViewFilters::new(args.path.clone(), args.lang.clone()),
+        },
+    })
+}
+
+/// Read the window, or leave the process with the exit code its failure
+/// names. No error path prints file bytes.
+fn read_source_window(
+    loaded: &Loaded,
     project_root: &Path,
-    stats: &ResolutionStats,
-    args: &MapArgs,
-    impact_args: &ImpactArgs,
-) {
-    let views = rendered_views(graph, project_root, stats, args, impact_args);
-    let show_headings = views.len() > 1;
-    for (name, rendered) in views {
-        if show_headings {
-            println!("{}", format!("== {name} ==").bold());
+    id: &str,
+    max_lines: usize,
+) -> Result<SourceWindow> {
+    match read_window(&loaded.graph, project_root, id, max_lines) {
+        Ok(window) => Ok(window),
+        Err(error @ WindowError::UnknownId(_)) => {
+            eprintln!("{error}");
+            std::process::exit(EXIT_UNKNOWN_ID);
         }
-        println!("{rendered}");
+        Err(error @ WindowError::ChangedSinceSnapshot { .. }) => {
+            eprintln!("{error}");
+            std::process::exit(EXIT_CHANGED_SINCE_SNAPSHOT);
+        }
+        Err(error @ WindowError::Unreadable { .. }) => bail!("{error}"),
     }
-    println!("{}", crate::map::views::render_footer(graph, stats));
-}
-
-fn rendered_views(
-    graph: &ResolvedGraph,
-    project_root: &Path,
-    stats: &ResolutionStats,
-    args: &MapArgs,
-    impact_args: &ImpactArgs,
-) -> Vec<(&'static str, String)> {
-    let mut views = Vec::new();
-    if let Some(arg) = &args.outline {
-        views.push((
-            "outline",
-            crate::map::views::render_outline(graph, project_root, arg),
-        ));
-    }
-    if let Some(arg) = &args.find_all {
-        views.push(("find-all", crate::map::views::render_find_all(graph, arg)));
-    }
-    if let Some(arg) = &args.impact {
-        views.push((
-            "impact",
-            crate::map::views::render_impact(graph, project_root, arg, stats, impact_args),
-        ));
-    }
-    if let Some(arg) = &args.callers {
-        views.push((
-            "callers",
-            crate::map::views::render_callers(graph, project_root, arg, args.limit),
-        ));
-    }
-    if let Some(arg) = &args.callees {
-        views.push((
-            "callees",
-            crate::map::views::render_callees(graph, project_root, arg, args.limit),
-        ));
-    }
-    views
-}
-
-fn print_json_views(
-    graph: &ResolvedGraph,
-    project_root: &Path,
-    stats: &ResolutionStats,
-    args: &MapArgs,
-    impact_args: &ImpactArgs,
-) -> Result<()> {
-    let mut views = serde_json::Map::new();
-    if let Some(arg) = &args.outline {
-        views.insert(
-            "outline".into(),
-            crate::map::views::outline_json(graph, project_root, arg),
-        );
-    }
-    if let Some(arg) = &args.find_all {
-        views.insert(
-            "find_all".into(),
-            crate::map::views::find_all_json(graph, arg),
-        );
-    }
-    if let Some(arg) = &args.impact {
-        views.insert(
-            "impact".into(),
-            crate::map::views::impact_json(graph, project_root, arg, stats, impact_args),
-        );
-    }
-    if let Some(arg) = &args.callers {
-        views.insert(
-            "callers".into(),
-            crate::map::views::callers_json(graph, project_root, arg, args.limit),
-        );
-    }
-    if let Some(arg) = &args.callees {
-        views.insert(
-            "callees".into(),
-            crate::map::views::callees_json(graph, project_root, arg, args.limit),
-        );
-    }
-    let payload = serde_json::json!({
-        "views": views,
-        "coverage": crate::map::views::footer_json(graph, stats),
-    });
-    println!("{}", serde_json::to_string(&payload)?);
-    Ok(())
 }
 
 /// Ensure the local snapshot, load its selected layers, and resolve inferred edges.
-fn load_graph(project_root: &Path, work_dir: &WorkDir) -> Result<(ResolvedGraph, ResolutionStats)> {
+fn load_graph(project_root: &Path, work_dir: &WorkDir, timings: &mut Timings) -> Result<Loaded> {
     let store = ContextStore::open(work_dir)?;
     store.ensure()?;
     let graph_store = GraphStore::new(store.root(), work_dir.root());
-    let snapshot = ensure_snapshot(
-        &store,
-        &graph_store,
-        project_root,
-        SnapshotPolicy::LocalCurrent,
-    );
-    if snapshot.action != SnapshotAction::Reused {
+    let snapshot = timed(&mut timings.snapshot, || {
+        ensure_snapshot(
+            &store,
+            &graph_store,
+            project_root,
+            SnapshotPolicy::LocalCurrent,
+        )
+    });
+    report_snapshot(&snapshot);
+    let (mut graph, identity) = timed(&mut timings.load, || load_layers(&graph_store, &snapshot))?;
+    let stats = timed(&mut timings.resolve, || resolve_graph(&mut graph));
+    Ok(Loaded {
+        graph,
+        stats,
+        snapshot: identity,
+    })
+}
+
+/// One stderr line about the snapshot, unless it was reused untouched.
+fn report_snapshot(snapshot: &SnapshotOutcome) {
+    if snapshot.state() == GraphState::NeverBuilt {
+        eprintln!("source graph never built: {}", snapshot.reason);
+    } else if snapshot.action != SnapshotAction::Reused {
         eprintln!("{}", snapshot.describe());
     }
-    let overlay = snapshot
-        .overlay
-        .as_ref()
-        .map(|(plan, stage)| (plan.as_str(), stage.as_str()));
-    let mut graph = graph_store.resolved(&snapshot.revision, overlay)?;
-    let stats = resolve_graph(&mut graph);
-    Ok((graph, stats))
 }
 
 fn parse_edge_kind(value: &str) -> std::result::Result<SourceEdgeKind, String> {

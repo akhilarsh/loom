@@ -120,6 +120,7 @@ fn save_and_load_state_round_trips() {
             computed_at: None,
             stale: false,
             detail: None,
+            unavailable: false,
         },
         semantic: Freshness::never_built("semantic data has not been built"),
         catalog_revision: "catalog-revision".to_string(),

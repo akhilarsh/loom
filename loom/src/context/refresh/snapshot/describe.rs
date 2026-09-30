@@ -9,6 +9,17 @@ use crate::context::refresh::{clean_generation, short_revision, SourceGraphCount
 impl SnapshotOutcome {
     /// Render the one advisory line shared by every source-graph entry point.
     pub fn describe(&self) -> String {
+        let mut line = self.describe_action();
+        if let Some(base) = &self.serving {
+            line.push_str(&format!("; serving stale base {}", short_revision(base)));
+        }
+        if !self.persisted {
+            line.push_str("; not persisted (cache read-only)");
+        }
+        line
+    }
+
+    fn describe_action(&self) -> String {
         if self.action == SnapshotAction::Unavailable {
             return format!("source graph: unavailable ({})", self.reason);
         }

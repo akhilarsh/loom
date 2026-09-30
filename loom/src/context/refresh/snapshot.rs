@@ -51,9 +51,15 @@ pub struct SnapshotOutcome {
     pub overlay: Option<(String, String)>,
     pub counters: SourceGraphCounters,
     pub elapsed: Duration,
+    /// False when a read-only cache made `GraphStore` serve the layer from
+    /// memory for this process only.
+    pub persisted: bool,
+    /// The older base a failed build fell back to; `revision` then names it.
+    pub serving: Option<String>,
 }
 
 mod describe;
+mod state;
 
 /// Whether a layer entry was stamped by the extractor now registered for its
 /// path; `worktree_graph` reaches the check through here.
@@ -63,7 +69,8 @@ pub(crate) use super::source_graph::parser_version_matches;
 ///
 /// Every failure - inspecting the working tree, building a layer, or
 /// persisting it - is reported as `SnapshotAction::Unavailable` with the
-/// full cause chain in `reason`.
+/// full cause chain in `reason`. A failed build over a known HEAD serves the
+/// newest older base instead (`SnapshotOutcome::serving`).
 pub fn ensure_snapshot(
     store: &ContextStore,
     graph_store: &GraphStore,
@@ -90,7 +97,7 @@ pub fn ensure_snapshot(
         }
     };
 
-    let mut outcome = match dispatched {
+    let outcome = match dispatched {
         Ok(outcome) => outcome,
         Err(error) => {
             let reason = format!("{error:#}");
@@ -98,6 +105,8 @@ pub fn ensure_snapshot(
             unavailable_with_tree(&tree, reason)
         }
     };
+    let mut outcome = state::serve_stale_base(graph_store, outcome);
+    outcome.persisted = !graph_store.fell_back();
     outcome.elapsed = started.elapsed();
     outcome
 }
@@ -298,6 +307,8 @@ fn from_reconcile(
         overlay,
         counters: outcome.counters,
         elapsed: Duration::ZERO,
+        persisted: true,
+        serving: None,
     })
 }
 
@@ -314,6 +325,8 @@ fn reused(
         overlay,
         counters: SourceGraphCounters::default(),
         elapsed: Duration::ZERO,
+        persisted: true,
+        serving: None,
     }
 }
 
@@ -326,6 +339,8 @@ fn unavailable(reason: String, elapsed: Duration) -> SnapshotOutcome {
         overlay: None,
         counters: SourceGraphCounters::default(),
         elapsed,
+        persisted: true,
+        serving: None,
     }
 }
 

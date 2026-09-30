@@ -311,6 +311,7 @@ fn a_path_prefix_keeps_only_matching_hits() {
 
     assert_eq!(ids(&result.hits), vec!["tests/b.rs#function:b"]);
     assert_eq!(result.suppressed, 0);
+    assert_eq!(result.filtered_out, 1);
 }
 
 #[test]

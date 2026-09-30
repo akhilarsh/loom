@@ -213,6 +213,8 @@ fn snapshot(action: SnapshotAction) -> SnapshotOutcome {
         overlay: None,
         counters: SourceGraphCounters::default(),
         elapsed: Duration::ZERO,
+        persisted: true,
+        serving: None,
     }
 }
 

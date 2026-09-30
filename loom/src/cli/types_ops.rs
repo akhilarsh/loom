@@ -94,7 +94,11 @@ pub enum HookCommands {
     /// Internal maintenance entry point invoked by the UserPromptSubmit hook
     /// itself as a fire-and-forget nudge when the source graph looks stale.
     /// Not a user-facing command.
-    ReconcileGraph,
+    ReconcileGraph {
+        /// Stop a running background reconcile instead of starting one
+        #[arg(long)]
+        cancel: bool,
+    },
 
     /// Internal maintenance entry point invoked by the PreCompact shell hook
     /// to reopen this session's own delivery suppression before its context

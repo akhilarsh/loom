@@ -110,14 +110,17 @@ pub(super) fn load_resolved_graph(
     }
 }
 
+/// The degraded reason for a graph that was never built and holds no content.
+const NEVER_BUILT_REASON: &str = "source graph never built; run loom map to build it";
+
 /// The A.11 degradation message, or `None` when this read is honestly
 /// healthy.
 ///
-/// An EMPTY `semantic_revision` means "never built" — `evaluate_state`
-/// already reports that honestly as a `never_built` [`crate::context::schema::Freshness`]
-/// elsewhere in the pack, so flagging it here too would print a
-/// `DEGRADED:` banner on every unmapped checkout forever, for a condition
-/// that is not a degradation at all; skip it.
+/// An EMPTY `semantic_revision` means "never built": it is degraded only when
+/// the resolved view is empty too, with a fixed reason. An overlay-backed read
+/// (`files` non-empty) with no recorded revision answers queries and is not
+/// degraded. `spawn_if_needed` never rebuilds from a never-built pack
+/// (`wants_rebuild`), so this banner cannot start a background rebuild.
 ///
 /// Otherwise this is NOT simply `graph.base_revision.is_empty()` — that was
 /// the bug. `GraphStore::resolved` returns `base ∪ overlay`, and an overlay
@@ -141,7 +144,13 @@ pub(super) fn load_resolved_graph(
 /// covered for it — is there truly nothing to answer a query with, which is
 /// the one case worth surfacing.
 fn degraded_reason(semantic_revision: &str, graph: &ResolvedGraph) -> Option<String> {
-    if semantic_revision.is_empty() || !graph.base_revision.is_empty() || !graph.files.is_empty() {
+    if semantic_revision.is_empty() {
+        return graph
+            .files
+            .is_empty()
+            .then(|| NEVER_BUILT_REASON.to_string());
+    }
+    if !graph.base_revision.is_empty() || !graph.files.is_empty() {
         return None;
     }
     Some(format!(

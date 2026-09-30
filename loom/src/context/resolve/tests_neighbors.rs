@@ -45,18 +45,8 @@ fn unresolved_edges_and_file_endpoints_are_excluded() {
             vec![
                 local_edge(&source, &target, SourceEdgeKind::Calls, "target"),
                 unresolved_edge(&source, SourceEdgeKind::Calls, "missing"),
-                local_edge(
-                    "src/source.rs",
-                    &target,
-                    SourceEdgeKind::References,
-                    "target",
-                ),
-                local_edge(
-                    &source,
-                    "src/target.rs",
-                    SourceEdgeKind::References,
-                    "target.rs",
-                ),
+                local_edge("src/source.rs", &target, SourceEdgeKind::Calls, "target"),
+                local_edge(&source, "src/target.rs", SourceEdgeKind::Calls, "target.rs"),
             ],
         ),
         ("src/target.rs", &["target"], vec![]),
@@ -92,7 +82,7 @@ fn neighbors_are_ordered_by_confidence_then_id() {
             vec![edge_at(
                 &func_id("src/b.rs", "b"),
                 &target,
-                SourceEdgeKind::References,
+                SourceEdgeKind::Calls,
                 EdgeProvenance::LocalName,
                 LOCAL_NAME_CONFIDENCE,
             )],

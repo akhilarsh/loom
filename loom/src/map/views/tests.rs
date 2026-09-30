@@ -1,23 +1,25 @@
 use super::*;
 use crate::context::graph_store::FileEntry;
 use crate::context::source_graph::{
-    EdgeProvenance, NodeLanguage, SourceEdge, SourceEdgeKind, Span,
+    EdgeProvenance, FileCoverage, NodeLanguage, SourceEdge, SourceEdgeKind, SourceNode,
+    SourceNodeKind, Span,
 };
 use serial_test::serial;
 use std::collections::BTreeMap;
 use tempfile::TempDir;
 
-pub(super) fn impact_args(kinds: Vec<SourceEdgeKind>) -> ImpactArgs {
-    ImpactArgs {
+pub(super) fn view_options(kinds: Vec<SourceEdgeKind>) -> ViewOptions {
+    ViewOptions {
         depth: 3,
         kinds,
         limit: 0,
-        path_prefix: None,
         min_confidence: 0.0,
+        provenances: Vec::new(),
+        filters: ViewFilters::default(),
     }
 }
 
-fn node(
+pub(super) fn node(
     id: &str,
     path: &str,
     kind: SourceNodeKind,
@@ -39,7 +41,7 @@ fn node(
     }
 }
 
-fn graph_of(files: Vec<(&str, SourceNode, Vec<SourceEdge>)>) -> ResolvedGraph {
+pub(super) fn graph_of(files: Vec<(&str, SourceNode, Vec<SourceEdge>)>) -> ResolvedGraph {
     let mut map = BTreeMap::new();
     for (path, n, edges) in files {
         map.insert(
@@ -132,9 +134,18 @@ fn find_all_falls_back_to_substring_only_when_exact_is_empty() {
     );
     let graph = graph_of(vec![("src/language.rs", n, vec![])]);
 
-    assert!(render_find_all(&graph, "DetectedLanguage").contains("1 matches"));
-    assert!(render_find_all(&graph, "detectedlang").contains("(substring matches)"));
-    assert!(render_find_all(&graph, "NoSuchSymbol").contains("no nodes match"));
+    assert!(
+        render_find_all(&graph, "DetectedLanguage", &view_options(Vec::new()))
+            .contains("1 matches")
+    );
+    assert!(
+        render_find_all(&graph, "detectedlang", &view_options(Vec::new()))
+            .contains("(substring matches)")
+    );
+    assert!(
+        render_find_all(&graph, "NoSuchSymbol", &view_options(Vec::new()))
+            .contains("no nodes match")
+    );
 }
 
 #[test]
@@ -152,7 +163,7 @@ fn find_all_still_lists_a_parse_error_file_and_reports_its_status() {
     );
     let graph = graph_of(vec![("src/broken.rs", n, vec![])]);
 
-    let rendered = render_find_all(&graph, "broken.rs");
+    let rendered = render_find_all(&graph, "broken.rs", &view_options(Vec::new()));
     assert!(rendered.contains("1 matches"));
     assert!(rendered.contains("[parse-error]"));
     assert!(!rendered.contains("coverage: 1 files"));
@@ -221,7 +232,7 @@ fn impact_row_shows_provenance_and_the_weakest_confidence_on_the_path() {
         root.path(),
         "foo",
         &ResolutionStats::default(),
-        &impact_args(Vec::new()),
+        &view_options(Vec::new()),
     );
 
     assert!(rendered.contains("local-name"));
@@ -256,7 +267,7 @@ fn empty_impact_names_what_was_not_traversed() {
         root.path(),
         "lonely",
         &stats,
-        &impact_args(Vec::new()),
+        &view_options(Vec::new()),
     );
 
     assert!(rendered.contains("no resolved edge reaches this node"));
@@ -268,7 +279,7 @@ fn empty_impact_names_what_was_not_traversed() {
 fn impact_heading_names_the_kind_filter() {
     let graph = impact_chain_graph();
     let root = TempDir::new().unwrap();
-    let mut args = impact_args(vec![SourceEdgeKind::Calls, SourceEdgeKind::References]);
+    let mut args = view_options(vec![SourceEdgeKind::Calls, SourceEdgeKind::References]);
     args.depth = 2;
 
     let rendered = render_impact(
@@ -289,10 +300,12 @@ fn callers_view_lists_direct_callers_with_provenance() {
     let graph = impact_chain_graph();
     let root = TempDir::new().unwrap();
 
-    let rendered = render_callers(&graph, root.path(), "foo", 0);
+    let rendered = render_callers(&graph, root.path(), "foo", &view_options(Vec::new()));
 
     assert!(rendered.contains("Callers of src/a.rs#function:foo"));
-    assert!(rendered.contains("  0.80  local-name  calls  src/b.rs#function:bar  (src/b.rs:0)"));
+    assert!(rendered.contains(
+        "  src/b.rs:L0 → src/a.rs:L0  symbol=foo  local-name 0.80  sites=1  node=src/b.rs#function:bar"
+    ));
     assert!(!rendered.contains("src/c.rs#function:baz"));
 }
 
