@@ -261,12 +261,14 @@ the worktree. A contract that is itself wrong is disputed, never edited:
    either fixed and re-reviewed, or disputed. It closes when a later round lists it under
    `resolved`, or when the judge rules it `dismiss` or `defer`; `uphold` leaves it open.
 4. Dispute a round's findings in one command:
-   `loom stage dispute-findings <stage-id> --finding <id> ... --reason "..."`. Filing a dispute
-   ends your turn and sends the stage to adjudication; loom retires your session when the verdict
-   is applied, or when the dispute escalates to human review. A stage may file 3 disputes of each
-   kind (findings, contract, integrity); one more escalates it to `NeedsHumanReview`.
+   `loom stage dispute-findings <stage-id> --finding <id> ... --reason "..."`. Filing ends this
+   session by design; the daemon starts a fresh session with the verdict. A stage may file 3
+   disputes of each kind (findings, contract, integrity); one more escalates it to
+   `NeedsHumanReview`.
 
 **Review order (plan v2):** fix every finding, run the full gate, then run the final review round, then complete. Edit nothing after the final review round: any edit, formatting included, changes the change fingerprint and needs another round. A commit does not change it.
+
+**When the stage cannot finish.** Fix what the stage can fix. A criterion, wiring check, contract, review finding or test-integrity event that is wrong gets a dispute: `loom stage dispute-criteria` (with `--field` for wiring and wiring-tests entries), `dispute-contract`, `dispute-findings` or `dispute-integrity`. Filing ends this session by design: the daemon starts a fresh session with the verdict, so waiting gains nothing. Never revert, weaken or postpone correct work to avoid a dispute. A need only a person can meet (a credential, a host install, a network domain or path the plan does not grant) gets `loom stage block <stage-id> "<what is needed and why>"`: the daemon retires the session and shows the reason to the operator. Commit your work before filing either. Never end a turn asking the operator to act while the stage is executing.
 
 **Test integrity** (standard and integration-verify stages). Completion compares the stage's test
 files with the base. Fewer test declarations or assertions in a language, assertion lines removed

@@ -626,7 +626,7 @@ main() {
 	message+="\nloom stage complete is the LAST act of the session. Complete only a SETTLED stage,"
 	message+="\nand run NOTHING after it - post-completion work is lost work."
 
-	message+="\n\nDo NOT end this session until all steps are complete."
+	message+="\n\nDo NOT end this session until all steps are complete, or a dispute or block is filed."
 
 	# Add debug info section
 	message+="\n\n--- Debug Info ---"

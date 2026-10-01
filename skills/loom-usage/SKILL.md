@@ -371,8 +371,12 @@ loom stage skip <stage-id> --reason "not needed for this iteration"
 When a stage is functionally done but acceptance criteria are wrong:
 
 ```bash
-# Request human review (preferred)
-loom stage dispute-criteria <stage-id> "criteria X is incorrect because..."
+# Dispute a wrong check; routes to the adjudicator, which can amend it
+loom stage dispute-criteria <stage-id> --criterion-index <n> --reason "<why it is wrong>"
+loom stage dispute-criteria <stage-id> --field wiring --criterion-index <n> --reason "<why>"
+
+# A need only a person can meet (credential, host install, network domain or path)
+loom stage block <stage-id> "<what is needed and why>"
 
 # Force complete (use sparingly)
 loom stage complete <stage-id> --force-unsafe --assume-merged
