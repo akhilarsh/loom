@@ -14,6 +14,7 @@ mod stage_type_tests;
 mod subagent_timeout_tests;
 mod ultracode_tests;
 mod v2_contract_lint_tests;
+mod v2_lint_environment_tests;
 mod v2_lint_tests;
 mod v2_tests;
 mod validation_suite_tests;

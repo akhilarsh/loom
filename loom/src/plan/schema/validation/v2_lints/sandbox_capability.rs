@@ -1,10 +1,14 @@
 //! Commands the stage sandbox cannot serve: a network binary with no domain
-//! granted, and a resource no sandbox grant reaches.
+//! granted, and a resource no sandbox grant reaches. Registry installs are
+//! left to `registry_domains`, which names the domains they need.
 
 use crate::plan::schema::{NetworkConfig, StageDefinition};
 
 use super::super::criterion_hazards::{criterion_needs_ungrantable_resource, scan, Hazard};
 use super::{stage_commands, LintContext, LintFinding};
+
+/// Install hazards `registry_domains` reports with the domains they need.
+const REGISTRY_INSTALLS: [&str; 3] = ["npm install", "bun install", "cargo install"];
 
 pub(super) fn check(ctx: &LintContext<'_>, out: &mut Vec<LintFinding>) {
     let plan_network = &ctx.metadata.loom.sandbox.network;
@@ -20,6 +24,9 @@ fn check_commands(stage: &StageDefinition, network: &NetworkConfig, out: &mut Ve
         if no_domains {
             for hazard in scan(command.text, false) {
                 if let Hazard::Network(tool) = hazard {
+                    if REGISTRY_INSTALLS.contains(&tool) {
+                        continue;
+                    }
                     let problem = format!(
                         "runs `{tool}` while the stage's sandbox allows no network domain; add \
                          the host it reaches to `sandbox.network.allowed_domains` or \
