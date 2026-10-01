@@ -164,8 +164,8 @@
 | [iterm2-window-teardown](concerns/iterm2-window-teardown.md) | iTerm2 window never named, so teardown cannot close it | 48 |
 | [knowledge-cli-gaps](concerns/knowledge-cli-gaps.md) | Knowledge CLI gaps and housekeeping | 101 |
 | [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 82 |
-| [runtime-and-session-safety](concerns/runtime-and-session-safety.md) | Runtime edge cases: tmux, orphan adoption | 147 |
-| [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: no E2E canary, diverging env allowlists | 172 |
+| [runtime-and-session-safety](concerns/runtime-and-session-safety.md) | Runtime edge cases: tmux, orphan adoption | 151 |
+| [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: no E2E canary, diverging env allowlists | 176 |
 | [state-confinement-gaps](concerns/state-confinement-gaps.md) | Shared package-manager caches stay session-writable. | 9 |
 | [token-accounting-and-proof-defects](concerns/token-accounting-and-proof-defects.md) | Token-optimization and efficiency follow-ups | 92 |
 | [typed-config-values](concerns/typed-config-values.md) | Accepted gaps in the config read-path | 27 |
