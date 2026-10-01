@@ -304,7 +304,10 @@ impl Detection {
     }
 
     /// The session exited normally after its stage already reached a terminal
-    /// state. Without this the ordinary exit would be filed as a crash.
+    /// state: `Completed`, `MergeConflict`, `MergeBlocked`, or `Blocked` with no
+    /// `failure_info` (a `loom stage block` or a rejected review, whose agent may
+    /// exit on its own before the daemon retires it). Without this the ordinary
+    /// exit would be filed as a crash, and a crash is auto-retried.
     fn exited_after_stage_finished(
         &mut self,
         session: &Session,
@@ -313,10 +316,12 @@ impl Detection {
     ) -> Option<SessionStatusEvents> {
         let stage_id = session.stage_id.as_ref()?;
         let stage = stages.iter().find(|s| &s.id == stage_id)?;
-        if !matches!(
-            stage.status,
-            StageStatus::Completed | StageStatus::MergeConflict | StageStatus::MergeBlocked
-        ) {
+        let finished = match stage.status {
+            StageStatus::Completed | StageStatus::MergeConflict | StageStatus::MergeBlocked => true,
+            StageStatus::Blocked => stage.failure_info.is_none(),
+            _ => false,
+        };
+        if !finished {
             return None;
         }
         self.mark_finished(session, stages, handlers);

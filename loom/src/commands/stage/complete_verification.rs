@@ -77,6 +77,7 @@ fn run_goal_checks(
         eprintln!("  ✗ {:?}: {}", gap.gap_type, gap.description);
         eprintln!("    → {}", gap.suggestion);
     }
+    crate::commands::stage::acceptance_runner::print_acceptance_failure_guidance(checks.stage_id);
     bail!(
         "Goal-backward verification failed for stage '{}'",
         checks.stage_id

@@ -49,6 +49,7 @@ fn make_stage_summary(id: &str, status: StageStatus) -> StageSummary {
         completion_blocker: None,
         merge_resolver_session: None,
         merge_resolver_attempts: None,
+        close_reason: None,
     }
 }
 

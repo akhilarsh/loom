@@ -137,8 +137,9 @@ impl Orchestrator {
     ///
     /// Without this the record stays `Running` with a dead PID, and the next
     /// poll reads the vanished process as a CRASH: `exited_after_stage_finished`
-    /// forgives only `Completed`/`MergeConflict`/`MergeBlocked`, so a routine
-    /// ceiling handoff files a crash report, charges the stage's retry budget
+    /// forgives only `Completed`/`MergeConflict`/`MergeBlocked` and a `Blocked`
+    /// stage with no `failure_info`, so a routine ceiling handoff (`NeedsHandoff`)
+    /// files a crash report, charges the stage's retry budget
     /// and can block the stage outright when the respawn is declined. It is
     /// also what the comment below already assumes when it calls such a record
     /// no longer live.
@@ -200,8 +201,8 @@ impl Orchestrator {
     /// `stage_id`; return the ids of any that are still alive afterwards.
     ///
     /// Split out of `take_down_stage_agents` so a caller that has already
-    /// assembled its own agent list (see `retire_disputing_agents`, which
-    /// excludes the stage's adjudication session) can drive the same kill
+    /// assembled its own agent list (see `retire_stage_agents`, which excludes
+    /// the stage's adjudication and merge sessions) can drive the same kill
     /// loop without going through the `NeedsHandoff`-only lookup in
     /// `stage_agents`.
     pub(super) fn take_down_agents(
@@ -245,7 +246,9 @@ impl Orchestrator {
         // Keep the daemon's handle on a session that outlived its kill: dropping
         // it would leave the next attempt with nothing to find, since the record
         // this path already marked `ContextExhausted` no longer counts as live.
-        if survivors.is_empty() {
+        // A tracked session not in `agents` (a resolver a block spares) keeps it too.
+        let taken_down = |tracked: &Session| agents.iter().any(|a| a.id == tracked.id);
+        if survivors.is_empty() && self.active_sessions.get(stage_id).is_some_and(taken_down) {
             self.active_sessions.remove(stage_id);
         }
         Ok(survivors)
@@ -294,11 +297,23 @@ impl Orchestrator {
     /// agents that survived the kill; the caller must not apply the verdict
     /// while any remain.
     pub(crate) fn retire_disputing_agents(&mut self, stage_id: &str) -> Result<Vec<String>> {
+        self.retire_stage_agents(stage_id, StageStatus::NeedsAdjudication)
+    }
+
+    /// Retire every agent working `stage_id` while it is in `expected`: write
+    /// each a `Retired` handoff, kill it, and clear `stage.session` once every
+    /// agent is confirmed gone, only if the stage is still in `expected`. A
+    /// stage in any other status is left alone. Returns the surviving ids.
+    pub(super) fn retire_stage_agents(
+        &mut self,
+        stage_id: &str,
+        expected: StageStatus,
+    ) -> Result<Vec<String>> {
         let stage = self.load_stage(stage_id)?;
-        if stage.status != StageStatus::NeedsAdjudication {
+        if stage.status != expected {
             return Ok(Vec::new());
         }
-        let agents = self.disputing_agents(stage_id, &stage)?;
+        let agents = self.retirable_agents(stage_id, &stage)?;
         for agent in &agents {
             match self.monitor.handlers().ensure_context_handoff(
                 agent,
@@ -310,11 +325,10 @@ impl Orchestrator {
                 }
                 Ok(None) => {}
                 Err(error) => tracing::warn!(
-                    target: "loom::adjudication",
                     stage = %stage_id,
                     session = %agent.id,
                     %error,
-                    "could not write a retirement handoff for a disputing agent",
+                    "could not write a retirement handoff for a stage agent",
                 ),
             }
         }
@@ -322,7 +336,7 @@ impl Orchestrator {
         let survivors = self.take_down_agents(stage_id, agents, SessionExitReason::Replaced)?;
         if survivors.is_empty() {
             self.update_stage(stage_id, |s| {
-                if s.status == StageStatus::NeedsAdjudication {
+                if s.status == expected {
                     s.release_session();
                 }
                 Ok(())
@@ -331,13 +345,13 @@ impl Orchestrator {
         Ok(survivors)
     }
 
-    /// Every agent to retire for a disputing stage: the in-memory tracked
-    /// session (if any), every persisted `Running`/`Spawning` record for the
-    /// stage not already present, and — if it names something not yet in the
-    /// list — the record `stage.session` points at. Filters out the
-    /// adjudication session judging this stage, which shares `stage_id` but
-    /// must never be killed by this path.
-    fn disputing_agents(&self, stage_id: &str, stage: &Stage) -> Result<Vec<Session>> {
+    /// Every agent to retire from a stage: the in-memory tracked session (if
+    /// any), every persisted `Running`/`Spawning` record for the stage not
+    /// already present, and — if it names something not yet in the list — the
+    /// record `stage.session` points at. Filters out the adjudication session
+    /// judging the stage and the merge resolver working its branch: both share
+    /// `stage_id`, and neither is the stage's agent nor killed by this path.
+    pub(super) fn retirable_agents(&self, stage_id: &str, stage: &Stage) -> Result<Vec<Session>> {
         let mut agents: Vec<Session> = self
             .active_sessions
             .get(stage_id)
@@ -360,7 +374,6 @@ impl Orchestrator {
                     }
                     Some(_) => {}
                     None => tracing::warn!(
-                        target: "loom::adjudication",
                         stage = %stage_id,
                         session = %assigned_id,
                         "stage names a session with no record; continuing without it",
@@ -370,7 +383,12 @@ impl Orchestrator {
         }
         Ok(agents
             .into_iter()
-            .filter(|s| s.session_type != SessionType::Adjudication)
+            .filter(|s| {
+                !matches!(
+                    s.session_type,
+                    SessionType::Adjudication | SessionType::Merge
+                )
+            })
             .collect())
     }
 }

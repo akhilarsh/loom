@@ -132,7 +132,8 @@ fn handoff_ignores_an_event_from_a_session_the_stage_has_moved_on_from() {
 /// the next poll reads the dead-but-`Running` record as a crash.
 ///
 /// `exited_after_stage_finished` forgives a vanished process only when the
-/// stage is `Completed`/`MergeConflict`/`MergeBlocked`; a routine handoff
+/// stage is `Completed`/`MergeConflict`/`MergeBlocked`, or `Blocked` with no
+/// `failure_info`; a routine handoff
 /// leaves the stage `Queued` instead, so an unmarked record is read as a
 /// crash, which charges the stage's retry budget and can block it outright.
 #[test]

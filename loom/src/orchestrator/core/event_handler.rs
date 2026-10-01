@@ -13,6 +13,7 @@ use super::heartbeat_apply::HeartbeatApply;
 use super::persistence::Persistence;
 use super::Orchestrator;
 
+mod blocked;
 mod contract_phase;
 mod handoff_state;
 mod human_review;
@@ -173,7 +174,7 @@ impl Orchestrator {
             MonitorEvent::StageBlocked { stage_id, reason } => {
                 clear_status_line();
                 eprintln!("Stage '{stage_id}' blocked: {reason}");
-                self.graph.mark_status(&stage_id, StageStatus::Blocked)?;
+                self.on_stage_blocked(&stage_id)?;
             }
             MonitorEvent::SessionContextWarning {
                 session_id: id,

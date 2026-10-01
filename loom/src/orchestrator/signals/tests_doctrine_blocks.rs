@@ -126,4 +126,13 @@ pub(super) const RETIRED_PHRASES: &[&str] = &[
     // decision: the main agent now makes a small change itself, so a surface
     // still forbidding every edit contradicts the playbook.
     concat!("THE MAIN AGENT NEVER ", "IMPLEMENTS"),
+    // BLOCK-F: a needed block or a wrong check now names its command
+    // (`loom stage block`, `loom stage dispute-*`); "report it as a blocker"
+    // named none, and a dispute no longer "ends your turn" for adjudication.
+    concat!("report a needed sandbox block", " as a blocker"),
+    concat!("STOP and report it as", " a blocker"),
+    concat!(
+        "ends your turn and sends the stage to ",
+        "adjudication; loom retires"
+    ),
 ];

@@ -105,6 +105,58 @@ fn a_blocked_stage_the_daemon_does_not_retry_gets_the_retry_command() {
 }
 
 #[test]
+fn an_agent_block_shows_its_reason_and_retry() {
+    let mut stage = make_stage_summary("server", StageStatus::Blocked);
+    stage.close_reason = Some("the schema migration is missing".to_string());
+    let received: StageSummary =
+        serde_json::from_str(&serde_json::to_string(&stage).unwrap()).unwrap();
+
+    let entry = entry_for(received);
+
+    assert_eq!(entry.label, "BLOCKED");
+    assert_eq!(
+        guidance(&entry),
+        (
+            Some("loom stage retry server"),
+            Some("blocked: the schema migration is missing"),
+            false
+        )
+    );
+}
+
+#[test]
+fn an_agent_block_at_the_retry_limit_keeps_the_forced_retry() {
+    let mut stage = make_stage_summary("server", StageStatus::Blocked);
+    stage.close_reason = Some("needs a decision".to_string());
+    stage.retry_count = 3;
+
+    let entry = entry_for(stage);
+
+    assert_eq!(
+        guidance(&entry),
+        (
+            Some("loom stage retry server --force"),
+            Some("blocked: needs a decision"),
+            false
+        )
+    );
+}
+
+#[test]
+fn a_crash_block_does_not_claim_an_agent_block() {
+    let mut stage = make_stage_summary("server", StageStatus::Blocked);
+    stage.failure_info = failure(FailureType::TestFailure);
+    stage.close_reason = Some("left over from an earlier block".to_string());
+
+    let entry = entry_for(stage);
+
+    assert_eq!(
+        guidance(&entry),
+        (Some("loom stage retry server"), None, false)
+    );
+}
+
+#[test]
 fn a_crash_at_the_retry_limit_needs_a_forced_retry() {
     let mut stage = make_stage_summary("server", StageStatus::Blocked);
     stage.failure_info = failure(FailureType::SessionCrash);

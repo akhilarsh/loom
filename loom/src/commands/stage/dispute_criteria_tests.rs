@@ -167,6 +167,31 @@ fn relay_mode_dispute_carries_its_field() {
     assert_eq!(ticket.payload["criterion_index"], 1);
 }
 
+#[test]
+fn relay_mode_dispute_ends_the_turn() {
+    use crate::models::session::SessionType;
+    use crate::relay::emit::test_support::context_for;
+
+    let fixture = context_for(SessionType::Stage);
+    let mut sink = VecSink::default();
+
+    dispute_criteria_with_mode(
+        "stage-a".to_string(),
+        CriterionField::Acceptance,
+        0,
+        "wrong check".to_string(),
+        None,
+        None,
+        RelayMode::Relay(fixture.context.clone()),
+        &fixture.cwd,
+        &mut sink,
+    )
+    .unwrap();
+
+    let stderr_text = String::from_utf8(sink.stderr).unwrap();
+    assert!(stderr_text.contains("End your turn after the confirmation."));
+}
+
 fn contract_dispute() -> Dispute {
     let kind = crate::models::dispute::DisputeKind::Contract {
         contract_id: "rejects-x".to_string(),

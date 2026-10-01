@@ -200,3 +200,90 @@ fn adjudication_session_without_verdict_is_reported_as_crash() {
         Some(&SessionStatus::Crashed)
     );
 }
+
+/// A `Running` session on `blocked-stage`, whose process the fixed liveness
+/// probe reports gone, and the stage it belongs to, Blocked under it.
+fn blocked_stage_with_vanished_agent(
+    failure_info: Option<crate::models::failure::FailureInfo>,
+) -> (Session, Stage) {
+    let mut session = Session::new();
+    session.id = "agent-1".to_string();
+    session.stage_id = Some("blocked-stage".to_string());
+    session.status = SessionStatus::Running;
+    session.set_pid(99995);
+
+    let mut stage = Stage::new("blocked-stage".to_string(), None);
+    stage.id = "blocked-stage".to_string();
+    stage.status = StageStatus::Blocked;
+    stage.session = Some(session.id.clone());
+    stage.failure_info = failure_info;
+    (session, stage)
+}
+
+/// An agent that ran `loom stage block` and then exited did what it was asked
+/// to: its exit is ordinary, and filing it as a crash would auto-retry the
+/// stage into the same wall and overwrite the reason it gave.
+#[test]
+fn an_agent_blocked_stage_session_exit_is_not_a_crash() {
+    let (_temp, mut handlers) = detection_harness();
+    handlers.set_liveness(LivenessService::fixed_for_tests(false));
+    let mut detection = Detection::new();
+    let (session, mut stage) = blocked_stage_with_vanished_agent(None);
+    stage.close_reason = Some("criterion 4 cannot run in this sandbox".to_string());
+
+    // First poll establishes Running state in detection tracking.
+    detection.detect_session_changes(
+        std::slice::from_ref(&session),
+        std::slice::from_ref(&stage),
+        &handlers,
+    );
+    // Second poll: the process is gone and the stage was blocked by its agent.
+    let events = detection.detect_session_changes(&[session], &[stage], &handlers);
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, MonitorEvent::SessionCrashed { .. })),
+        "the exit of an agent that blocked its stage must not be a crash: {events:?}"
+    );
+    assert_eq!(
+        detection.last_session_states.get("agent-1"),
+        Some(&SessionStatus::Completed),
+        "the blocking agent's session should be marked Completed, not Crashed"
+    );
+}
+
+/// The mirror of the above: a stage the crash path blocked carries
+/// `failure_info`, and a vanished session on it is still reported as a crash.
+#[test]
+fn a_crash_blocked_stage_session_exit_is_still_a_crash() {
+    use crate::models::failure::{FailureInfo, FailureType};
+
+    let (_temp, mut handlers) = detection_harness();
+    handlers.set_liveness(LivenessService::fixed_for_tests(false));
+    let mut detection = Detection::new();
+    let (session, stage) = blocked_stage_with_vanished_agent(Some(FailureInfo {
+        failure_type: FailureType::SessionCrash,
+        detected_at: chrono::Utc::now(),
+        evidence: vec!["Process no longer running".to_string()],
+    }));
+
+    detection.detect_session_changes(
+        std::slice::from_ref(&session),
+        std::slice::from_ref(&stage),
+        &handlers,
+    );
+    let events = detection.detect_session_changes(&[session], &[stage], &handlers);
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            MonitorEvent::SessionCrashed { session_id, .. } if session_id == "agent-1"
+        )),
+        "a session on a crash-blocked stage must still be reported as crashed: {events:?}"
+    );
+    assert_eq!(
+        detection.last_session_states.get("agent-1"),
+        Some(&SessionStatus::Crashed)
+    );
+}

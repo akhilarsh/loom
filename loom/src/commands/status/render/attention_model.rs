@@ -224,14 +224,20 @@ fn merge_guidance(stage: &StageSummary) -> Guidance {
 /// backoff elapses; any other failure waits for `loom stage retry`.
 fn blocked_guidance(stage: &StageSummary) -> Guidance {
     let max = retry_limit(stage);
-    match stage.failure_info.as_ref() {
-        Some(failure) if should_auto_retry(&failure.failure_type, stage.retry_count, max) => {
+    match (stage.failure_info.as_ref(), stage.close_reason.as_deref()) {
+        (Some(failure), _) if should_auto_retry(&failure.failure_type, stage.retry_count, max) => {
             Guidance::automatic(format!(
                 "auto-retry {} of {max} pending after a {}",
                 stage.retry_count + 1,
                 failure_label(&failure.failure_type)
             ))
         }
+        // Every block writer clears `failure_info`, so a reason without one is a
+        // deliberate block: the stage agent's, or the operator's own.
+        (None, Some(reason)) => Guidance {
+            note: Some(format!("blocked: {reason}")),
+            ..retry_guidance(stage)
+        },
         _ => retry_guidance(stage),
     }
 }

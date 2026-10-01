@@ -45,7 +45,11 @@ const CLAUDE_MD_TEMPLATE_MAX_BYTES: usize = 20_480;
 /// actual - thin enough that the next one-line doctrine edit would trip it -
 /// so it was raised again to 7,168. Actual size is now 6,046 bytes, leaving
 /// ~1.1KB of buffer.
-const STABLE_PREFIX_MAX_BYTES: usize = 7_168;
+///
+/// Raised again alongside BLOCK-F (stage exits), 7,168 -> 8,192: the prefix was
+/// 6,720 bytes before, and BLOCK-F with its paragraph break adds about 852, so
+/// the actual is now about 7,570 bytes.
+const STABLE_PREFIX_MAX_BYTES: usize = 8_192;
 
 /// The stable-prefix + semi-stable-section floor every standard-stage signal
 /// pays, independent of the stage's own assignment text.

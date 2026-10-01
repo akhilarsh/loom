@@ -208,26 +208,39 @@ fn print_criterion_result(index: usize, criterion_result: &CriterionResult, setu
     );
 }
 
-/// Print what to do about a failed acceptance criterion: fix it, or, when it
-/// is impossible rather than merely red, dispute it.
+/// The guidance for a failed acceptance, wiring or wiring-test check: fix it,
+/// dispute a check no correct work could pass, or block on a need only a
+/// person can meet.
+fn failure_guidance(stage_id: &str) -> String {
+    let dispute = format!("    loom stage dispute-criteria {stage_id}");
+    [
+        format!("  Fix the issues and run 'loom stage complete {stage_id}' again\n"),
+        "  A check no correct implementation could pass gets a dispute, never a weakened fix. \
+         Commit first; filing ends this session by design:"
+            .to_string(),
+        format!("{dispute} --criterion-index <n> --reason \"<why>\"  ([criterion n])"),
+        format!("{dispute} --field wiring --criterion-index <n> --reason \"<why>\"  ([wiring n])"),
+        format!(
+            "{dispute} --field wiring-tests --criterion-index <n> --reason \"<why>\"  \
+             ([wiring_tests n])"
+        ),
+        "  <n> is the number in the label above; --failure-output <path> ships the captured \
+         output as evidence. This routes to the adjudicator, which can amend the check. Do \
+         not reach for --no-verify — it needs an operator proof the sandbox denies by \
+         design — and do not corrupt the artifact to satisfy a check you believe is wrong."
+            .to_string(),
+        format!(
+            "  A failure only a person can fix (a credential, a host install, a network domain \
+             or path the plan does not grant): loom stage block {stage_id} \
+             \"<what is needed and why>\""
+        ),
+    ]
+    .join("\n")
+}
+
+/// Print what to do about a failed acceptance, wiring or wiring-test check.
 pub(crate) fn print_acceptance_failure_guidance(stage_id: &str) {
-    eprintln!("  Fix the issues and run 'loom stage complete {stage_id}' again");
-    eprintln!();
-    eprintln!(
-        "  If a criterion is impossible — no correct implementation could ever satisfy \
-         it — file a dispute rather than weakening the work until a bad criterion goes \
-         green:"
-    );
-    eprintln!(
-        "    loom stage dispute-criteria {stage_id} --criterion-index <n> --reason \"<why it is impossible>\""
-    );
-    eprintln!(
-        "  <n> is the number shown in the '[criterion n]' label above; --failure-output \
-         <path> ships the captured output as evidence. This routes to the adjudicator, \
-         which can amend the criterion — it is not an escalation to a human. Do not reach \
-         for --no-verify — it needs an operator proof the sandbox denies by design — and \
-         do not corrupt the artifact to satisfy a criterion you believe is wrong."
-    );
+    eprintln!("{}", failure_guidance(stage_id));
 }
 
 #[cfg(test)]
@@ -236,6 +249,19 @@ mod tests {
     use crate::models::stage::Stage;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    #[test]
+    fn failure_guidance_names_every_route() {
+        let text = failure_guidance("s1");
+        for route in [
+            "loom stage dispute-criteria s1 --criterion-index",
+            "--field wiring --criterion-index",
+            "--field wiring-tests --criterion-index",
+            "loom stage block s1",
+        ] {
+            assert!(text.contains(route), "missing `{route}` in:\n{text}");
+        }
+    }
 
     #[test]
     fn test_resolve_acceptance_dir_dot_uses_worktree_root() {

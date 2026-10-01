@@ -216,8 +216,7 @@ fn resolved_model(stage: &Stage, work_dir: &WorkDir) -> String {
 /// Build a StageSummary from a Stage and optional associated Session.
 ///
 fn build_stage_summary(stage: &Stage, sessions: &[Session], work_dir: &WorkDir) -> StageSummary {
-    let facts = session_facts(stage, sessions, work_dir);
-    let now = Utc::now();
+    let (facts, now) = (session_facts(stage, sessions, work_dir), Utc::now());
     let heartbeat = heartbeat_facts(stage, facts.session, work_dir);
     let extras = stage_extras(stage, work_dir);
     let (outgoing_session_exit_reason, completion_blocker) =
@@ -263,6 +262,7 @@ fn build_stage_summary(stage: &Stage, sessions: &[Session], work_dir: &WorkDir) 
         completion_blocker,
         merge_resolver_session: facts.merge_resolver_session,
         merge_resolver_attempts: facts.merge_resolver_attempts,
+        close_reason: stage.close_reason.clone(),
     }
 }
 
