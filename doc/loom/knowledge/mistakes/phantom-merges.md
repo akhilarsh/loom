@@ -169,3 +169,13 @@ written in place, and the merge commit was created with `commit-tree`. Conflicts
 `tests_size.rs` (the byte ceiling: kept 20,480) and the README counts (agents, core skills, installed skills).
 **Prevention:** treat that failure as a sandbox artefact, not a merge conflict. Write bind-mounted files in place
 and commit the tree with `commit-tree`.
+
+## The Daemon Exited Over a Transient Merge-Resolver Spawn Failure (2026-10-01)
+
+**What happened:** `knowledge-distill`'s auto-merge failed because main had uncommitted tracked changes, so the stage went `MergeBlocked`. On the same tick the resolver spawn was refused over the same dirty checkout, a failure `report_merge_spawn_failure` treats as transient and leaves for the next tick. There was no next tick: the background daemon runs in watch mode, `stage_file_is_terminal` counted `MergeConflict`/`MergeBlocked` as terminal, `active_sessions` was empty because the spawn had failed, and the daemon logged "Failed stages: knowledge-distill" and shut down. After the operator committed main, `loom stage merge` hit a real conflict, but that CLI path only printed it: the stage stayed `MergeBlocked` with the stale dirty-tree `failure_info`, and nothing spawned a resolver, because only the daemon's tick does.
+
+**Why:** the exit check and the spawn loop disagreed about the merge states. The loop treated them as work still to do and the exit check treated them as finished, so any tick on which the loop failed to start a session ended the daemon. The daemon's hint also sent the operator to `loom stage merge`, the one path that never spawns a resolver.
+
+**Prevention:** a status a daemon loop still acts on must not count as terminal for the daemon's exit; the loop itself must move it to a terminal status or keep a session alive. When a failure is retried "next tick", check that a next tick exists.
+
+**Fix:** merge states are never terminal, and the spawn loop ends each in a resolver or `NeedsHumanReview`; see [Merge Resolver Spawn Loop](../patterns/merge-and-recovery.md#merge-resolver-spawn-loop). `loom stage merge` records `MergeConflict` and says what the daemon will do.

@@ -61,8 +61,11 @@ site:
    `announce_needs_human_review`.
 3. `orchestrator/core/recovery.rs::stage_file_is_terminal` — `NeedsHumanReview` is terminal;
    `NeedsAdjudication` is never terminal, because the daemon must stay alive to spawn and watch the
-   adjudicator judge. No literal `NeedsHumanReview => continue` retry-skip arm exists; retry
-   eligibility comes from this function plus `should_auto_retry` on the failure type.
+   adjudicator judge. `MergeConflict`/`MergeBlocked` are never terminal either: the resolver
+   spawn loop ends each in a running resolver or `NeedsHumanReview` (see
+   [Merge Resolver Spawn Loop](merge-and-recovery.md#merge-resolver-spawn-loop)). No literal
+   `NeedsHumanReview => continue` retry-skip arm exists; retry eligibility comes from this
+   function plus `should_auto_retry` on the failure type.
 4. `orchestrator/core/recovery.rs` (stage-file to in-memory graph sync) — each status has its own
    `self.graph.mark_status(...)` arm; both count as `blocked` in the status tally.
 

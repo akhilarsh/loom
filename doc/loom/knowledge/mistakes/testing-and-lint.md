@@ -324,3 +324,13 @@ silently rather than erroring at that point.
 **Prevention:** before choosing a raw-string delimiter, check the body for a `"` followed by that
 many `#`; content with markdown headings or code fences quoted inside needs `r###"..."###` (or
 higher) to be safe.
+
+## `save_stage` Is Create-Only: a Test Changing a Saved Stage Uses `update_stage` (2026-10-01)
+
+**What happened:** a merge-resolver test simulated a concurrent merge by calling `save_stage` on a stage it had already written, and failed with "Stage already exists".
+
+**Why:** `save_stage` is a compatibility name for `create_stage` (`verify/transitions/persistence.rs`), which refuses to overwrite an existing stage file.
+
+**Prevention:** to change a stage a test already wrote, call `update_stage`, the locked read-modify-write every production writer uses.
+
+**Fix:** the test calls `update_stage`.

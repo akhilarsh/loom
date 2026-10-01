@@ -10,7 +10,11 @@ Dependencies merged to main before dependent stages execute: `Stage A completes 
 
 ## Merge Anti-Respawn Pattern
 
-When merge conflict session dies unresolved: session removed from `active_sessions`, signal file KEPT as anti-respawn guard. `spawn_merge_resolution_sessions()` checks `has_merge_signal_for_stage()` before spawning. Signal removed only when merge succeeds.
+A dead resolver is respawned only within a budget: `MAX_MERGE_RESOLVER_ATTEMPTS` (3) per stage, counted in `.loom/work/merge-resolver-attempts/<stage-id>.count` (`orchestrator/core/merge_handler/resolver_attempts.rs`). `ReservedAttempt::record` writes count+1 before a spawn; `keep()` runs as soon as the backend spawn returns `Ok`, and dropping the guard without it rolls the count back, so only a spawned resolver consumes budget. A counter file that exists but cannot be read or parsed, or a counter path that is not a regular file, reads as the cap; a counter that cannot be written refuses the spawn and routes the stage to review.
+
+After a backend `Err`, `settle_resolver_spawn` (`resolver_stop.rs`) kills the would-be session and asks `teardown_proves_gone` whether it is gone. On tmux the kill must succeed and the liveness probe must say gone, because a surviving server on the socket shows only as a kill failure. On the native lane the probe decides alone: it checks the `loom-merge-<stage>` window as well as the PID file, and a lane with no terminal launches nothing. Proven gone refunds the attempt, and the failure is retried next tick. Not proven keeps the attempt and routes the stage to review. A `save_session` failure after a successful spawn only warns: the session stays in `active_sessions`, which holds the stage while its PID identity lives.
+
+The merge signal file is a liveness record, never a respawn guard: `find_live_merge_session_for_stage` (`orchestrator/signals/merge.rs`) deletes it once its session is dead. A readable signal whose session record is missing is stale, because failed spawns, orphan recovery and `loom sessions kill` all leave record-less signals behind. A record that exists but cannot be read is an error, which routes the stage to review. An unreadable signal is attributed through the session record its filename names: another stage's is skipped, this stage's blocks the spawn while alive and is removed when dead, and one that cannot be attributed routes the stage to review.
 
 ## Merge Recovery Flow [UPDATED 2026-04-27]
 
@@ -94,3 +98,17 @@ For amending the IN_PROGRESS plan file safely (Stage 3):
 Recovery on crash: scan audit.md for latest amendment; verify plan file matches snapshot. If mismatch → restore from `<n>.md`. If `<n>.md` missing → discard audit row, use `<n-1>.md`.
 
 Note: `plan/graph/loader.rs:60-86` PREFERS `.loom/work/stages/` files over the plan file. Plan-file amendment MUST also update the corresponding `.loom/work/stages/<stage_id>.md` for the change to be reflected in the running orchestrator graph.
+
+## Merge Resolver Spawn Loop
+
+`MergeConflict` and `MergeBlocked` never count as terminal for the watch-mode exit (`recovery.rs::stage_file_is_terminal`), so the daemon stays up until each such stage has a resolver running or reaches `NeedsHumanReview`. Every tick `spawn_resolver_if_due` (`orchestrator/core/merge_handler/resolver_spawn.rs`) takes each merge-state stage through, in order:
+
+1. the merge gate: a branch touching a control path has any live resolver stopped (`resolver_stop.rs::stop_gated_resolvers`), then goes to review with a note that the main checkout may hold an in-progress merge;
+2. stale-session cleanup, then the live-signal check;
+3. a strict existence check on the stage branch and the target branch: missing goes to review, a git failure is transient;
+4. the resolver cap, which escalates to review;
+5. a fresh re-read of the stage, the attempt reservation, and the spawn.
+
+A transient spawn failure (dirty main checkout, tmux, lock timeout) is retried every tick with no cap, and the daemon stays up meanwhile; this is an operator decision. A pass works from a stage copy that can go stale while it runs git, so every routing goes through `route_merge_stage_to_review` (`review_route.rs`), which re-checks the status inside the `update_stage` lock and writes nothing when a concurrent `loom stage merge` has already moved the stage on. `route_to_human_review` writes whatever the status and is kept for `try_auto_merge`, whose stage is `Completed`.
+
+`loom stage merge` hitting a conflict moves a `MergeConflict`/`MergeBlocked` stage to `MergeConflict` (the `MergeBlocked -> MergeConflict` edge exists for this), clears its `failure_info`, and prints what the daemon will do next, read from the resolver counter (`commands/stage/merge/next_step.rs`). A `Completed` stage that was never merged (auto-merge disabled) is left untouched and gets only the manual steps.

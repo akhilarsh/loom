@@ -63,7 +63,14 @@ production code was never wrong.
 **Prevention:** in a test binary that also spawns processes, any test simulating a closed
 peer by dropping an fd is racy. Assert on socket state instead: `dead_reader.shutdown
 (Shutdown::Both)` before the drop marks the SOCKET itself dead, which no forked fd copy can
-undo.
+undo. A listener needs the same: `UnixListener` has no `shutdown`, so call
+`libc::shutdown(fd, SHUT_RDWR)`; Linux refuses a connect to a shut-down unix listener.
+
+**Second instance (2026-10-01):** `daemon::rpc::tests::a_stale_socket_file_with_nothing_bound
+_is_not_listening` made its stale socket with `drop(UnixListener::bind(..))`. A concurrent fork
+kept the listener alive, the connect succeeded, and the read failed with "Connection reset by
+peer". It surfaced once git-spawning tests were added to the same binary. Fixed by shutting the
+listener down before the drop.
 
 ## A Test That Calls a Hook's stdin Entry Point Hangs a Backgrounded Gate (2026-09-13)
 

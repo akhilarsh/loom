@@ -24,7 +24,7 @@
 | --- | --- | --- |
 | [adjudication-lifecycle](architecture/adjudication-lifecycle.md) | Dispute to verdict, per-kind rulings | 137 |
 | [codex-concurrency](architecture/codex-concurrency.md) | Codex fan-out limits and degradation | 128 |
-| [codex-plugin](architecture/codex-plugin.md) | Codex plugin install, identity, and forwarding | 362 |
+| [codex-plugin](architecture/codex-plugin.md) | Codex plugin install, identity, and forwarding | 364 |
 | [completion-recovery](architecture/completion-recovery.md) | Completion HMAC, exit_reason, handoff folds | 34 |
 | [config-value-types](architecture/config-value-types.md) | ConfigValue typed read-path | 85 |
 | [context-ceiling](architecture/context-ceiling.md) | Resident-token ceiling: tiers and thresholds | 111 |
@@ -80,12 +80,12 @@
 | [cli-process-and-conventions](patterns/cli-process-and-conventions.md) | CLI registration, TUI, errors, config | 249 |
 | [doctrine-cross-surface](patterns/doctrine-cross-surface.md) | Pinning multi-surface guidance | 135 |
 | [hook-content-stripping](patterns/hook-content-stripping.md) | How a hook decides what a Bash command invokes | 159 |
-| [merge-and-recovery](patterns/merge-and-recovery.md) | Progressive merge, conflict recovery | 96 |
+| [merge-and-recovery](patterns/merge-and-recovery.md) | Progressive merge, conflict recovery | 114 |
 | [orchestrator-daemon-loop](patterns/orchestrator-daemon-loop.md) | Signal gen, IPC, poll loop, spool drain | 107 |
 | [remote-control](patterns/remote-control.md) | Detect/preflight/resolve for external agents | 51 |
 | [security-sandbox-and-hooks](patterns/security-sandbox-and-hooks.md) | Hooks, input validation, sandbox config | 137 |
 | [stage-daemon-channels](patterns/stage-daemon-channels.md) | How a stage agent reaches the daemon | 105 |
-| [stage-lifecycle-and-verification](patterns/stage-lifecycle-and-verification.md) | Stage states, locked writes, verify | 182 |
+| [stage-lifecycle-and-verification](patterns/stage-lifecycle-and-verification.md) | Stage states, locked writes, verify | 185 |
 | [subagent-hierarchy](patterns/subagent-hierarchy.md) | Fan-out vs coordinators vs teams; model mix | 91 |
 
 ### conventions
@@ -127,7 +127,7 @@
 | [memory-relay-drain-gap](mistakes/memory-relay-drain-gap.md) | Relay tickets leaked past the hook | 34 |
 | [merge-cleanup-boundary](mistakes/merge-cleanup-boundary.md) | A cleanup-boundary bug and its fix | 171 |
 | [parallel-worktree-shared-state](mistakes/parallel-worktree-shared-state.md) | Cross-worktree state races | 200 |
-| [phantom-merges](mistakes/phantom-merges.md) | Merge lessons: merged=true unverified | 171 |
+| [phantom-merges](mistakes/phantom-merges.md) | Merge lessons: merged=true unverified | 181 |
 | [pinned-literals-ledgers-and-wiring](mistakes/pinned-literals-ledgers-and-wiring.md) | Ledger exact-match, wiring pinning | 303 |
 | [pre-commit-hardening](mistakes/pre-commit-hardening.md) | Partial-staging guard decisions and edge cases | 53 |
 | [refactor-stragglers](mistakes/refactor-stragglers.md) | What a large rename leaves behind | 136 |
@@ -147,8 +147,8 @@
 | [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, file ownership | 285 |
 | [subagent-liveness-and-watch](mistakes/subagent-liveness-and-watch.md) | Subagent liveness detection; watch traps | 321 |
 | [subagent-orchestration](mistakes/subagent-orchestration.md) | Delegation model, defect reports, gotchas | 120 |
-| [test-concurrency-and-fixtures](mistakes/test-concurrency-and-fixtures.md) | Racy tests: fds, ETXTBSY, stdin | 210 |
-| [testing-and-lint](mistakes/testing-and-lint.md) | Lint/test discipline | 326 |
+| [test-concurrency-and-fixtures](mistakes/test-concurrency-and-fixtures.md) | Racy tests: fds, ETXTBSY, stdin | 217 |
+| [testing-and-lint](mistakes/testing-and-lint.md) | Lint/test discipline | 336 |
 | [tests-that-cannot-fail](mistakes/tests-that-cannot-fail.md) | Tests that pass whether the bug is present | 274 |
 | [tmux-backend](mistakes/tmux-backend.md) | tmux spawn-failure exits, cleanup-on-error | 136 |
 | [typed-config-values-process](mistakes/typed-config-values-process.md) | Brief, dev-server, plan-prose gotchas | 43 |
@@ -169,7 +169,7 @@
 | [codex-heartbeat-starvation](concerns/codex-heartbeat-starvation.md) | Heartbeat starvation from long codex runs | 73 |
 | [iterm2-window-teardown](concerns/iterm2-window-teardown.md) | iTerm2 window never named | 48 |
 | [knowledge-cli-gaps](concerns/knowledge-cli-gaps.md) | Knowledge CLI gaps and housekeeping | 101 |
-| [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 82 |
+| [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 97 |
 | [runtime-and-session-safety](concerns/runtime-and-session-safety.md) | Runtime edge cases: tmux, orphan adoption | 151 |
 | [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: canary, credential reads, codex home | 255 |
 | [source-graph-known-gaps](concerns/source-graph-known-gaps.md) | Language limits, open decisions | 80 |
