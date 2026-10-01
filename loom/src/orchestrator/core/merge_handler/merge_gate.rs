@@ -14,6 +14,7 @@ use chrono::Utc;
 
 use crate::fs::session_files::mark_session_terminal_reason;
 use crate::git::branch::branch_name_for_stage;
+use crate::git::read_hooks_path_scope;
 use crate::models::session::{Session, SessionExitReason, SessionStatus, SessionType};
 use crate::orchestrator::core::persistence::Persistence;
 use crate::orchestrator::core::recovery_guards::too_young_to_judge;
@@ -307,10 +308,7 @@ fn is_control_path(path: &str, hooks_prefix: Option<&str>) -> bool {
 /// (`core.hooksPath`), or `None` when it is unset at every scope or resolves
 /// outside the repository.
 fn hooks_dir_prefix(repo_root: &Path) -> Option<String> {
-    // Scoped reads, in git's own precedence order. An unscoped `--get` would
-    // let `run_git_checked`'s `NO_HOOKS_ARGS` (`-c core.hooksPath=/dev/null`,
-    // applied to every git command loom runs) win on precedence, and this
-    // query would always read back `/dev/null` instead of the real value.
+    // Scoped reads (see `read_hooks_path_scope` for why), one per scope.
     let local = read_hooks_path_scope(repo_root, "--local");
     let global = read_hooks_path_scope(repo_root, "--global");
     let system = read_hooks_path_scope(repo_root, "--system");
@@ -320,20 +318,6 @@ fn hooks_dir_prefix(repo_root: &Path) -> Option<String> {
         global.as_deref(),
         system.as_deref(),
     )
-}
-
-/// `git config <scope> --get core.hooksPath` in `repo_root`, or `None` when
-/// unset at that scope or the read fails.
-fn read_hooks_path_scope(repo_root: &Path, scope: &str) -> Option<String> {
-    let configured =
-        crate::git::run_git_checked(&["config", scope, "--get", "core.hooksPath"], repo_root)
-            .ok()?;
-    let trimmed = configured.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
 }
 
 /// Resolves `core.hooksPath` from the three config scopes to a repo-relative

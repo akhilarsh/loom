@@ -45,7 +45,10 @@ pub use cleanup::{
     CleanupConfig, CleanupResult,
 };
 
-pub use hooks::{install_pre_commit_hook, is_pre_commit_hook_installed};
+pub use hooks::{
+    configured_hooks_path, install_pre_commit_hook, is_pre_commit_hook_installed,
+    read_hooks_path_scope,
+};
 
 pub use runner::{run_git, run_git_bool, run_git_checked};
 
