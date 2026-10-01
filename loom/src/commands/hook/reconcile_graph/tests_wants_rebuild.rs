@@ -43,6 +43,12 @@ fn fake_reconciler() -> Reaped {
         .stdin(Stdio::piped())
         .spawn()
         .unwrap();
+    // Until the child execs, its argv is still this test binary's.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let execed = |pid| cancel::process_argv(pid).is_some_and(|a| a.contains(&"hook".into()));
+    while !execed(child.id()) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     Reaped(child)
 }
 
