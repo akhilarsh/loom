@@ -5,6 +5,7 @@ use chrono::Utc;
 use colored::Colorize;
 use std::path::PathBuf;
 
+use crate::context::untrusted::inline_safe;
 use crate::models::stage::{Stage, StageStatus};
 use crate::orchestrator::monitor::MonitorEvent;
 
@@ -26,6 +27,13 @@ mod stalled_judge;
 use handoff_state::mark_needs_handoff;
 use human_review::announce_needs_human_review;
 use recover_hung::HungReport;
+
+/// The console line for a blocked stage. `reason` is the free text a stage agent
+/// wrote with `loom stage block` (up to 64 KiB), so it is flattened to one bounded
+/// line before it reaches the daemon console and log.
+fn blocked_line(stage_id: &str, reason: &str) -> String {
+    format!("Stage '{stage_id}' blocked: {}", inline_safe(reason))
+}
 
 fn requeue_after_handoff(stage: &mut Stage) -> Result<()> {
     stage.try_mark_queued()
@@ -173,7 +181,7 @@ impl Orchestrator {
             }
             MonitorEvent::StageBlocked { stage_id, reason } => {
                 clear_status_line();
-                eprintln!("Stage '{stage_id}' blocked: {reason}");
+                eprintln!("{}", blocked_line(&stage_id, &reason));
                 self.on_stage_blocked(&stage_id)?;
             }
             MonitorEvent::SessionContextWarning {

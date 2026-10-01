@@ -16,6 +16,7 @@ mod ultracode_tests;
 mod v2_contract_lint_tests;
 mod v2_lint_environment_tests;
 mod v2_lint_tests;
+mod v2_provision_install_tests;
 mod v2_tests;
 mod validation_suite_tests;
 mod validation_tests;

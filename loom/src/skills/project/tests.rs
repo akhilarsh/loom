@@ -4,7 +4,7 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use super::{ProjectProfile, ProjectType};
+use super::{declares_dependencies, ProjectProfile, ProjectType};
 
 fn write(root: &Path, path: &str, content: &str) {
     let path = root.join(path);
@@ -314,4 +314,32 @@ fn packages_under_a_fixtures_directory_are_not_detected() {
         paths,
         vec![Path::new(""), Path::new("tests/fixtures-extra/pkg")]
     );
+}
+
+/// A manifest the reader cannot use counts as declaring dependencies, so a caller
+/// that skips dependency-free packages never skips one it could not read.
+#[test]
+fn an_unreadable_manifest_counts_as_declaring_dependencies() {
+    let repo = TempDir::new().unwrap();
+    let manifest = r#"{"scripts":{"test":"node --test"}}"#;
+    write(repo.path(), "invalid/package.json", "{ not json");
+    write(repo.path(), "real/package.json", manifest);
+    fs::create_dir(repo.path().join("linked")).unwrap();
+    std::os::unix::fs::symlink(
+        repo.path().join("real/package.json"),
+        repo.path().join("linked/package.json"),
+    )
+    .unwrap();
+    write(repo.path(), "readable/package.json", manifest);
+
+    for unreadable in ["missing", "invalid", "linked"] {
+        assert!(
+            declares_dependencies(repo.path(), &repo.path().join(unreadable)),
+            "{unreadable}"
+        );
+    }
+    assert!(!declares_dependencies(
+        repo.path(),
+        &repo.path().join("readable")
+    ));
 }

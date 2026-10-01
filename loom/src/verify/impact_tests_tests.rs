@@ -256,8 +256,9 @@ fn exit_127_is_a_note() {
     assert!(notes.contains(FULL_SUITE), "{notes}");
 }
 
-#[test]
-fn run_selects_the_committed_stage_diff() {
+/// A repository on `main` with `web/src/a.test.ts` committed, then a `loom/s`
+/// branch carrying one more commit that edits it.
+fn committed_stage_repo() -> (TempDir, PathBuf) {
     let temp = TempDir::new().unwrap();
     let root = temp.path().canonicalize().unwrap();
     git(&root, &["init", "-b", "main"]);
@@ -274,6 +275,12 @@ fn run_selects_the_committed_stage_diff() {
         &format!("{WEB_TEST}// edited\n"),
     );
     git(&root, &["commit", "-am", "the stage's commit"]);
+    (temp, root)
+}
+
+#[test]
+fn run_selects_the_committed_stage_diff() {
+    let (_temp, root) = committed_stage_repo();
 
     let outcome = run(&Stage::default(), &root, &CriteriaConfig::default(), "main").unwrap();
 
@@ -283,6 +290,29 @@ fn run_selects_the_committed_stage_diff() {
             .notes
             .iter()
             .any(|note| note.contains("has no node_modules")),
+        "{:?}",
+        outcome.notes
+    );
+}
+
+/// A test that cannot be selected is a note, never a failure: an unresolvable
+/// target falls back to the files changed since the published base.
+#[test]
+fn an_unresolvable_target_is_a_note_not_a_failure() {
+    let (_temp, root) = committed_stage_repo();
+
+    let outcome = run(
+        &Stage::default(),
+        &root,
+        &CriteriaConfig::default(),
+        "no-such-branch",
+    )
+    .unwrap();
+
+    assert!(
+        outcome.notes.iter().any(|note| note.starts_with(
+            "the stage's changes since its merge base with `no-such-branch` could not be listed"
+        )),
         "{:?}",
         outcome.notes
     );

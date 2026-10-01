@@ -70,11 +70,22 @@ loom:
   builds the local project through its build backend, which runs repository code on the host.
 - **No repository-controlled code.** Provision runs on the host, outside the sandbox, in a worktree
   whose files a stage can edit, so a command must not run anything the repository or an agent
-  controls. A JS install interprets four such channels: `package.json` lifecycle scripts, the bun
-  cache, `bunfig.toml` and `.npmrc`. Close them with `--ignore-scripts` (no `postinstall`), and for
-  bun `--backend=copyfile` (no hardlinks into the real bun cache) and `--config=/dev/null` (an
-  agent-written `bunfig.toml` is ignored). An agent-written `.npmrc` still redirects the registry
-  even then, so the command refuses to run while one exists. The hardened form is the example above.
+  controls. A JS install interprets five such channels: `package.json` lifecycle scripts, the bun
+  cache, `bunfig.toml`, pnpm's `.pnpmfile.cjs` and `.npmrc`. Close them with `--ignore-scripts` (no
+  `postinstall`), for bun `--backend=copyfile` (no hardlinks into the real bun cache) and
+  `--config=/dev/null` (an agent-written `bunfig.toml` is ignored), and for pnpm
+  `--ignore-pnpmfile`. An agent-written `.npmrc` still redirects the registry even then, so the
+  command opens with `test ! -e .npmrc && test ! -L .npmrc &&` and joins the rest with `&&` only.
+  The command may not `cd` (nor `pushd` or `popd`), since the refusal checks only the directory the
+  install runs in: set `working_dir` to the package directory instead.
+  The hardened form is the example above; the other managers' forms put
+  `npm ci --ignore-scripts`, `pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile`
+  or `yarn install --frozen-lockfile --ignore-scripts` behind the same refusal.
+- **Enforced.** `loom plan verify` and `loom init` reject an entry whose `bun install`,
+  `npm ci`/`install`, `pnpm install`, `yarn` or `uv sync` lacks a flag above, the `.npmrc` refusal,
+  or (for `uv sync`) `--no-install-project`, and name the hardened form to use. The JS provision
+  lint suggests the hardened form for the package's lockfile; a package with no lockfile must
+  commit one first, since an unlocked install writes an untracked lockfile that blocks the stage.
 - **Git-ignored writes only.** The daemon lists `git status` once before the first entry and once
   after the last, and blocks the stage on any entry that is new: it would read as a non-contract
   edit at the contract freeze and as prior stage work on a retry.
@@ -89,7 +100,8 @@ loom:
   `loom stage complete`. `provision` runs once per spawn, on the host, before the agent starts.
 - **Repository-level lints.** `loom plan verify` judges the repository, not the stage: a repository
   with a JS package (this one has `web/`) needs a `provision` entry for it in every v2 plan, and a
-  JS package with a test runner that no entry covers is an error.
+  JS package with a test runner and at least one `dependencies` or `devDependencies` entry that no
+  provision entry covers is an error. A package that declares neither needs no install.
 
 ## The pre-commit hook needs the network too
 

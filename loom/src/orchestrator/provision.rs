@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use toml_edit::DocumentMut;
 
+use crate::context::untrusted::flatten_char;
 use crate::fs::work_dir::{read_config, update_config, write_plan_sandbox};
 use crate::plan::schema::{CommandConfinement, LoomConfig, ProvisionEntry};
 use crate::verify::criteria::{run_spec_with_timeout, CommandSpec, CriterionResult};
@@ -85,12 +86,26 @@ pub fn read_provision_snapshot(work_dir: &Path) -> Result<Vec<ProvisionEntry>> {
     Ok(snapshot.entries)
 }
 
-/// The block reason for a failed entry; `working_dir` is as the plan wrote it.
+/// The block reason for a failed entry; `working_dir` is as the plan wrote it, made
+/// [`display_safe`] like the command.
 fn failure(entry: &ProvisionEntry, detail: &str) -> String {
     format!(
         "provision `{}` in `{}` failed: {detail}",
-        entry.command, entry.working_dir
+        display_safe(&entry.command),
+        display_safe(&entry.working_dir)
     )
+}
+
+/// `text` with every control, line-breaking, format and bidi character made a space,
+/// cut to [`DETAIL_LINE_CHARS`] characters. A block reason is printed to the
+/// operator's terminal and kept as the stage's close reason and failure evidence, and
+/// its parts (host-command output, file names a stage can choose, the plan's command)
+/// would otherwise carry ANSI/OSC sequences and line breaks into all three.
+pub(crate) fn display_safe(text: &str) -> String {
+    text.chars()
+        .map(flatten_char)
+        .take(DETAIL_LINE_CHARS)
+        .collect()
 }
 
 fn run_entry(entry: &ProvisionEntry, worktree: &Path) -> Result<(), String> {
@@ -149,17 +164,19 @@ fn failure_detail(result: &CriterionResult) -> String {
         })
 }
 
-/// The last [`DETAIL_LINES`] non-blank lines of `text`, each cut to its first
-/// [`DETAIL_LINE_CHARS`] characters, joined with `\n`.
+/// The last [`DETAIL_LINES`] lines of `text` that hold more than control or blank
+/// characters, each made [`display_safe`], joined with `\n`.
 fn tail_lines(text: &str) -> String {
+    let blank = |ch: char| flatten_char(ch) == ' ';
     let lines: Vec<&str> = text
         .lines()
-        .map(str::trim_end)
-        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.trim_end_matches(blank))
+        .filter(|line| !line.chars().all(blank))
         .collect();
     let kept = &lines[lines.len().saturating_sub(DETAIL_LINES)..];
     kept.iter()
-        .map(|line| line.chars().take(DETAIL_LINE_CHARS).collect::<String>())
+        .copied()
+        .map(display_safe)
         .collect::<Vec<_>>()
         .join("\n")
 }

@@ -121,3 +121,18 @@ fn closing_leaves_an_applied_dispute_as_it_is() {
     assert!(!closed(work, 1));
     assert!(closed(work, 2));
 }
+
+/// `loom stage reset` closes the disputes of every stage it resets, disputed or
+/// not: a stage that never filed one must not gain a `disputes/<stage>`
+/// directory (and its `.lock`) from the call.
+#[test]
+fn closing_a_never_disputed_stage_leaves_no_directory_behind() {
+    let tmp = tempfile::tempdir().unwrap();
+    let work = tmp.path();
+    write_dispute_request(work, "s1", 1, 0);
+
+    close_open_disputes(work, "never-disputed");
+
+    assert!(!work.join("disputes/never-disputed").exists());
+    assert!(!closed(work, 1), "another stage's dispute is untouched");
+}

@@ -62,6 +62,11 @@ pub(crate) fn lock_stage_dispute_dir(stage_dir: &Path) -> Result<OwnedFd> {
 pub(crate) fn close_open_disputes(work_dir: &Path, stage_id: &str) {
     let disputes_root = work_dir.join("disputes");
     let stage_dir = disputes_root.join(stage_id);
+    // A stage never disputed has nothing to close, and taking the lock would
+    // create `disputes/<stage>/.lock` for it.
+    if !stage_dir.exists() {
+        return;
+    }
     let _lock = match lock_stage_dispute_dir(&stage_dir) {
         Ok(lock) => lock,
         Err(error) => {

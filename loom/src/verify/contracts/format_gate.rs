@@ -105,7 +105,7 @@ pub fn format_problems(
         .map(|result| {
             format!(
                 "acceptance criterion `{}` fails on the contract files: run the repository's \
-                 formatter over them, then freeze again",
+                 formatter over them",
                 result.command
             )
         })

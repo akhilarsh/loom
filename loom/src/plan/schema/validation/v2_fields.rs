@@ -12,6 +12,11 @@ use super::super::types::{
 use super::super::types_v2::ProvisionEntry;
 use super::v2_lints::LintFinding;
 
+mod provision_installs;
+
+use provision_installs::push_install_problems;
+pub(super) use provision_installs::{BUN_INSTALL, NPM_INSTALL, PNPM_INSTALL, YARN_INSTALL};
+
 /// Push the errors the v2-only fields raise for the plan's version: every use
 /// on a v1 plan, the D3 rules on a v2 plan. Any other version is already an
 /// error of its own and gets neither.
@@ -107,7 +112,8 @@ fn push_v2_rules(metadata: &LoomMetadata, errors: &mut Vec<ValidationError>) {
 }
 
 /// Each provision entry needs a non-empty relative `working_dir` free of `..` and a
-/// non-empty `command`; entries are numbered from 1 in the messages.
+/// non-empty `command` whose package installs are hardened (`provision_installs`);
+/// entries are numbered from 1 in the messages, which never print the working dir.
 fn push_provision_problems(entries: &[ProvisionEntry], errors: &mut Vec<ValidationError>) {
     for (idx, entry) in entries.iter().enumerate() {
         let label = format!("provision entry #{}", idx + 1);
@@ -123,6 +129,7 @@ fn push_provision_problems(entries: &[ProvisionEntry], errors: &mut Vec<Validati
         if entry.command.trim().is_empty() {
             messages.push(format!("{label} has an empty command"));
         }
+        push_install_problems(&label, &entry.command, &mut messages);
         errors.extend(messages.into_iter().map(|message| ValidationError {
             message,
             stage_id: None,

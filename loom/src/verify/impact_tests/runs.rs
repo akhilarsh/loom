@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use super::{ImpactOutcome, FULL_SUITE, IMPACT_TIMEOUT};
+use crate::skills::project::declares_dependencies;
 use crate::testrun::{classify, RunOutcome, RunOutput, TestRunnerAdapter, TestTarget};
 use crate::verify::criteria::{ProbeRun, ProbeRunner};
 
@@ -150,28 +151,11 @@ fn package_label(package: &Path) -> String {
 /// dependency-free package needs no install, so it never counts as missing; an
 /// unreadable or unparsable manifest counts as declaring dependencies.
 fn missing_node_modules(package_dir: &Path, root: &Path) -> bool {
-    declares_dependencies(package_dir)
+    declares_dependencies(root, package_dir)
         && !package_dir
             .ancestors()
             .take_while(|dir| dir.starts_with(root))
             .any(|dir| dir.join("node_modules").is_dir())
-}
-
-/// Whether `package_dir/package.json` lists a `dependencies` or
-/// `devDependencies` entry.
-fn declares_dependencies(package_dir: &Path) -> bool {
-    let Ok(manifest) = std::fs::read_to_string(package_dir.join("package.json")) else {
-        return true;
-    };
-    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest) else {
-        return true;
-    };
-    ["dependencies", "devDependencies"].iter().any(|key| {
-        manifest
-            .get(key)
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(|entries| !entries.is_empty())
-    })
 }
 
 /// The selected tests, as a failure names them.

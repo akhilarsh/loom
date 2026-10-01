@@ -5,7 +5,8 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use crate::plan::schema::{LoomMetadata, ProvisionEntry};
+use crate::plan::schema::tests::create_valid_metadata_v2;
+use crate::plan::schema::{validate, LoomMetadata, ProvisionEntry};
 
 use super::{
     git_repo, isolated_git, lint, messages, network, plan, plan_allowing, stage, write, LintFinding,
@@ -15,6 +16,27 @@ const HOOK_MESSAGE: &str = "the repository's pre-commit hook";
 const HOOK: &str = "#!/bin/sh\n\
     MD_OUT=$(git ls-files -z -- '*.md' | xargs -0 bunx markdownlint-cli2 --fix 2>&1) || true\n";
 const VITEST_PACKAGE: &str = r#"{"devDependencies":{"vitest":"^3.2.0"}}"#;
+const BUN_INSTALL: &str = "test ! -e .npmrc && test ! -L .npmrc && bun install \
+                           --frozen-lockfile --ignore-scripts --backend=copyfile --config=/dev/null";
+const NPM_INSTALL: &str = "test ! -e .npmrc && test ! -L .npmrc && npm ci --ignore-scripts";
+/// A file in `web/`, and the install the lint suggests for it: each lockfile kind the
+/// lint knows, and a file that is no lockfile.
+const SUGGESTED_INSTALLS: [(&str, &str); 6] = [
+    ("bun.lock", BUN_INSTALL),
+    ("bun.lockb", BUN_INSTALL),
+    (
+        "pnpm-lock.yaml",
+        "test ! -e .npmrc && test ! -L .npmrc && pnpm install --frozen-lockfile \
+         --ignore-scripts --ignore-pnpmfile",
+    ),
+    (
+        "yarn.lock",
+        "test ! -e .npmrc && test ! -L .npmrc && yarn install --frozen-lockfile \
+         --ignore-scripts",
+    ),
+    ("package-lock.json", NPM_INSTALL),
+    ("README.md", NPM_INSTALL),
+];
 
 /// A repository whose LOCAL `core.hooksPath` is `hooks_path`: the local scope wins over
 /// the machine's global and system config, so the lint's own reads stay deterministic.
@@ -119,24 +141,7 @@ fn package_findings(metadata: &LoomMetadata, repo: &Path) -> Vec<LintFinding> {
 
 #[test]
 fn uncovered_js_package_names_its_install_command() {
-    let cases = [
-        ("bun.lock", "bun install --frozen-lockfile --ignore-scripts"),
-        (
-            "bun.lockb",
-            "bun install --frozen-lockfile --ignore-scripts",
-        ),
-        (
-            "pnpm-lock.yaml",
-            "pnpm install --frozen-lockfile --ignore-scripts",
-        ),
-        (
-            "yarn.lock",
-            "yarn install --frozen-lockfile --ignore-scripts",
-        ),
-        ("package-lock.json", "npm ci --ignore-scripts"),
-        ("README.md", "npm install --ignore-scripts"),
-    ];
-    for (file, install) in cases {
+    for (file, install) in SUGGESTED_INSTALLS {
         let repo = js_repo(&[(&format!("web/{file}"), "")]);
         let found = package_findings(&with_provision(2, &[]), repo.path());
         assert_eq!(found.len(), 1, "{file}: {found:?}");
@@ -148,6 +153,53 @@ fn uncovered_js_package_names_its_install_command() {
         let entry = format!("{{ working_dir: \"web\", command: \"{install}\" }}");
         assert!(found[0].message.contains(&entry), "{file}: {found:?}");
     }
+}
+
+/// The finding's suggested command must pass provision validation, so a pasted
+/// suggestion never trades the lint error for a validation error.
+#[test]
+fn every_suggested_install_passes_provision_validation() {
+    for (file, _) in SUGGESTED_INSTALLS {
+        let repo = js_repo(&[(&format!("web/{file}"), "")]);
+        let found = package_findings(&with_provision(2, &[]), repo.path());
+        assert_eq!(found.len(), 1, "{file}: {found:?}");
+        let suggested = found[0]
+            .message
+            .split("command: \"")
+            .nth(1)
+            .and_then(|rest| rest.split("\" }").next())
+            .expect("the finding suggests a command");
+        let mut metadata = create_valid_metadata_v2();
+        metadata.loom.provision = vec![ProvisionEntry {
+            working_dir: "web".to_string(),
+            command: suggested.to_string(),
+        }];
+        let errors = validate(&metadata).err().unwrap_or_default();
+        assert!(errors.is_empty(), "{file}: {suggested}: {errors:?}");
+    }
+}
+
+#[test]
+fn a_package_without_a_lockfile_is_told_to_commit_one() {
+    let repo = js_repo(&[]);
+    let found = package_findings(&with_provision(2, &[]), repo.path());
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].message.contains("commit a lockfile first"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_package_without_dependencies_needs_no_provision() {
+    let repo = git_repo();
+    write(
+        repo.path(),
+        "web/package.json",
+        r#"{"scripts":{"test":"node --test"}}"#,
+    );
+    let found = package_findings(&with_provision(2, &[]), repo.path());
+    assert!(found.is_empty(), "{found:?}");
 }
 
 #[test]

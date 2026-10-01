@@ -12,7 +12,7 @@ use chrono::Utc;
 use crate::git::runner::run_git;
 use crate::models::failure::{FailureInfo, FailureType};
 use crate::models::stage::{Stage, StageStatus};
-use crate::orchestrator::provision::{read_provision_snapshot, run_provision};
+use crate::orchestrator::provision::{display_safe, read_provision_snapshot, run_provision};
 use crate::orchestrator::tick::{self, Phase};
 use crate::plan::schema::ProvisionEntry;
 
@@ -210,13 +210,14 @@ fn split_status_entries(listing: &str) -> Vec<String> {
     entries
 }
 
-/// The block reason naming the files a provision left that git does not ignore.
+/// The block reason naming the files a provision left that git does not ignore. Each
+/// name is [`display_safe`]: `git status -z` prints it raw, and a stage chooses it.
 fn unignored_reason(added: &[&str]) -> String {
     // A status entry is "XY <path>", plus "\0<origin>" for a rename or copy.
-    let shown: Vec<&str> = added
+    let shown: Vec<String> = added
         .iter()
         .map(|&entry| entry.get(3..).unwrap_or(entry))
-        .map(|path| path.split('\0').next().unwrap_or(path))
+        .map(|path| display_safe(path.split('\0').next().unwrap_or(path)))
         .take(MAX_REPORTED_PATHS)
         .collect();
     let mut listed = shown.join(", ");

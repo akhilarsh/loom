@@ -176,6 +176,22 @@ fn review_round(id: &str) -> Option<u32> {
     round.parse().ok()
 }
 
+/// Most bytes of a criterion's failure output a dispute keeps. The CLI client
+/// and the daemon handler both cap at it, so a request carries the same slice
+/// whichever side ran the cut.
+pub(crate) const FAILURE_OUTPUT_MAX_BYTES: usize = 4096;
+
+/// `s` reduced to at most `max_bytes`, cut on the last char boundary that fits
+/// so the result stays valid UTF-8 (a raw byte slice panics inside a
+/// multi-byte character).
+pub(crate) fn truncate_to_byte_limit(s: &str, max_bytes: usize) -> String {
+    let mut end = max_bytes.min(s.len());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
 /// Request to dispute part of a stage's verification. Written by the daemon
 /// on the agent's behalf to `.loom/work/disputes/<stage>/<n>/request.md`. The
 /// agent attests to the failure; the adjudicator returns a separate verdict.
