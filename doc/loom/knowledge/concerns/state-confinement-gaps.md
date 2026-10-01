@@ -4,8 +4,7 @@
 
 ## Open Gap (2026-09-13)
 
-PLAN-loom-state-confinement (merged 2026-09-14) left one accepted risk, which
-PLAN-sandbox-escape-hardening (decision D3) closes:
+One accepted risk remains open; no plan addresses it:
 
 - **Shared package caches** stay session-writable and are executed by the operator's own builds.
   Every capsule's `allowWrite` carries `sandbox/package_caches.rs::PACKAGE_MANAGER_CACHE_WRITE_PATHS`:

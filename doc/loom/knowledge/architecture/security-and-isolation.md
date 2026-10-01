@@ -7,9 +7,9 @@
 ## Worktree Isolation (4-Layer Defense)
 
 1. **Git layer** -- Separate worktrees at `.worktrees/<stage-id>/` with branch `loom/<stage-id>`. Symlinks: `.loom/work` -> shared state, .claude/CLAUDE.md -> instructions, root `CLAUDE.md` -> project guidance.
-2. **Sandbox layer** -- `MergedSandboxConfig` (`sandbox/config.rs`) generates `settings.local.json` with filesystem deny/allow policy, network domains, and fail-closed sandbox availability. Plan-configured `excluded_commands` are rejected; generated settings do not grant broad executable exemptions. Knowledge writes use the narrow Loom control path rather than direct file edits.
+2. **Sandbox layer** -- `MergedSandboxConfig` (`sandbox/config.rs`) generates `settings.local.json` with filesystem deny/allow policy, network domains, and fail-closed sandbox availability. Plan-configured `excluded_commands` are rejected; generated settings do not grant broad executable exemptions. Knowledge writes use the narrow Loom control path rather than direct file edits. The OS sandbox confines Bash only; the file tools are confined by the hook layer, and other tools are listed in [Sandbox and Confinement Gaps](../concerns/sandbox-and-confinement-gaps.md), "Tool Routes That Run Outside the Bash Sandbox".
 3. **Signal layer** -- Four stage-type-specific stable prefix generators in cache.rs (standard, knowledge, integration-verify, knowledge-distill). Include isolation rules and subagent restrictions.
-4. **Hook layer** -- commit-guard.sh blocks exit without commit. commit-filter.sh blocks subagent git operations and subagent-verify-guard.sh blocks subagent full-suite verification, both gated on `loom_is_subagent()` (live-ancestor `LOOM_MAIN_AGENT_PID`, then a payload-first classification via `loom_payload_agent_verdict` — the intervening-Claude-process walk is only the fallback — not a PPID comparison).
+4. **Hook layer** -- commit-guard.sh blocks exit without commit. worktree-file-guard.sh and credential-guard.sh confine the file tools. commit-filter.sh blocks subagent git operations and subagent-verify-guard.sh blocks subagent full-suite verification, both gated on `loom_is_subagent()` (live-ancestor `LOOM_MAIN_AGENT_PID`, then a payload-first classification via `loom_payload_agent_verdict` — the intervening-Claude-process walk is only the fallback — not a PPID comparison).
 
 ## Security Model
 
@@ -67,7 +67,7 @@ selects the innermost stage.
 
 ## Where a Session's Write Grants Come From
 
-Loom writes no `.claude/settings.local.json`. Every session kind launches from a generated
+Loom's spawn path writes no `.claude/settings.local.json`; only `loom repair` writes the main checkout's file (via `ensure_loom_hooks_local`). Every session kind launches from a generated
 **capsule**, `W/capsules/<session-id>.settings.json` (`orchestrator/terminal/native/session_settings.rs`),
 built by the pure `sandbox::settings::build_settings`. Approved permissions live in a loom-owned
 list, `W/permissions/approved.json` (`fs/permissions/approved.rs`), rendered into every later

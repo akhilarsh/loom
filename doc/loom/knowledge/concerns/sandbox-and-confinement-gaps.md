@@ -10,8 +10,8 @@ interpreter, build-script, symlink and file-tool denial cannot be exercised end 
 That verification is manual release validation. The srt harness that stands in for it outside the
 sandbox lacks Claude Code's linked-worktree grant of the git common directory and probes no
 `denyRead` path ([Agent Rule-Bending Hardening](agent-rule-bending-hardening.md), G3).
-PLAN-sandbox-escape-hardening adds an in-session canary that integration-verify runs inside a
-live stage sandbox, data-driven from the session's own capsule.
+No in-session canary exists; a withdrawn design for one is stage `sandbox-canary` in
+the deleted PLAN-sandbox-escape-hardening, recoverable with `git show e6f00616^:` plus its `doc/plans` path.
 
 ## ReDoS Potential in Plan Pattern Regex
 
@@ -108,7 +108,7 @@ Two gaps from PLAN-loom-state-confinement were accepted, not closed:
   `~/.rustup/toolchains` and `~/.local/share/uv` are not granted, but the cargo, bun, npm, pnpm,
   yarn, deno, uv, pip and go caches are one directory shared by every concurrent session and read
   by the operator's own builds. [State Confinement Gaps](state-confinement-gaps.md) has the
-  consequence; PLAN-sandbox-escape-hardening (decision D3) makes them per-session.
+  consequence. The gap is open: no plan makes them per-session.
 
 ## No `Read(...)` Deny Rule May Exist in Any Settings File (2026-09-04)
 
@@ -156,7 +156,7 @@ file (every session launches from its capsule, `W/capsules/<session-id>.settings
 rule acts only on an operator-authored file, and a session's own `denyRead` list never reaches the
 file tools through it. A worktree session's file tools stay inside the worktree through
 `worktree-file-guard.sh`; for a checkout-rooted session no loom hook checks the file tools against
-the credential paths. PLAN-sandbox-escape-hardening points the second rule at the session capsule.
+the credential paths. The second rule reading only an operator-authored file is an open gap.
 A hook can be switched off by `disableAllHooks` and shares the check-then-open race noted under
 "PreToolUse File Guards Cannot Eliminate Path-Swap Races"; that is the accepted trade for a
 prompt-free auto mode. Never reintroduce a `Read(...)` deny of any shape, and never emit a
@@ -188,9 +188,10 @@ the allow-list still reaches beyond the worktree. The harness adds the whole git
 `packed-refs`, `objects`, `info` and other worktrees' metadata are writable, and loom denies only `.git/hooks` and `.git/config`
 (`sandbox/control_surfaces/session_denies.rs`). `package_caches.rs` grants the operator's cargo, bun and npm caches, so a tampered
 `~/.cargo/registry/src` crate would run on the host at the next build. `denyRead` covers only five credential paths, so
-`~/.config/gh/hosts.yml`, `~/.netrc` and `~/.npmrc` are readable. The fix is a separate plan, briefed in
-`security-hardening-worktree-hook.md` at the repository root; operator decisions recorded there: per-session package caches,
-`/tmp/claude-<uid>` stays writable, nothing uid- or machine-specific.
+`~/.config/gh/hosts.yml`, `~/.netrc` and `~/.npmrc` are readable. The gap is open and no plan addresses it. The
+withdrawn PLAN-sandbox-escape-hardening (see above for recovery) holds the
+measurements (Claude Code 2.1.286 adds the git common dir itself; `allowWrite`/`denyWrite` globs are skipped on Linux; a deny
+on an absent path shows the host an empty placeholder file; a deny cannot be reopened by a nested allow) and a design, D1-D7.
 
 ## Credential Reads Are Confined to Five Home Paths
 
@@ -212,9 +213,7 @@ is covered by a tmpfs (with `allowRead` and `allowWrite` paths re-mounted inside
 path mounts nothing, and a glob is expanded into one mount per match (a warning above 256). A plain
 path costs one mount.
 
-PLAN-sandbox-escape-hardening (decision D4) adds 36 literal paths, the locations the daemon's
-environment relocates, `~/.codex/auth.json` for unlicensed sessions, and the main checkout's
-top-level `.env` files.
+The list is unchanged and the gap is open: no plan addresses it.
 
 ## Sibling Worktrees and the Main Checkout Are Readable From Bash
 
@@ -224,10 +223,8 @@ Glob and Grep). From Bash a stage reads every sibling worktree under `R/.worktre
 main checkout, untracked operator files such as `R/.env` included. `R/.git/config` stays readable
 whatever loom does, because in-session git reads it; remote URLs there can carry tokens.
 
-PLAN-sandbox-escape-hardening (decision D5) read-denies `R/.worktrees` to worktree-rooted capsules
-and re-allows the session's own worktree (`sandbox.filesystem.allowRead`), and D4 read-denies the
-top-level `R/.env` and `R/.env.*` files. Reads of the rest of the main checkout stay open: in-session
-loom resolves its retrieval config, context store and knowledge through `main_project_root`
+Sibling-worktree reads are open. Reads of the main checkout must stay open for in-session loom,
+which resolves its retrieval config, context store and knowledge through `main_project_root`
 (`context/retrieve.rs`, `context/store.rs`).
 
 ## The Codex Lane Grants All of `~/.codex`
@@ -247,9 +244,17 @@ host-side code reads job state and forward receipts (`models/forward_receipt/loc
 `codex_lifecycle/authorization.rs`, `codex-forward-guard.sh`); every codex-licensed session can
 write it.
 
-PLAN-sandbox-escape-hardening (decision D6) moves `CODEX_HOME` into the session's cache directory,
-seeded with links to the operator's doctrine and copies of `~/.codex/config.toml` and
-`~/.codex/hooks.json`, and shrinks the grants to that directory, `~/.codex/plugin-data` and the
-single file `~/.codex/auth.json` (codex writes it in place on a token refresh:
-`FileAuthStorage::save` in codex-rs `login/src/auth/storage.rs`). Write access to `auth.json` and
-the shared `plugin-data` remain accepted gaps.
+The grant is unchanged and the gap is open: no plan addresses it.
+
+## Tool Routes That Run Outside the Bash Sandbox
+
+The OS sandbox confines only what Claude Code wraps. In Claude Code 2.1.286 the binary calls `wrapWithSandbox`/`wrapWithSandboxArgv` for the Bash tool, for hooks in its "locked" (remote-execution) mode, and for one internal git invocation. Every other tool runs in, or is spawned by, the unsandboxed Claude Code process. (Verified from the binary's strings, 2026-10-01.)
+
+- **MCP servers: closed.** Capsule sessions get `--strict-mcp-config` (`orchestrator/terminal/native/capsule.rs`, emitted in `orchestrator/terminal/native/mod.rs`). A `claude -p` probe with loom's flags (`--strict-mcp-config --setting-sources user,project`) reported `mcp_servers: []`: plugin MCP servers such as Playwright and the claude.ai connectors are not loaded. (Verified 2026-10-01.)
+- **Plugins: loaded.** `--setting-sources user,project` keeps the user scope's `enabledPlugins`; the same probe loaded 13 plugins, five of them LSP plugins (rust-analyzer-lsp, typescript-lsp, gopls-lsp, pyright-lsp, clangd-lsp), and `LSP` is in the session's tool list. Plugin LSP servers are started by the Claude Code process, not through `wrapWithSandbox`. rust-analyzer runs the build scripts and proc macros of the workspace it indexes, and tsserver loads language-service plugins named in `tsconfig.json`, so a stage that writes a `build.rs` or a tsconfig plugin and then calls the LSP tool can plausibly run that code on the host. Unverified end to end.
+- **Cross-session messaging.** `SendMessage` and `ListAgents` are in the tool list and the session advertises a messaging socket under `/run/user/<uid>/cc-socks/`. They run in the Claude Code process, so the seccomp `AF_UNIX` block that confines Bash does not apply. Unverified whether a stage session can address the operator's interactive session, which runs unsandboxed.
+- **`WebFetch` and `WebSearch`** run in the Claude Code process; the sandbox proxy's `allowedDomains` and `strictAllowlist` filter sandboxed Bash only. Permission rules and the auto-mode classifier govern them. Unverified.
+- **Other tools.** `RemoteTrigger`, `CronCreate`, `Workflow` and `PushNotification` are also in the tool list; `RemoteTrigger` starts work off the machine.
+- **File tools** are confined by hooks only (`worktree-file-guard.sh`, `credential-guard.sh`), covered above.
+
+Fix direction (none chosen): per-session tool denies in the capsule (`--disallowedTools`, or tool-name entries under `permissions.deny`, never a `Read(` entry, see the section above), disabling LSP plugins in capsules, and an in-session canary that exercises each route.

@@ -21,10 +21,18 @@ proofs, established at the plan's verification gate:
    and a `sh -c` child — the exact spawn shape used for `CommandSpec::Shell` — so
    the child shares the host network namespace.
 
+`spawn_confined` itself adds no confinement, but a criterion run by
+`loom stage complete` inside a stage session inherits that session's bubblewrap
+sandbox (filesystem and network allowlist): `commands/stage/acceptance_runner.rs`
+calls `run_acceptance_with_config` in the agent's own process. Only the daemon's
+host-side runs are unconfined.
+
 **Consequence for plan authors:** do not write an acceptance criterion that
 presumes a containment level loom never implemented. "Prove an outbound
-connection is denied" cannot be satisfied here, and the honest verdict for such
-an item is "did not run", not "the host could not provide it".
+connection is denied" cannot be satisfied by `spawn_confined` or a daemon-side
+run, and the honest verdict for such an item is "did not run", not "the host
+could not provide it". Inside a stage session the inherited sandbox does deny
+outbound connections outside the allowlist.
 
 **There is also no `network: none` syntax for a spawned command.**
 `models/stage/types.rs:340` `NetworkConfig` carries `allowed_domains`,
@@ -383,3 +391,9 @@ repository), these sandbox rules decide what loom's capsule can and cannot expre
 
 What this exposes, and why no deny-list can narrow it, is in
 [Agent Rule-Bending Hardening](../concerns/agent-rule-bending-hardening.md), G2.
+
+## In-Tree `allow_write` Entries Are Not Emitted
+
+`sandbox::build_settings` (`sandbox/settings.rs`) drops every non-glob `allow_write` entry whose resolved path is the session's working directory or inside it, so it reaches neither `sandbox.filesystem.allowWrite` nor an `Edit(...)` allow. The predicate is `sandbox/grant_paths.rs::is_inside_cwd`: `~/`, `/` and `//` entries resolve as absolute, a bare entry against the cwd, and both sides through symlinks, so an entry reaching through a link to a target outside the cwd (a worktree's `.loom/work/...`) is kept; globs (`*`, `?`, `[`, `{`) and entries that fail to resolve are kept too. `SettingsTarget::cwd` carries the working directory, and the session capsule (`orchestrator/terminal/native/session_settings/contents.rs::capsule_settings`) always sets it. `loom plan verify` warns on a relative non-glob entry outside `.loom/` and `.work/` (`plan/schema/validation/v2_lints/sandbox_capability.rs::report_in_tree_grants`).
+
+Why: the cwd is writable already, so the entry grants nothing, while Claude Code's Linux sandbox bind-mounts every listed non-glob path on its own and the kernel refuses to unlink or rename a mount point: git replacing the file, or `rm -rf` of a listed directory, fails with `Device or resource busy`. Deny rules still win, so effective permissions do not change. One side effect: under `permission_mode: default` a dropped exact-path entry no longer yields an `Edit(...)` allow, so a file-tool edit there can prompt; a glob keeps its rule.

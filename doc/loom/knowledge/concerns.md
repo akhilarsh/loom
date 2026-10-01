@@ -76,6 +76,8 @@ Nothing proves sandbox denial holds against a live Claude Code runtime, and the 
 the git-dir grant and every read deny. Also: credential reads confined to five home paths, sibling
 worktrees readable from Bash, the codex lane's whole `~/.codex` grant, an inert credential-guard
 rule, two diverging stage-env allowlists, and the `Read(...)` deny-rule ban, among others.
+"Tool Routes That Run Outside the Bash Sandbox" lists the tools (LSP plugins, cross-session
+messaging, `WebFetch`, `RemoteTrigger`) the OS sandbox does not wrap.
 
 → [Sandbox and Confinement Gaps](concerns/sandbox-and-confinement-gaps.md)
 
@@ -176,7 +178,7 @@ Shared package-manager caches stay session-writable, so a stage can edit an extr
 Only the OS sandbox, the capsule denies and the daemon's ancestry checks carry authority. Seven
 gaps, led by text-matched commits, the whole git common directory writable from a stage (Claude
 Code's own grant; host git follows the agent's `.git` pointer; the merge gate fails open), and no
-live proof that any denial holds. PLAN-sandbox-escape-hardening addresses G1-G3 and G7's caches.
+live proof that any denial holds. No plan addresses G1-G3 or G7's caches.
 
 → [Agent Rule-Bending Hardening](concerns/agent-rule-bending-hardening.md)
 

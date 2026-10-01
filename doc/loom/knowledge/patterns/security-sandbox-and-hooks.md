@@ -8,11 +8,11 @@
 
 Hooks receive data via **stdin JSON**. Read with `timeout 1 cat`. Response: exit 0 = allow, exit 2 = block (stderr shown). Advanced JSON response supports `permissionDecision: allow/deny/ask` with `updatedInput`.
 
-**Key hooks**: commit-guard.sh (Stop) blocks exit without commit; commit-filter.sh (PreToolUse:Bash) blocks subagent commits; subagent-verify-guard.sh (PreToolUse:Bash) blocks subagent full-suite verification; plans-path-guard.sh (PreToolUse:Edit/Write) blocks plan writes outside `doc/plans/`; prefer-modern-tools.sh blocks grep/find; post-tool-use.sh updates heartbeat; pre-compact.sh triggers handoff; session-start/end.sh handle lifecycle.
+**Key hooks**: commit-guard.sh (Stop) blocks exit without commit; commit-filter.sh (PreToolUse:Bash) blocks subagent commits; subagent-verify-guard.sh (PreToolUse:Bash) blocks subagent full-suite verification; plans-path-guard.sh (PreToolUse:Edit/Write) blocks plan writes outside `doc/plans/`; worktree-file-guard.sh and credential-guard.sh (PreToolUse on the file tools) confine file-tool paths to the worktree and away from credential paths; prefer-modern-tools.sh blocks grep/find; post-tool-use.sh updates heartbeat; pre-compact.sh triggers handoff; session-start/end.sh handle lifecycle.
 
 **Subagent detection**: Wrapper script exports `LOOM_MAIN_AGENT_PID`. `loom_is_subagent()` requires that PID to be a live ancestor, then classifies the caller payload-first via `loom_payload_agent_verdict` (`.agent_type`/`.transcript_path`); an intervening-Claude-process walk is only the fallback for a payload-less or unrecognized caller — it is not a `$PPID` comparison. Subagents are blocked from git mutation and stage completion.
 
-Hook installation: scripts embedded via `include_str!()` in constants.rs, installed to `~/.claude/hooks/loom/`, config in `.claude/settings.local.json`.
+Hook installation: scripts embedded via `include_str!()` in constants.rs, installed to `~/.claude/hooks/loom/`. Every loom-spawned session carries its hook config in its capsule `W/capsules/<session-id>.settings.json`; the main checkout's `.claude/settings.local.json` is written only by `loom repair` (`commands/repair/settings_checks.rs` calls `fs/permissions/settings.rs::ensure_loom_hooks_local`) for the operator's interactive sessions.
 
 ## Security Patterns
 
@@ -24,7 +24,7 @@ Three-component: path transformation (absolute->relative, parent traversal resol
 
 ## Sandbox Config Merging
 
-Plan-level `SandboxConfig` merges with stage-level policy, with stage values overriding plan values. Plan-configured `excluded_commands` are rejected outright; sandbox disablement and unsandboxed escape require explicit policy acknowledgement or are rejected. Generated settings emit OS-level `denyRead` for sensitive paths and set `failIfUnavailable: true` whenever the sandbox is enabled, and `loom run` refuses to start on Linux/WSL when `bwrap`/`socat` are missing or the kernel is WSL1, since that setting would otherwise make every session exit at startup. A settings-write failure blocks the stage before spawn. Loom, Git, interpreters, build tools, and package managers are never granted prefix-wide unsandboxed Bash access.
+Plan-level `SandboxConfig` merges with stage-level policy, with stage values overriding plan values. Plan-configured `excluded_commands` are rejected outright; `sandbox::validate_config` (`loom/src/sandbox/config.rs`) refuses `permission_mode: bypass-permissions`, `sandbox.enabled: false` and `sandbox.allow_unsandboxed_escape: true` unconditionally (typed `SandboxPreflightRefusal`). The capsule always emits `allowUnsandboxedCommands` (false, since true is refused) and, when the sandbox is enabled, `network.strictAllowlist: true` (`loom/src/sandbox/settings/policy.rs::network_settings`), so a domain outside `allowedDomains` fails without a prompt. Generated settings emit OS-level `denyRead` for sensitive paths and set `failIfUnavailable: true` whenever the sandbox is enabled, and `loom run` refuses to start on Linux/WSL when `bwrap`/`socat` are missing or the kernel is WSL1, since that setting would otherwise make every session exit at startup. A settings-write failure blocks the stage before spawn. Loom, Git, interpreters, build tools, and package managers are never granted prefix-wide unsandboxed Bash access.
 
 ## Sandbox permission_mode Resolution
 

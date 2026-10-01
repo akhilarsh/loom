@@ -99,3 +99,7 @@ stdin; name that file `.distill-body-*` so the main-agent edit advisory ignores 
 added seven topic rows and roughly sixty blurbs were shortened to pay for them. Every new tier-2 topic adds a row,
 so each one has to be paid for with shorter blurbs (`loom knowledge annotate <target> --blurb`). The next
 distillation should expect to shorten more blurbs before adding a topic, or drop rows by merging small topics.
+
+## `loom knowledge update` Run From Inside the Knowledge Directory Scaffolds a Nested Tree
+
+Run with the cwd at `doc/loom/knowledge`, `loom knowledge update <category>/<slug>` resolves the knowledge root relative to the cwd instead of the repository root: it scaffolds a second tree at `doc/loom/knowledge/doc/loom/knowledge/` (every tier-1 file, an `INDEX.md`, and the topic with the scaffold blurb) and writes the entry there. `loom knowledge check` then reports the scaffold blurb as an issue. Run knowledge commands from the repository root until the CLI resolves the root itself.

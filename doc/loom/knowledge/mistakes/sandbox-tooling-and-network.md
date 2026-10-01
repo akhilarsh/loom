@@ -76,7 +76,8 @@ make every request against it inside ONE shell invocation
 the browser directly — e.g. build to `$TMPDIR/dist` and have the Playwright process itself
 serve fixtures via `page.route`/`page.routeWebSocket` rather than proxying to a live server
 in a different Bash call. `browser_run_code_unsafe`-style sandboxes have no
-`process`/`require`/`import`, only `page`.
+`process`/`require`/`import`, only `page`. Capsule sessions load no MCP servers
+(`--strict-mcp-config`), so the Playwright case applies to interactive sessions.
 
 ## A Sandboxed `git merge` That Aborts Still Leaves the Branch's New Files Untracked (2026-09-10)
 
@@ -234,3 +235,13 @@ cleanup pass should also check that scope, not just local.
 **Prevention:** Run CLI comparisons directly through the command tool and inspect stderr before treating a nonzero exit as a retrieval failure or timing result.
 
 **Fix:** Discard the nested benchmark and use direct commands only if timing is needed.
+
+## In-Tree `allow_write` Entries Became Bind Mounts That Broke Git, Four Times
+
+**What happened:** on 2026-10-01 two merge resolvers in another project failed with `unable to unlink old 'vitest.config.ts': Device or resource busy`; one aborted merge left 11 untracked branch files in the main checkout. The same error had been recorded three times before ("A Sandboxed git merge That Aborts ..." 2026-09-10, "A Sandbox Bind Mount Makes git merge and git stash Fail ..." 2026-09-13, and `phantom-merges.md` 2026-09-19); each entry recorded a workaround and none removed the cause.
+
+**Why:** every session kind received the stage's sandbox config, and each plan `allow_write` entry was emitted verbatim into `allowWrite` and an `Edit(...)` allow. A single listed file inside the working directory became its own bind mount, which git cannot replace. The plan-writer skill told authors to list every file a command writes, lockfile included, which produced those entries.
+
+**Prevention:** when the same failure is recorded a second time, fix the cause instead of adding another workaround entry.
+
+**Fix:** `build_settings` drops in-tree non-glob entries (see [Execution Containment](../architecture/execution-containment.md), "In-Tree allow_write Entries Are Not Emitted"); the plan-writer and pressure-review guidance now say `allow_write` is for paths outside the worktree. Moving merge resolution off the main checkout is planned in `doc/plans/PLAN-merge-off-main-checkout.md`.

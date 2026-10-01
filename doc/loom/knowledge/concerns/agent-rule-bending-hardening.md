@@ -88,9 +88,9 @@ effort by their own headers, and `--no-verify` walks past the last one.
 `orchestrator/core/inbox_drain/*`). The agent requests "commit these paths, this message"; the
 daemon commits on the host from the worktree. Subagent commits become impossible rather than
 discouraged, `git add -A` staging `.loom` becomes impossible, `--no-verify` becomes meaningless,
-and path policy applies where the commit actually happens. PLAN-sandbox-escape-hardening adopts
-this for worktree sessions (decision D1, `loom commit`). Its daemon never runs `git add` on
-agent-written paths: git `lstat`s a path and then `open`s it without `O_NOFOLLOW`, so an agent
+and path policy applies where the commit actually happens. A withdrawn design for this
+(the deleted PLAN-sandbox-escape-hardening, recoverable with `git show e6f00616^:` plus its `doc/plans` path; decision D1, `loom commit`) is not planned. A
+daemon-owned commit must never run `git add` on agent-written paths: git `lstat`s a path and then `open`s it without `O_NOFOLLOW`, so an agent
 swapping a file for a symlink to a host secret between the two would have the daemon, outside the
 sandbox, commit the secret. The daemon opens each file itself with a no-follow walk and hashes it.
 
@@ -126,9 +126,9 @@ sandbox, commit the secret. The daemon opens each file itself with a no-follow w
   `GIT_COMMON_DIR` stops it, `GIT_DIR` alone does not. Checkout-rooted sessions (knowledge stages,
   merge resolution, an adjudicator in `R`) can plant it.
 
-**Fix direction:** PLAN-sandbox-escape-hardening: deny the whole common directory to stage,
-contract and adjudication sessions and let the daemon commit (D1), pin host-side git (D2), verify
-checkout-rooted sessions' effect on `R/.git` (D7), and fail the merge gate closed.
+**Fix direction (not planned):** deny the whole common directory to stage, contract and
+adjudication sessions and let the daemon commit, pin host-side git, verify checkout-rooted
+sessions' effect on `R/.git`, and fail the merge gate closed.
 
 ### G3 — No end-to-end proof that any denial holds
 
@@ -146,8 +146,8 @@ root, the credentials, the attestation key, `.claude`, the git common directory.
 translation must add the common-dir grant Claude Code makes, or a refusal there proves nothing.
 Each probe needs the matched positive/negative control pair
 [Execution Containment](../architecture/execution-containment.md) prescribes, or a green probe
-cannot distinguish "denied" from "the harness never ran". PLAN-sandbox-escape-hardening also adds
-an in-session canary that reads the session's own capsule and runs inside a live stage sandbox in
+cannot distinguish "denied" from "the harness never ran". Fix direction (not planned): an
+in-session canary that reads the session's own capsule and runs inside a live stage sandbox in
 integration-verify.
 
 ## What Hardening Cannot Fix
@@ -218,8 +218,8 @@ code (`cargo test` runs the stage's own `build.rs`), so where they run decides t
 **Fix direction:** run host-side acceptance under the stage's own sandbox profile — `srt` is
 invokable from the daemon, and doing so would make "prove this outbound connection is denied" an
 expressible criterion instead of an unsatisfiable one — or state the boundary where an operator
-reads it rather than only in `concerns/`. PLAN-sandbox-escape-hardening pins
-`find_prior_stage_work` (D2) and leaves the operator's host path as it is.
+reads it rather than only in `concerns/`. Fix direction (not planned): pin
+`find_prior_stage_work` and leave the operator's host path as it is.
 
 ### G7 — Standing accepted risks that deserve a decision
 
@@ -227,7 +227,7 @@ reads it rather than only in `concerns/`. PLAN-sandbox-escape-hardening pins
   emitted into every capsule's `allowWrite`) are writable by every session and executed by the
   operator's own next build: cargo does not re-verify extracted sources, so an edited `build.rs`
   under `~/.cargo/registry/src` runs on the host. This is the cheapest escape in the system, far
-  easier than defeating any hook. PLAN-sandbox-escape-hardening (decision D3) gives each session
+  easier than defeating any hook. Fix direction (not planned): give each session
   its own cache over read-only views of the real ones; detail in
   [State Confinement Gaps](state-confinement-gaps.md).
 - **Three `pub`-but-uncalled path-escape validators** (`sandbox/config.rs`: `detect_path_escape`,
