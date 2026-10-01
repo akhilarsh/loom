@@ -145,7 +145,10 @@ fn visit_stage_argvs(stage: &StageDefinition, visit: &mut dyn FnMut(&StageComman
     }
 }
 
-fn visit_argvs(script: &str, depth: usize, visit: &mut dyn FnMut(&[&Word])) {
+/// Call `visit` with the argv (past assignments and wrappers) of every simple
+/// command `script` runs, nested `sh -c` scripts and substitutions included.
+/// `v2_fields::provision_installs` reads provision commands through it too.
+pub(super) fn visit_argvs(script: &str, depth: usize, visit: &mut dyn FnMut(&[&Word])) {
     let tokens = lex(script);
     for simple in simple_commands(&tokens) {
         let argv = &simple.words[command_start(&simple.words)..];

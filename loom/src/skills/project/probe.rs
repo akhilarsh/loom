@@ -44,6 +44,22 @@ pub(super) fn has_dependency(manifest: &Value, sections: &[&str], name: &str) ->
     })
 }
 
+/// Whether `package_dir/package.json` (beneath `root`) lists a `dependencies` or
+/// `devDependencies` entry: a JS package needs an install only then. A missing,
+/// unreadable or unparsable manifest counts as declaring one, so a caller that
+/// skips dependency-free packages never skips a package it could not read.
+pub(crate) fn declares_dependencies(root: &Path, package_dir: &Path) -> bool {
+    let Some(manifest) = read_json(root, &package_dir.join("package.json")) else {
+        return true;
+    };
+    ["dependencies", "devDependencies"].iter().any(|key| {
+        manifest
+            .get(key)
+            .and_then(Value::as_object)
+            .is_some_and(|entries| !entries.is_empty())
+    })
+}
+
 /// Regular files directly inside `dir` whose name satisfies `matches`.
 pub(super) fn files_where(
     dir: &Path,

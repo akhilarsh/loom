@@ -278,10 +278,98 @@ fn v2_provision_entries_with_bad_fields_are_rejected() {
 fn v2_valid_provision_entries_pass() {
     let mut metadata = create_valid_metadata_v2();
     metadata.loom.provision = vec![
-        provision("web", "bun install --frozen-lockfile"),
-        provision(".", "uv sync"),
+        provision("web", BUN_HARDENED),
+        provision(".", "uv sync --frozen --no-install-project"),
     ];
 
     let errors = errors_of(&metadata);
     assert!(errors.is_empty(), "{errors:?}");
+}
+
+const BUN_HARDENED: &str = "test ! -e .npmrc && test ! -L .npmrc && bun install \
+                            --frozen-lockfile --ignore-scripts --backend=copyfile --config=/dev/null";
+
+/// The messages a v2 plan whose only provision entry runs `command` raises.
+pub(super) fn provision_messages(command: &str) -> Vec<String> {
+    let mut metadata = create_valid_metadata_v2();
+    metadata.loom.provision = vec![provision("web", command)];
+    messages_of(&metadata)
+}
+
+#[test]
+fn an_unhardened_bun_install_names_every_missing_guard() {
+    let messages = provision_messages("bun install --frozen-lockfile");
+
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    let message = &messages[0];
+    assert!(
+        message.starts_with("provision entry #1 runs `bun install` without `--ignore-scripts`"),
+        "{message}"
+    );
+    for missing in [
+        "`--backend=copyfile`",
+        "`--config=/dev/null`",
+        "test ! -L .npmrc",
+    ] {
+        assert!(message.contains(missing), "{missing}: {message}");
+    }
+    assert!(message.contains(BUN_HARDENED), "{message}");
+    assert!(!message.contains("`web`"), "{message}");
+}
+
+#[test]
+fn hardened_installs_and_commands_without_an_installer_are_valid() {
+    for command in [
+        BUN_HARDENED,
+        "test ! -L .npmrc && test ! -e .npmrc &&\n  bun i --ignore-scripts --backend copyfile \
+         --config /dev/null\n",
+        "test ! -e .npmrc && test ! -L .npmrc && npm ci --ignore-scripts",
+        "test ! -e .npmrc && test ! -L .npmrc && pnpm install --frozen-lockfile \
+         --ignore-scripts --ignore-pnpmfile",
+        "test ! -e .npmrc && test ! -L .npmrc && yarn --frozen-lockfile --ignore-scripts",
+        "uv sync --frozen --no-install-project",
+        "true",
+        "pwd > provisioned.txt",
+    ] {
+        let messages = provision_messages(command);
+        assert!(messages.is_empty(), "{command:?}: {messages:?}");
+    }
+}
+
+#[test]
+fn installs_missing_a_flag_or_a_gating_npmrc_refusal_are_errors() {
+    let cases = [
+        (
+            "uv sync --frozen",
+            "`uv sync` without `--no-install-project`",
+        ),
+        (
+            "test ! -e .npmrc && test ! -L .npmrc && pnpm i --ignore-scripts",
+            "`pnpm i` without `--ignore-pnpmfile`",
+        ),
+        (
+            "npm ci --ignore-scripts",
+            "`npm ci` without a leading `test ! -e .npmrc",
+        ),
+        (
+            "test ! -e .npmrc; test ! -L .npmrc; npm ci --ignore-scripts",
+            "`npm ci` without a leading",
+        ),
+        (
+            "test ! -e .npmrc || true && test ! -L .npmrc && npm ci --ignore-scripts",
+            "`npm ci` without a leading",
+        ),
+        (
+            "sh -c 'yarn install'",
+            "`yarn install` without `--ignore-scripts`",
+        ),
+    ];
+    for (command, expected) in cases {
+        let messages = provision_messages(command);
+        assert_eq!(messages.len(), 1, "{command:?}: {messages:?}");
+        assert!(
+            messages[0].starts_with(&format!("provision entry #1 runs {expected}")),
+            "{command:?}: {messages:?}"
+        );
+    }
 }

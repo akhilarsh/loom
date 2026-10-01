@@ -1,36 +1,26 @@
-//! JavaScript packages need a plan `provision` entry: a stage worktree is a
-//! fresh checkout with no `node_modules`, so impact-selected tests and
-//! integration-verify cannot run the package's tests until something installs
-//! its dependencies. Plan `version: 2` only, because `provision` is v2-only.
+//! JavaScript packages that declare dependencies need a plan `provision` entry:
+//! a stage worktree is a fresh checkout with no `node_modules`, so
+//! impact-selected tests and integration-verify cannot run the package's tests
+//! until something installs them. Plan `version: 2` only, because `provision`
+//! is v2-only.
 
 use std::path::{Component, Path, PathBuf};
 
-use crate::skills::project::{PackageDetail, ProjectProfile};
+use crate::skills::project::{declares_dependencies, PackageDetail, ProjectProfile};
 use crate::testrun::registry::by_name;
 
+use super::super::v2_fields::{BUN_INSTALL, NPM_INSTALL, PNPM_INSTALL, YARN_INSTALL};
 use super::{LintContext, LintFinding};
 
-/// Lockfile name and the install command that honours it, first match wins.
+/// Lockfile name and the hardened install that honours it, first match wins. Each
+/// is a form provision validation accepts, so a pasted suggestion verifies.
 const INSTALLS: [(&str, &str); 5] = [
-    ("bun.lock", "bun install --frozen-lockfile --ignore-scripts"),
-    (
-        "bun.lockb",
-        "bun install --frozen-lockfile --ignore-scripts",
-    ),
-    (
-        "pnpm-lock.yaml",
-        "pnpm install --frozen-lockfile --ignore-scripts",
-    ),
-    (
-        "yarn.lock",
-        "yarn install --frozen-lockfile --ignore-scripts",
-    ),
-    ("package-lock.json", "npm ci --ignore-scripts"),
+    ("bun.lock", BUN_INSTALL),
+    ("bun.lockb", BUN_INSTALL),
+    ("pnpm-lock.yaml", PNPM_INSTALL),
+    ("yarn.lock", YARN_INSTALL),
+    ("package-lock.json", NPM_INSTALL),
 ];
-
-/// Install command for a package with no lockfile. Provision runs on the host in a
-/// worktree a stage can edit, so every suggestion skips package lifecycle scripts.
-const DEFAULT_INSTALL: &str = "npm install --ignore-scripts";
 
 const TRUNCATED_NOTE: &str = "the package scan stopped at its depth or entry limit, so a JS \
                               package may be missing from the provision check";
@@ -58,11 +48,14 @@ pub(super) fn check(ctx: &LintContext<'_>, out: &mut Vec<LintFinding>) -> Vec<St
         })
     };
     for package in profile.package_details() {
-        if let Some(runner) = js_runner(&package) {
-            if !covers(&package.path) {
-                let install = install_command(&profile.root.join(&package.path));
-                out.push(plan_finding(uncovered_message(&package, runner, install)));
-            }
+        let Some(runner) = js_runner(&package) else {
+            continue;
+        };
+        let dir = profile.root.join(&package.path);
+        // A package with no dependencies runs its tests without an install.
+        if !covers(&package.path) && declares_dependencies(&profile.root, &dir) {
+            let install = install_command(&dir);
+            out.push(plan_finding(uncovered_message(&package, runner, install)));
         }
     }
     if profile.truncated {
@@ -87,22 +80,35 @@ fn js_runner(package: &PackageDetail) -> Option<&'static str> {
     is_js.then_some(runner)
 }
 
-fn uncovered_message(package: &PackageDetail, runner: &str, install: &str) -> String {
+/// The finding for a package no entry covers; `install` is `None` when the package
+/// has no lockfile.
+fn uncovered_message(package: &PackageDetail, runner: &str, install: Option<&str>) -> String {
     let path = package.path.display();
+    // An unlocked install writes an untracked lockfile, which the provision gate
+    // blocks as a file git does not ignore.
+    let (step, install) = match install {
+        Some(install) => ("", install),
+        None => (
+            "it has no lockfile, and provision installs only from a committed one: commit a \
+             lockfile first (`npm install --package-lock-only --ignore-scripts` writes one), \
+             then ",
+            NPM_INSTALL,
+        ),
+    };
     format!(
         "package `{path}` runs its tests with {runner} and no `provision` entry covers it: \
          impact-selected tests and integration-verify cannot run it in a worktree, which has \
-         no node_modules; add `{{ working_dir: \"{path}\", command: \"{install}\" }}` to \
+         no node_modules; {step}add `{{ working_dir: \"{path}\", command: \"{install}\" }}` to \
          `loom.provision`"
     )
 }
 
-/// The install command that matches the lockfile in `package_dir`.
-fn install_command(package_dir: &Path) -> &'static str {
+/// The hardened install that matches the lockfile in `package_dir`, if it has one.
+fn install_command(package_dir: &Path) -> Option<&'static str> {
     INSTALLS
         .iter()
         .find(|(lockfile, _)| package_dir.join(lockfile).exists())
-        .map_or(DEFAULT_INSTALL, |(_, command)| command)
+        .map(|(_, command)| *command)
 }
 
 /// `path` without its `.` components, so `.` and `""` both name the root and

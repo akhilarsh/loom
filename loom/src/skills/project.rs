@@ -6,6 +6,8 @@ mod runners;
 mod scan;
 mod scope;
 
+pub(crate) use probe::declares_dependencies;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
