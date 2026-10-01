@@ -54,26 +54,29 @@ Nothing on the daemon path ever writes `merged: true` without `is_ancestor_of` r
 `loom stage merge <id>`, run from the stage worktree, accepts `MergeConflict`, `MergeBlocked`, and
 `Completed + !merged` (`commands/stage/merge/preflight.rs::require_merge_state`). It re-runs
 `merge_stage` and, on success, `try_complete_merge`, which tolerates an already-Completed stage.
-Until 2026-09-06 the command refused `Completed` stages while the daemon log and the status UI
-both pointed at it, which is why operators fell back to `git merge loom/<id>` by hand.
 
 The merge runs in the operator's main checkout. `git merge` refuses when it would overwrite
 tracked modifications or untracked files, and it ALSO refuses whenever anything is staged in that
 checkout's index, even on paths the merge never touches. The error lists the staged paths as
 "local changes ... would be overwritten by merge", which reads as an overlap when there is none.
-An earlier version of this section named only the overwrite case. On 2026-09-13 a knowledge-distill
-merge failed this way because another agent staged a `hooks/` to `loom-hooks/` rename in the main
-checkout in the same second the daemon merged.
 
 When agents share the main checkout, do not stash or reset their work. Wait until it is committed,
 then merge the target INTO `loom/<id>` inside the stage worktree, resolve conflicts there, rerun
 the stage's acceptance, commit, and run `loom stage merge <id>`; the shared checkout never holds a
-conflicted merge. `loom stage merge` leaves the worktree and branch in place. `loom worktree remove
-<id>` removes them but refuses while the worktree holds ignored files such as `loom/target/` or a
-generated `REVIEW-PLAN-*.md` (move the review into the main `doc/plans/` first). From a sandboxed
-session git cannot delete `.git/worktrees/<id>` (`Device or resource busy`); run `git worktree
-prune` from an operator shell.
+conflicted merge. After a successful merge the command removes the worktree and branch unless its
+cwd is inside that worktree (`orchestrator/merge_lifecycle.rs::should_defer_cleanup`), which is
+where this recovery runs it; cleanup is then left to the daemon, or to the next `loom run`.
+
+Worktree removal: the daemon's cleanup removes loom's known scaffold files and the empty stubs a
+sandbox leaves at the worktree root (`verify/tool_artifacts.rs::NAMES`,
+`git/cleanup/worktree.rs::remove_sandbox_stubs`), then runs a non-forced `git worktree remove`,
+which refuses on any remaining modified or untracked file. `loom worktree remove <id>` checks
+`git status` first (`git/cleanup/removal.rs::require_clean_worktree`) and refuses on modified
+tracked files and on untracked files other than that scaffold and those stubs. Both delete ignored
+files with the worktree, `target/` and a generated `REVIEW-PLAN-*.md` included, so move a review
+into the main `doc/plans/` first. From a sandboxed session git cannot delete `.git/worktrees/<id>`
+(`Device or resource busy`); run `git worktree prune` from an operator shell.
 
 ## Merge Lock (git/merge/lock.rs)
 
-`MergeLock` serializes loom-driven merges with an exclusive OS advisory lock (`fs2::try_lock_exclusive`) on the stable `.loom/work/merge.lock` inode. The file is created once and never unlinked; the holder's pid and timestamp are written into it for diagnosis only. `acquire` polls every 100 ms up to the caller's timeout (30 s from `merge_stage` and the probe). Release is by `Drop` or process exit, so there is no stale-lock reclamation and a pid left in the file after a merge is not a held lock. An earlier version of this section named `progressive_merge/lock.rs` and a five-minute stale sweep; neither exists.
+`MergeLock` serializes loom-driven merges with an exclusive OS advisory lock (`fs2::try_lock_exclusive`) on the stable `.loom/work/merge.lock` inode. The file is created once and never unlinked; the holder's pid and timestamp are written into it for diagnosis only. `acquire` polls every 100 ms up to the caller's timeout (30 s from `merge_stage` and the probe). Release is by `Drop` or process exit, so there is no stale-lock reclamation and a pid left in the file after a merge is not a held lock.

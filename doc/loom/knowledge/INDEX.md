@@ -40,7 +40,7 @@
 | [knowledge-bootstrap](architecture/knowledge-bootstrap.md) | Deterministic phase, digest, receipts | 86 |
 | [knowledge-hierarchy](architecture/knowledge-hierarchy.md) | fs/knowledge, INDEX.md, checks | 261 |
 | [memory-spool](architecture/memory-spool.md) | Read before touching loom memory | 188 |
-| [merge-flow](architecture/merge-flow.md) | How a completed stage reaches its target branch | 79 |
+| [merge-flow](architecture/merge-flow.md) | How a completed stage reaches its target branch | 82 |
 | [orchestrator-loop](architecture/orchestrator-loop.md) | Tick order, Monitor, heartbeat liveness | 56 |
 | [owned-waits](architecture/owned-waits.md) | Worker-set waits: lease/engine, exit codes | 48 |
 | [plan-lifecycle-and-fields](architecture/plan-lifecycle-and-fields.md) | Plan fields v1/v2, checks, lints | 252 |
@@ -126,7 +126,7 @@
 | [live-state-pollution](mistakes/live-state-pollution.md) | Tests rewrote live .loom/work and real HOME | 43 |
 | [memory-relay-drain-gap](mistakes/memory-relay-drain-gap.md) | Relay tickets leaked past the hook | 34 |
 | [merge-cleanup-boundary](mistakes/merge-cleanup-boundary.md) | A cleanup-boundary bug and its fix | 171 |
-| [parallel-worktree-shared-state](mistakes/parallel-worktree-shared-state.md) | Cross-worktree state races | 200 |
+| [parallel-worktree-shared-state](mistakes/parallel-worktree-shared-state.md) | Cross-worktree state races | 203 |
 | [phantom-merges](mistakes/phantom-merges.md) | Merge lessons: merged=true unverified | 181 |
 | [pinned-literals-ledgers-and-wiring](mistakes/pinned-literals-ledgers-and-wiring.md) | Ledger exact-match, wiring pinning | 303 |
 | [pre-commit-hardening](mistakes/pre-commit-hardening.md) | Partial-staging guard decisions and edge cases | 53 |

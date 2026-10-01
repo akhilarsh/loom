@@ -169,7 +169,10 @@ contract phase.
 
 **Why:** Claude Code's `bwrap` Bash sandbox bind-mounts `/dev/null` over the same fixed set of
 worktree-root dotfiles the Codex sandbox does (above), visible only inside its own mount
-namespace — the host filesystem never has them. `git status` reads the DIRECTORY ENTRY at each
+namespace. On the host each mount point is an empty regular file while a sandboxed command runs,
+and is sometimes left behind after it (`verify/tool_artifacts.rs` module doc); left-behind stubs
+blocked post-merge worktree cleanup until `git/cleanup/worktree.rs::remove_sandbox_stubs` removed
+the empty, untracked ones. `git status` reads the DIRECTORY ENTRY at each
 path, which inside the sandbox's namespace is an ordinary mount point, so git reports it `??`
 (untracked) exactly as it would a file the writer actually created; `lstat`/`symlink_metadata` on
 that same path sees the character device the bind-mount put there — the dirent and the inode tell
