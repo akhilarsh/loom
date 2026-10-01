@@ -297,8 +297,13 @@ mod tests {
         // Binding and immediately dropping the listener leaves a
         // socket-typed file on disk with nothing accepting on it, which is
         // exactly what a daemon that died without unlinking its socket
-        // leaves behind.
-        drop(std::os::unix::net::UnixListener::bind(socket_path(temp.path())).unwrap());
+        // leaves behind. The listener is shut down before the drop: a process
+        // another test forks meanwhile inherits a copy of the fd that would
+        // keep accepting until its exec, and a shut-down listener refuses.
+        let listener = std::os::unix::net::UnixListener::bind(socket_path(temp.path())).unwrap();
+        // SAFETY: shutdown(2) on an fd this test owns and keeps open until the drop below.
+        unsafe { libc::shutdown(std::os::fd::AsRawFd::as_raw_fd(&listener), libc::SHUT_RDWR) };
+        drop(listener);
 
         match try_send_request(temp.path(), &ping()).unwrap() {
             DaemonReach::NotListening => {}
