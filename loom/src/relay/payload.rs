@@ -115,6 +115,7 @@ mod tests {
             "block" => serde_json::json!({"request": "block", "reason": "stuck"}),
             "dispute" => serde_json::json!({
                 "request": "dispute",
+                "field": "acceptance",
                 "criterion_index": 0,
                 "reason": "flaky",
             }),

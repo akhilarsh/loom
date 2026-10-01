@@ -205,3 +205,23 @@ fn reset_without_live_agents_still_resets_the_stage() {
     assert_eq!(stage.status, StageStatus::WaitingForDeps);
     assert_eq!(stage.session, None);
 }
+
+#[test]
+fn reset_closes_open_disputes() {
+    let temp = work_dir();
+    executing_stage(temp.path(), None);
+    let open = temp.path().join("disputes/alpha/1");
+    let applied = temp.path().join("disputes/alpha/2");
+    std::fs::create_dir_all(&open).unwrap();
+    std::fs::create_dir_all(&applied).unwrap();
+    std::fs::write(applied.join("applied.marker"), "").unwrap();
+    let runtime = FakeRuntime {
+        probe: FakeProbe::Error,
+        missing_identity: true,
+    };
+
+    loop_recovery::reset_with(temp.path(), "alpha", true, true, &runtime).unwrap();
+
+    assert!(temp.path().join("disputes/alpha/1/closed.marker").exists());
+    assert!(!temp.path().join("disputes/alpha/2/closed.marker").exists());
+}

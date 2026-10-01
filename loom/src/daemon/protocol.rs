@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::handoff::CompletionAttemptEvidence;
-use crate::models::dispute::DisputeKind;
+use crate::models::dispute::{CriterionField, DisputeKind};
 use crate::models::stage::StageStatus;
 use crate::verify::review::fingerprint::ChangeFingerprint;
 
@@ -126,7 +126,8 @@ pub enum Request {
     Unsubscribe { auth_token: String },
     /// Ping to check if daemon is alive (Capability::User)
     Ping { auth_token: String },
-    /// File a structured dispute against a stage's acceptance criterion.
+    /// File a structured dispute against one entry of a stage's acceptance,
+    /// wiring or wiring-tests list.
     /// The daemon writes request.md, increments dispute_count, transitions
     /// the stage to NeedsAdjudication, and replies with the assigned id.
     ///
@@ -139,6 +140,8 @@ pub enum Request {
         auth_token: String,
         stage_id: String,
         session_id: String,
+        /// Which of the stage's lists `criterion_index` indexes.
+        field: CriterionField,
         criterion_index: usize,
         reason: String,
         evidence_commit: Option<String>,

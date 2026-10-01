@@ -130,7 +130,7 @@ impl Fixture {
         let request = DisputeRequest {
             id: dispute_id,
             stage_id: STAGE.to_string(),
-            kind: DisputeKind::Criterion { criterion_index: 0 },
+            kind: DisputeKind::criterion(Default::default(), 0),
             reason: "impossible".to_string(),
             evidence_commit: None,
             failure_output: None,
@@ -232,6 +232,7 @@ pub(super) fn payload_for(kind: RequestKind) -> Value {
         RequestKind::Block => json!({"request": "block", "reason": "stuck on a dependency"}),
         RequestKind::Dispute => json!({
             "request": "dispute",
+            "field": "acceptance",
             "criterion_index": 0,
             "reason": "the criterion cannot pass",
         }),

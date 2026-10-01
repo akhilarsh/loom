@@ -75,6 +75,6 @@
     "status": "needs-adjudication",
     "icon": "⚖",
     "label": "Adjudicate",
-    "legend": "a disputed acceptance criterion awaits the judge's verdict"
+    "legend": "a disputed criterion (acceptance, wiring or wiring test) awaits the judge's verdict"
   }
 ]

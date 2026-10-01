@@ -16,7 +16,7 @@ use crate::daemon::{
     current_session_id, try_send_request, user_credential, DaemonReach, Request, Response,
 };
 use crate::fs::stage_request::{append_to_spool, spool_path, spool_target_from_cwd, StageRequest};
-use crate::models::dispute::DisputeKind;
+use crate::models::dispute::{CriterionField, DisputeKind};
 use crate::relay::emit::{RelayContext, RelayMode, RelaySink};
 use crate::relay::RequestKind;
 
@@ -35,6 +35,7 @@ impl Dispute {
     /// `loom stage dispute-criteria`.
     pub(super) fn criterion(
         stage_id: String,
+        field: CriterionField,
         criterion_index: usize,
         reason: String,
         evidence_commit: Option<String>,
@@ -42,7 +43,7 @@ impl Dispute {
     ) -> Self {
         Self {
             stage_id,
-            kind: DisputeKind::Criterion { criterion_index },
+            kind: DisputeKind::criterion(field, criterion_index),
             reason,
             evidence_commit,
             failure_output,
@@ -70,7 +71,11 @@ impl Dispute {
         let reason = self.reason.clone();
         let evidence_commit = self.evidence_commit.clone();
         match &self.kind {
-            DisputeKind::Criterion { criterion_index } => StageRequest::Dispute {
+            DisputeKind::Criterion {
+                criterion_index,
+                field,
+            } => StageRequest::Dispute {
+                field: *field,
                 criterion_index: *criterion_index,
                 reason,
                 evidence_commit,
@@ -97,10 +102,14 @@ impl Dispute {
         let reason = self.reason.clone();
         let evidence_commit = self.evidence_commit.clone();
         match &self.kind {
-            DisputeKind::Criterion { criterion_index } => Request::DisputeCriteria {
+            DisputeKind::Criterion {
+                criterion_index,
+                field,
+            } => Request::DisputeCriteria {
                 auth_token,
                 stage_id,
                 session_id,
+                field: *field,
                 criterion_index: *criterion_index,
                 reason,
                 evidence_commit,
@@ -119,8 +128,14 @@ impl Dispute {
 
     fn wording(&self) -> Wording {
         let (subject, stands, command) = match &self.kind {
-            DisputeKind::Criterion { criterion_index } => (
-                format!("criterion {criterion_index}"),
+            DisputeKind::Criterion {
+                criterion_index,
+                field,
+            } => (
+                match field {
+                    CriterionField::Acceptance => format!("criterion {criterion_index}"),
+                    other => format!("{} {criterion_index}", other.as_str()),
+                },
                 "The criterion stands",
                 "stage dispute-criteria",
             ),

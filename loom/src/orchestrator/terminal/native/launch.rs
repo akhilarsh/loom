@@ -161,8 +161,9 @@ fn initial_prompt(kind: SessionType, stage: &Stage, signal_path: &Path) -> Strin
         ),
         SessionType::Adjudication => format!(
             "Read the adjudication signal file at {signal_path_str} and judge the disputed \
-             acceptance criterion. This file contains the dispute, the evidence available to \
-             you, and the command that records your verdict. Judge the dispute; change nothing."
+             criterion (an acceptance criterion, wiring check or wiring test). This file contains \
+             the dispute, the evidence available to you, and the command that records your \
+             verdict. Judge the dispute; change nothing."
         ),
         SessionType::Contract => format!(
             "You are the contract test writer for stage {}. Read your signal file at \

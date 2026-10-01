@@ -18,13 +18,15 @@
 //!   would loop forever if re-prompted.
 //!
 //! Which verdicts a dispute takes depends on its kind: the rules above are
-//! those of a criterion dispute; `verdict_kinds` holds the findings,
+//! those of a criterion dispute, whose accept must also amend a list the
+//! disputed one admits (see `admits`); `verdict_kinds` holds the findings,
 //! contract and integrity rules, built from the same parts.
 
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::models::dispute::{Citation, DisputeKind, DisputeVerdict, PlanPatch};
+use crate::models::dispute::{Citation, CriterionField, DisputeKind, DisputeVerdict, PlanPatch};
+use crate::plan::amendment::AmendmentField;
 
 use super::{plan_patch, verdict_kinds};
 
@@ -40,14 +42,15 @@ pub enum ValidationOutcome {
     Escalate { reason: String },
 }
 
-/// Parse `raw` as the verdict on a criterion dispute and either return a
-/// usable verdict (possibly coerced) or signal that the stage must be
+/// Parse `raw` as the verdict on an acceptance-criterion dispute and either
+/// return a usable verdict (possibly coerced) or signal that the stage must be
 /// escalated to human review. Only a `needs-more-evidence` verdict can
 /// escalate, under the same rule for every kind, so the relay's pre-check in
-/// `loom stage adjudicate` uses this whatever the dispute's kind.
+/// `loom stage adjudicate` uses this whatever the dispute's kind; the verdict
+/// it records goes through [`parse_and_validate_for`].
 pub fn parse_and_validate(raw: &str) -> ValidationOutcome {
     match parse_json_object(raw) {
-        Ok(json) => classify_and_validate(json),
+        Ok(json) => classify_and_validate(json, CriterionField::Acceptance),
         Err(coerced) => coerced,
     }
 }
@@ -55,7 +58,7 @@ pub fn parse_and_validate(raw: &str) -> ValidationOutcome {
 /// [`parse_and_validate`] for a dispute of `kind`.
 pub fn parse_and_validate_for(raw: &str, kind: &DisputeKind) -> ValidationOutcome {
     match (parse_json_object(raw), kind) {
-        (Ok(json), DisputeKind::Criterion { .. }) => classify_and_validate(json),
+        (Ok(json), DisputeKind::Criterion { field, .. }) => classify_and_validate(json, *field),
         (Ok(json), _) => verdict_kinds::classify_for_kind(&json, kind),
         (Err(coerced), _) => coerced,
     }
@@ -139,14 +142,15 @@ fn extract_first_object(s: &str) -> Option<&str> {
     end.map(|e| &s[start..e])
 }
 
-fn classify_and_validate(json: Value) -> ValidationOutcome {
+/// A criterion dispute's verdict; `disputed` is the list the dispute contests.
+fn classify_and_validate(json: Value, disputed: CriterionField) -> ValidationOutcome {
     let Some(normalized) = verdict_tag(&json) else {
         return needs_more_evidence(
             "Adjudicator output missing required 'verdict' field. Must be one of: accept, reject, needs-more-evidence.",
         );
     };
     match normalized.as_str() {
-        "accept" => validate_accept(&json),
+        "accept" => validate_accept(&json, disputed),
         "reject" => validate_reject(&json),
         "needs-more-evidence" | "needs-evidence" => validate_needs_more(&json),
         other => needs_more_evidence(format!(
@@ -184,7 +188,7 @@ pub(super) fn grounding(
     Ok((reasoning, citations))
 }
 
-fn validate_accept(json: &Value) -> ValidationOutcome {
+fn validate_accept(json: &Value, disputed: CriterionField) -> ValidationOutcome {
     let (reasoning, citations) = match grounding(json, "Accept") {
         Ok(grounded) => grounded,
         Err(coerced) => return coerced,
@@ -202,12 +206,16 @@ fn validate_accept(json: &Value) -> ValidationOutcome {
         Err(msg) => {
             return needs_more_evidence(format!(
                 "Accept verdict 'plan_patch' is malformed: {msg}. Re-emit it as: {{\"field\": \
-                 \"acceptance\"|\"wiring\", \"patch\": {{\"op\": \"replace\"|\"insert\"|\"delete\", \
+                 {}, \"patch\": {{\"op\": \"replace\"|\"insert\"|\"delete\", \
                  \"index\": <0-based int>, \"value\": \"<YAML body; omit for delete>\"}}, \"reason\": \
-                 \"<why the criterion is wrong>\"}}"
+                 \"<why the criterion is wrong>\"}}",
+                admitted_fields(disputed)
             ));
         }
     };
+    if !admits(disputed, field) {
+        return needs_more_evidence(wrong_list(disputed, &plan_patch_raw));
+    }
     ValidationOutcome::Verdict(DisputeVerdict::Accept {
         plan_patch: PlanPatch {
             inner: plan_patch::canonical_inner(field, &patch, patch_reason.as_deref()),
@@ -215,6 +223,39 @@ fn validate_accept(json: &Value) -> ValidationOutcome {
         citations,
         reasoning,
     })
+}
+
+/// Whether an accept on a dispute over `disputed`'s list may amend `field`:
+/// an acceptance dispute may amend `acceptance` or `wiring`, a wiring or
+/// wiring-tests dispute only its own list.
+fn admits(disputed: CriterionField, field: AmendmentField) -> bool {
+    field == disputed.amendment_field()
+        || (disputed == CriterionField::Acceptance && field == AmendmentField::Wiring)
+}
+
+/// The `plan_patch.field` values an accept on a dispute over `disputed`'s
+/// list may carry, as a re-prompt spells them.
+fn admitted_fields(disputed: CriterionField) -> &'static str {
+    match disputed {
+        CriterionField::Acceptance => "\"acceptance\"|\"wiring\"",
+        CriterionField::Wiring => "\"wiring\"",
+        CriterionField::WiringTests => "\"wiring-tests\"",
+    }
+}
+
+/// The question for an accept whose `plan_patch` amends a list the dispute
+/// does not contest: it names the disputed list and the field to use.
+fn wrong_list(disputed: CriterionField, plan_patch_raw: &Value) -> String {
+    let amended = plan_patch_raw
+        .get("field")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    format!(
+        "Accept verdict 'plan_patch' amends '{amended}', but this dispute contests the \
+         stage's {} list. Re-emit plan_patch with \"field\": {}.",
+        disputed.as_str(),
+        admitted_fields(disputed)
+    )
 }
 
 pub(super) fn validate_reject(json: &Value) -> ValidationOutcome {

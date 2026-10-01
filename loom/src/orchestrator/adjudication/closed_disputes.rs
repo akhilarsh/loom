@@ -1,11 +1,13 @@
-//! Closing the disputes a stage abandons when it escalates to a human.
+//! Closing the disputes a stage abandons when it escalates to a human or is
+//! reset.
 //!
 //! An escalation out of the dispute loop leaves the stage's unanswered
-//! disputes on disk, and an apply-cap escalation leaves a verdict that never
-//! applied. Left open, the oldest of them shadows the dispute a fresh session
-//! files once the review is approved: disputes are scanned in ascending id
-//! order, so the abandoned one would be judged again, or escalated again at
-//! its spent attempt cap, ahead of the new one. A `closed.marker` in the
+//! disputes on disk, an apply-cap escalation leaves a verdict that never
+//! applied, and `loom stage reset` leaves whatever was open. Left open, the
+//! oldest of them shadows the dispute a fresh session files once the stage
+//! runs again: disputes are scanned in ascending id order, so the abandoned
+//! one would be judged again, or escalated again at its spent attempt cap,
+//! ahead of the new one. A `closed.marker` in the
 //! dispute's own directory settles it for good, and [`is_closed`] is the one
 //! predicate every reader of dispute state consults.
 
@@ -52,9 +54,10 @@ pub(crate) fn lock_stage_dispute_dir(stage_dir: &Path) -> Result<OwnedFd> {
 /// Close every dispute of `stage_id` that has no applied outcome, under the
 /// lock its filings take.
 ///
-/// Called only once the stage has been escalated to `NeedsHumanReview`: a
-/// stage still in the dispute loop must keep its disputes open. Best effort,
-/// like the escalation itself: a failure is logged per dispute and the rest
+/// Called once the stage has left the dispute loop: after it is escalated to
+/// `NeedsHumanReview` (and again when that review is approved), and by
+/// `loom stage reset`. A stage still in the dispute loop must keep its
+/// disputes open. Best effort: a failure is logged per dispute and the rest
 /// are still closed.
 pub(crate) fn close_open_disputes(work_dir: &Path, stage_id: &str) {
     let disputes_root = work_dir.join("disputes");
@@ -89,7 +92,7 @@ fn warn_not_closed(stage_id: &str, dispute_id: Option<u32>, error: &str) {
         stage = %stage_id,
         dispute = ?dispute_id,
         %error,
-        "failed to close a dispute of a stage escalated to human review; \
-         it may be judged again once the review is approved",
+        "could not close an open dispute; it may be judged again once the stage \
+         runs again",
     );
 }

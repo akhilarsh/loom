@@ -18,8 +18,9 @@ pub enum SessionType {
     /// Knowledge-gathering session (runs in main repo, no worktree).
     /// Tracking key: `loom-knowledge-{stage_id}`.
     Knowledge,
-    /// Adjudication session for one disputed acceptance criterion (runs in
-    /// main repo, no worktree). Tracking key: `loom-adjudication-{stage_id}`.
+    /// Adjudication session for one disputed criterion (acceptance
+    /// criterion, wiring check, or wiring test; runs in main repo,
+    /// no worktree). Tracking key: `loom-adjudication-{stage_id}`.
     Adjudication,
     /// Contract test writer that runs in the stage worktree before the
     /// `Stage` session of a v2 stage with contracts. It is the stage's agent

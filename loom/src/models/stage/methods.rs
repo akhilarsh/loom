@@ -363,7 +363,7 @@ impl Stage {
         Ok(())
     }
 
-    /// Request adjudication for this stage's acceptance criterion.
+    /// Request adjudication for a disputed acceptance, wiring or wiring-test entry.
     ///
     /// Transitions to NeedsAdjudication. From `Executing` this is a
     /// direct transition; from `CompletedWithFailures` the stage steps

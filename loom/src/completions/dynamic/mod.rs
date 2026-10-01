@@ -19,8 +19,8 @@ use clap::{Arg, Command, CommandFactory};
 use std::path::Path;
 
 pub use commands::{
-    complete_codex_model_names, complete_commands, complete_flags, complete_model_names,
-    complete_shell_types, complete_subcommands, complete_trigger_types,
+    complete_codex_model_names, complete_commands, complete_flag_choices, complete_flags,
+    complete_model_names, complete_shell_types, complete_subcommands, complete_trigger_types,
 };
 pub use knowledge::{complete_knowledge_files, complete_knowledge_scopes};
 pub use memory::complete_memory_entry_types;
@@ -191,10 +191,11 @@ fn complete_flag_value(
     cwd: &Path,
     prefix: &str,
     prev_word: &str,
-    _cmd_path: &[&str],
+    cmd_path: &[&str],
     cmdline: &str,
 ) -> Result<Option<Vec<String>>> {
     match prev_word {
+        "--field" => Ok(Some(complete_flag_choices(cmd_path, "field", prefix)?)),
         "--stage" => {
             let results = complete_stage_ids(cwd, prefix)?;
             Ok(Some(results))

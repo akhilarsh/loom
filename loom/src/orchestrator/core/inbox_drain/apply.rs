@@ -112,6 +112,7 @@ fn stage_request(
     let response = match request {
         StageRequest::Block { reason } => handle_block_stage(work_dir, stage_id, &reason),
         StageRequest::Dispute {
+            field,
             criterion_index,
             reason,
             evidence_commit,
@@ -119,6 +120,7 @@ fn stage_request(
         } => handle_dispute_criteria(
             work_dir,
             stage_id,
+            field,
             criterion_index,
             reason,
             evidence_commit,

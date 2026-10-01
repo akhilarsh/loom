@@ -62,7 +62,7 @@ pub const LEGEND: [(StageStatus, &str); 13] = [
     ),
     (
         StageStatus::NeedsAdjudication,
-        "a disputed acceptance criterion awaits the judge's verdict",
+        "a disputed criterion (acceptance, wiring or wiring test) awaits the judge's verdict",
     ),
 ];
 

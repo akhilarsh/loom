@@ -8,8 +8,8 @@ use super::scan::{parse_yaml_frontmatter, scan_pending_requests};
 use super::session::{attempt_count, MAX_ADJUDICATION_ATTEMPTS};
 use super::{feedback, AdjudicatorRegistry, MAX_EVIDENCE_ROUNDS};
 use crate::models::dispute::{
-    request_file, verdict_file, Citation, DisputeKind, DisputeRequest, DisputeVerdict,
-    DisputeVerdictRecord, PlanPatch,
+    request_file, verdict_file, Citation, CriterionField, DisputeKind, DisputeRequest,
+    DisputeVerdict, DisputeVerdictRecord, PlanPatch,
 };
 use crate::models::stage::{Stage, StageStatus};
 use crate::plan::amendment::{AmendmentField, AmendmentPatch};
@@ -39,7 +39,7 @@ pub(super) fn write_dispute_request(
         work_dir,
         stage_id,
         id,
-        DisputeKind::Criterion { criterion_index },
+        DisputeKind::criterion(CriterionField::Acceptance, criterion_index),
     );
 }
 
@@ -306,7 +306,7 @@ fn parse_yaml_frontmatter_round_trips() {
     let req = DisputeRequest {
         id: 7,
         stage_id: "x".to_string(),
-        kind: DisputeKind::Criterion { criterion_index: 0 },
+        kind: DisputeKind::criterion(CriterionField::Acceptance, 0),
         reason: "r".to_string(),
         evidence_commit: None,
         failure_output: None,

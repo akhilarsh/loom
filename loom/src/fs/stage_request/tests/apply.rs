@@ -38,6 +38,7 @@ fn setup(
 
 fn dispute_request(criterion_index: usize) -> StageRequest {
     StageRequest::Dispute {
+        field: crate::models::dispute::CriterionField::Acceptance,
         criterion_index,
         reason: "criterion names a binary this stage never builds".to_string(),
         evidence_commit: Some("abc1234".to_string()),
@@ -114,6 +115,7 @@ fn a_spooled_dispute_produces_the_same_on_disk_dispute_as_the_rpc_path() {
     handle_dispute_criteria(
         &direct_work,
         "stage-disp",
+        crate::models::dispute::CriterionField::Acceptance,
         1,
         "criterion names a binary this stage never builds".to_string(),
         Some("abc1234".to_string()),

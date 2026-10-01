@@ -26,7 +26,7 @@ fn criterion_briefing_matches_the_pre_kind_builder_byte_for_byte() {
     let request = DisputeRequest {
         id: 1,
         stage_id: "demo".to_string(),
-        kind: DisputeKind::Criterion { criterion_index: 0 },
+        kind: DisputeKind::criterion(CriterionField::Acceptance, 0),
         reason: "criterion impossible".to_string(),
         evidence_commit: None,
         failure_output: Some("err: something broke".to_string()),

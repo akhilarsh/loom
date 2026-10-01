@@ -72,6 +72,29 @@ pub fn complete_flags(command_path: &[&str], prefix: &str) -> Result<Vec<String>
     Ok(filter_owned(flags, prefix))
 }
 
+/// Complete the values of the argument `arg_id` of the command at
+/// `command_path`, from the values clap lists for it (a `ValueEnum`'s names).
+pub fn complete_flag_choices(
+    command_path: &[&str],
+    arg_id: &str,
+    prefix: &str,
+) -> Result<Vec<String>> {
+    let root = crate::cli::Cli::command();
+    let argument = command_at_path(&root, command_path).and_then(|command| {
+        command
+            .get_arguments()
+            .find(|argument| argument.get_id() == arg_id)
+    });
+    let names = argument
+        .map(|argument| argument.get_possible_values())
+        .unwrap_or_default()
+        .iter()
+        .filter(|value| !value.is_hide_set())
+        .map(|value| value.get_name().to_string())
+        .collect();
+    Ok(filter_owned(names, prefix))
+}
+
 /// Complete shell type names (bash, zsh, fish).
 pub fn complete_shell_types(prefix: &str) -> Result<Vec<String>> {
     Ok(filter_prefix(&["bash", "fish", "zsh"], prefix))

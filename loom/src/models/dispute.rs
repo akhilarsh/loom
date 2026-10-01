@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use crate::plan::amendment::AmendmentField;
 use crate::verify::integrity::IntegrityEvent;
 use crate::verify::review::report::Finding;
 use crate::verify::review::store::{OpenFinding, RulingKind};
@@ -29,13 +30,58 @@ pub struct FindingSnapshot {
 /// A disputed test-integrity event as it stood when the dispute was filed.
 pub type IntegritySnapshot = IntegrityEvent;
 
+/// Which list of a stage a criterion dispute contests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CriterionField {
+    /// `acceptance`: the stage's acceptance criteria.
+    #[default]
+    Acceptance,
+    /// `wiring`: the stage's wiring checks.
+    Wiring,
+    /// `wiring_tests`: the stage's wiring tests.
+    WiringTests,
+}
+
+impl CriterionField {
+    /// The CLI and serde spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CriterionField::Acceptance => "acceptance",
+            CriterionField::Wiring => "wiring",
+            CriterionField::WiringTests => "wiring-tests",
+        }
+    }
+
+    /// The label `loom stage complete` prints as `[<label> n]`.
+    pub fn gap_label(self) -> &'static str {
+        match self {
+            CriterionField::Acceptance => "criterion",
+            CriterionField::Wiring => "wiring",
+            CriterionField::WiringTests => "wiring_tests",
+        }
+    }
+
+    /// The plan-amendment field that mutates this list.
+    pub fn amendment_field(self) -> AmendmentField {
+        match self {
+            CriterionField::Acceptance => AmendmentField::Acceptance,
+            CriterionField::Wiring => AmendmentField::Wiring,
+            CriterionField::WiringTests => AmendmentField::WiringTests,
+        }
+    }
+}
+
 /// What a dispute contests (DESIGN D15). `request.md` carries it as a `kind`
 /// key beside the kind's own fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum DisputeKind {
-    /// One acceptance criterion: `loom stage dispute-criteria`.
-    Criterion { criterion_index: usize },
+    /// One entry of `field`'s list: `loom stage dispute-criteria`.
+    Criterion {
+        criterion_index: usize,
+        field: CriterionField,
+    },
     /// Open review findings, own or carried: `loom stage dispute-findings`.
     Findings {
         finding_ids: Vec<String>,
@@ -51,6 +97,14 @@ pub enum DisputeKind {
 }
 
 impl DisputeKind {
+    /// A criterion dispute over entry `criterion_index` of `field`'s list.
+    pub fn criterion(field: CriterionField, criterion_index: usize) -> Self {
+        DisputeKind::Criterion {
+            criterion_index,
+            field,
+        }
+    }
+
     /// The kind as `request.md` names it.
     pub fn name(&self) -> &'static str {
         match self {

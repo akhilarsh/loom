@@ -14,6 +14,7 @@ fn debug_dispute(request: &Request, formatter: &mut fmt::Formatter<'_>) -> fmt::
     let Request::DisputeCriteria {
         stage_id,
         session_id,
+        field,
         criterion_index,
         evidence_commit,
         ..
@@ -27,6 +28,7 @@ fn debug_dispute(request: &Request, formatter: &mut fmt::Formatter<'_>) -> fmt::
         .field("stage_id", stage_id)
         .field("session_id", session_id)
         .field("criterion_index", criterion_index)
+        .field("field", field)
         .field("reason", &"[REDACTED]")
         .field("evidence_commit", evidence_commit)
         .field("failure_output", &"[REDACTED]")
@@ -146,5 +148,30 @@ impl fmt::Debug for Request {
                 .field("session_id", session_id)
                 .finish(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::dispute::CriterionField;
+
+    #[test]
+    fn dispute_criteria_debug_names_the_field() {
+        let request = Request::DisputeCriteria {
+            auth_token: "secret".to_string(),
+            stage_id: "stage".to_string(),
+            session_id: "session-1".to_string(),
+            field: CriterionField::WiringTests,
+            criterion_index: 0,
+            reason: "private reason".to_string(),
+            evidence_commit: None,
+            failure_output: None,
+        };
+
+        let output = format!("{request:?}");
+
+        assert!(output.contains("field: WiringTests"), "{output}");
+        assert!(!output.contains("secret"), "{output}");
     }
 }

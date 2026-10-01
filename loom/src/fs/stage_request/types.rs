@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::daemon::ContractRunReport;
-use crate::models::dispute::DisputeKind;
+use crate::models::dispute::{CriterionField, DisputeKind};
 
 /// One queued stage-control request, mirroring the `Request::BlockStage`,
 /// `Request::DisputeCriteria`, `Request::FileDispute` and
@@ -20,8 +20,9 @@ use crate::models::dispute::DisputeKind;
 pub enum StageRequest {
     /// `loom stage block <id> "<reason>"`.
     Block { reason: String },
-    /// `loom stage dispute-criteria <id> --criterion-index N --reason "..."`.
+    /// `loom stage dispute-criteria <id> --field <f> --criterion-index N --reason "..."`.
     Dispute {
+        field: CriterionField,
         criterion_index: usize,
         reason: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -21,7 +21,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use crate::models::dispute::{applied_marker, dispute_dir};
+use crate::models::dispute::{applied_marker, dispute_dir, CriterionField, DisputeKind};
 use crate::models::stage::{Stage, StageStatus};
 use crate::plan::amendment::{apply_amendment, AmendmentRequest};
 use crate::verify::transitions::{load_stage, update_stage};
@@ -122,9 +122,10 @@ impl AdjudicatorRegistry {
 /// concurrent dispute-thread write (e.g. dispute_count for a parallel filing)
 /// or CLI write is not reverted (A-5). The verdict owns: status (+
 /// review_reason via try_request_human_review), evidence_rounds,
-/// amendments_applied, and acceptance/wiring (the latter two were already
-/// written to disk by apply_amendment's own locked update; re-applying the
-/// in-memory copy keeps them coherent under this lock).
+/// amendments_applied, and acceptance/wiring/wiring_tests (the three lists an
+/// accepted criterion dispute amends, already written to disk by
+/// apply_amendment's own locked update; re-applying the in-memory copy keeps
+/// them coherent under this lock).
 ///
 /// The status write itself is skipped entirely when the on-disk status
 /// already matches (the common "hold in NeedsAdjudication while a sibling
@@ -151,6 +152,7 @@ fn persist_verdict_result(
     let verdict_amendments_applied = stage.tally.amendments_applied;
     let verdict_acceptance = stage.acceptance.clone();
     let verdict_wiring = stage.wiring.clone();
+    let verdict_wiring_tests = stage.wiring_tests.clone();
     let persisted = update_stage(stage_id, work_dir, |s| {
         if s.status != verdict_status {
             if s.status.can_transition_to(&verdict_status) {
@@ -164,6 +166,7 @@ fn persist_verdict_result(
         s.tally.amendments_applied = verdict_amendments_applied;
         s.acceptance = verdict_acceptance.clone();
         s.wiring = verdict_wiring.clone();
+        s.wiring_tests = verdict_wiring_tests.clone();
         Ok(())
     })
     .context("save amended stage after verdict apply")?;
@@ -237,7 +240,7 @@ fn escalate_amendment_cap(work_dir: &Path, stage: &mut Stage, error: &anyhow::Er
     let _ = feedback::clear_feedback(work_dir, &stage.id);
 }
 
-/// Resync the stage's acceptance/wiring from disk (the amendment also rewrites
+/// Resync the stage's amendable lists from disk (the amendment also rewrites
 /// the stage file).
 fn resync_after_amendment(work_dir: &Path, stage: &mut Stage) {
     let Ok(reloaded) = load_stage(&stage.id, work_dir) else {
@@ -245,6 +248,7 @@ fn resync_after_amendment(work_dir: &Path, stage: &mut Stage) {
     };
     stage.acceptance = reloaded.acceptance;
     stage.wiring = reloaded.wiring;
+    stage.wiring_tests = reloaded.wiring_tests;
     stage.contracts = reloaded.contracts;
     // Derive amendments_applied from the audit log (the source of truth used
     // by the cap check). Bumping the in-memory field by +1 here would
@@ -256,7 +260,8 @@ fn resync_after_amendment(work_dir: &Path, stage: &mut Stage) {
             .unwrap_or_else(|_| reloaded.tally.amendments_applied.saturating_add(1));
 }
 
-/// The criterion stands and the implementation is wrong — the deadlock case.
+/// The disputed check stands and the implementation is wrong — the deadlock
+/// case.
 pub(super) fn apply_reject(
     work_dir: &Path,
     stage: &mut Stage,
@@ -270,10 +275,11 @@ pub(super) fn apply_reject(
     let verdict_path =
         crate::models::dispute::verdict_file(&work_dir.join("disputes"), &stage.id, dispute_id);
     let reason = format!(
-        "Adjudicator upheld the disputed acceptance criterion (dispute {dispute_id}): \
-         the criterion stands and the implementation is what must change. The stage \
+        "Adjudicator upheld the disputed {} (dispute {dispute_id}): \
+         it stands and the implementation is what must change. The stage \
          agent judged it impossible, so it cannot make progress unaided — read \
          {} — then decide with: loom stage human-review {}",
+        disputed_entry(work_dir, &stage.id, dispute_id),
         verdict_path.display(),
         stage.id
     );
@@ -293,6 +299,19 @@ pub(super) fn apply_reject(
         stage.review_reason = Some(reason);
     }
     Ok(())
+}
+
+/// What a criterion dispute contested, as `apply_reject`'s review reason
+/// names it: `criterion` when its request cannot be read.
+fn disputed_entry(work_dir: &Path, stage_id: &str, dispute_id: u32) -> &'static str {
+    match super::read_request(work_dir, stage_id, dispute_id).map(|request| request.kind) {
+        Ok(DisputeKind::Criterion { field, .. }) => match field {
+            CriterionField::Acceptance => "acceptance criterion",
+            CriterionField::Wiring => "wiring check",
+            CriterionField::WiringTests => "wiring test",
+        },
+        _ => "criterion",
+    }
 }
 
 /// Undecidable on the evidence supplied: ask the agent the questions, unless
