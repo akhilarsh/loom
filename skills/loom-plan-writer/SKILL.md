@@ -420,7 +420,7 @@ loom:
     filesystem:
       deny_read: ["~/.ssh/**", "~/.aws/**", "~/.config/gcloud/**", "~/.gnupg/**"]
       deny_write: [".loom/work/stages/**", "doc/loom/knowledge/**"]
-      allow_write: ["src/**"]
+      allow_write: []              # paths OUTSIDE the worktree only; the worktree is writable
     network:                       # ⛔ MUST be a struct, NEVER the string "deny"
       allowed_domains: []          # empty = deny all; or list domains
       allow_local_binding: false
@@ -699,7 +699,7 @@ loom:
 □ Every worker row names the lowest capable tier; briefs settle what that tier would guess; assignments grouped per the rubric
 □ Worker tables: Files owned cells hold paths only; no file overlap between subagents; shared types in a foundation step
 □ Acceptance commands: YAML single-quoted, rg not grep, paths relative to working_dir
-□ Sandbox configured; network is a struct; allow_write covers every path acceptance commands write
+□ Sandbox configured; network is a struct; every path acceptance commands write lands in the worktree or under allow_write (allow_write is for paths outside the worktree)
 □ Environment inventory done: every network, install, credential and host need of every stage allowed, provisioned or resolved with the user
 □ Self-consistency sweep done; every number appears with ONE value throughout
 □ loom plan verify --strict passes → tell the user → STOP (do not implement)

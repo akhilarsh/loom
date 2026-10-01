@@ -19,7 +19,7 @@ Cover ALL of these dimensions. The first two are the highest-yield failure class
 
 4. VERIFICATION HONESTY. For each acceptance/wiring gate: would a plausible-WRONG implementation still pass? Does the gate exercise what it claims? (A production build cannot verify a module nothing imports; a bundler neither type-checks nor compiles shader graphs; a grep proves existence, not behavior; a test of an in-memory value proves nothing about the emitted artifact.) Does every code stage run the repo's FULL canonical gate verbatim rather than a scoped subset?
 
-5. EXECUTABILITY & LIFECYCLE. Sandbox allow_write covers every path acceptance commands write (the lockfile by its real name, build output dirs); working_dir is right; anything shipped as an engine/driver/controller has a stage owning its composition-root call site with an executable wiring proof; runtime lifecycle decisions (ownership, scheduling, cancellation, invalidation, dispose, budget scope and ordering) are settled in the plan, not deferred to integration-verify.
+5. EXECUTABILITY & LIFECYCLE. Every path acceptance commands write lands in the worktree or under sandbox allow_write, which is for paths outside the worktree (an in-tree allow_write entry is dropped); working_dir is right; anything shipped as an engine/driver/controller has a stage owning its composition-root call site with an executable wiring proof; runtime lifecycle decisions (ownership, scheduling, cancellation, invalidation, dispose, budget scope and ordering) are settled in the plan, not deferred to integration-verify.
 
 Rank findings by severity: blocks execution > silently ships broken > under-specified > polish.
 
