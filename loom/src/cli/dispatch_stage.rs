@@ -49,12 +49,14 @@ fn dispatch_stage_criteria(command: StageCommands) -> Result<()> {
     match command {
         StageCommands::DisputeCriteria {
             stage_id,
+            field,
             criterion_index,
             reason,
             evidence_commit,
             failure_output,
         } => stage::dispute_criteria(
             stage_id,
+            field.to_field(),
             criterion_index,
             reason,
             evidence_commit,

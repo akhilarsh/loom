@@ -188,3 +188,101 @@ fn json_with_leading_prose_extracts_first_object() {
         ValidationOutcome::Verdict(DisputeVerdict::Reject { .. })
     ));
 }
+
+/// An accept verdict whose `plan_patch` deletes entry 0 of `field`.
+fn accept_amending(field: &str) -> String {
+    serde_json::json!({
+        "verdict": "accept",
+        "reasoning": "the disputed entry cannot pass against a correct implementation",
+        "citations": [
+            {"file": "src/a.rs", "line": 1, "excerpt": "fn a()", "claim": "the entry is wrong"}
+        ],
+        "plan_patch": {"field": field, "patch": {"op": "delete", "index": 0}, "reason": "r"}
+    })
+    .to_string()
+}
+
+/// The `plan_patch.field` an accepted verdict stores; `None` for any other
+/// outcome.
+fn amended_field(outcome: ValidationOutcome) -> Option<String> {
+    match outcome {
+        ValidationOutcome::Verdict(DisputeVerdict::Accept { plan_patch, .. }) => plan_patch
+            .inner
+            .get("field")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
+/// The question an outcome asks, or a panic naming the outcome.
+fn the_question(outcome: ValidationOutcome) -> String {
+    match outcome {
+        ValidationOutcome::Verdict(DisputeVerdict::NeedsMoreEvidence { questions }) => {
+            questions.join("\n")
+        }
+        other => panic!("expected NeedsMoreEvidence, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_wiring_tests_accept_must_amend_wiring_tests() {
+    let kind = DisputeKind::criterion(CriterionField::WiringTests, 0);
+    for spelling in ["wiring-tests", "wiring_tests"] {
+        let outcome = parse_and_validate_for(&accept_amending(spelling), &kind);
+        assert_eq!(amended_field(outcome).as_deref(), Some("wiring-tests"));
+    }
+    for field in ["acceptance", "wiring"] {
+        let question = the_question(parse_and_validate_for(&accept_amending(field), &kind));
+        assert!(question.contains("wiring-tests list"), "{question}");
+        assert!(
+            question.contains("\"field\": \"wiring-tests\""),
+            "{question}"
+        );
+    }
+}
+
+#[test]
+fn a_wiring_accept_may_not_amend_acceptance() {
+    let kind = DisputeKind::criterion(CriterionField::Wiring, 1);
+    let question = the_question(parse_and_validate_for(
+        &accept_amending("acceptance"),
+        &kind,
+    ));
+    assert!(question.contains("wiring list"), "{question}");
+    assert!(question.contains("\"field\": \"wiring\""), "{question}");
+    let outcome = parse_and_validate_for(&accept_amending("wiring"), &kind);
+    assert_eq!(amended_field(outcome).as_deref(), Some("wiring"));
+}
+
+#[test]
+fn an_acceptance_accept_may_still_amend_wiring() {
+    let kind = DisputeKind::criterion(CriterionField::Acceptance, 0);
+    for field in ["acceptance", "wiring"] {
+        let outcome = parse_and_validate_for(&accept_amending(field), &kind);
+        assert_eq!(amended_field(outcome).as_deref(), Some(field));
+    }
+    let question = the_question(parse_and_validate_for(
+        &accept_amending("wiring-tests"),
+        &kind,
+    ));
+    assert!(question.contains("acceptance list"), "{question}");
+}
+
+/// A malformed patch's re-emit hint names the field the dispute admits.
+#[test]
+fn a_malformed_patch_hint_names_the_disputed_field() {
+    let raw = serde_json::json!({
+        "verdict": "accept",
+        "reasoning": "r",
+        "citations": [{"file": "f", "excerpt": "e", "claim": "c"}],
+        "plan_patch": {"field": "wiring-tests"}
+    })
+    .to_string();
+    let kind = DisputeKind::criterion(CriterionField::WiringTests, 0);
+    let question = the_question(parse_and_validate_for(&raw, &kind));
+    assert!(
+        question.contains("{\"field\": \"wiring-tests\", \"patch\""),
+        "{question}"
+    );
+}

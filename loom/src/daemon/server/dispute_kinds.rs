@@ -20,6 +20,7 @@ use anyhow::{bail, Result};
 use chrono::Utc;
 use std::path::Path;
 
+use super::dispute::transition_refusal;
 use super::dispute_store::{escalate_to_human_review, lock_stage_disputes, write_request};
 use crate::daemon::protocol::Response;
 use crate::models::dispute::{select_events, select_findings, DisputeKind, DisputeRequest};
@@ -48,6 +49,9 @@ pub(crate) fn handle_file_dispute(
     };
     if dispute_budgets::exhausted(&stage, &kind) {
         return Ok(escalate_exhausted(&locked.work_dir, &stage, &kind));
+    }
+    if let Some(refusal) = transition_refusal(&stage, &reason) {
+        return Ok(refusal);
     }
 
     let record = DisputeRequest {
@@ -98,8 +102,8 @@ fn escalate_exhausted(work_dir: &Path, stage: &Stage, kind: &DisputeKind) -> Res
 fn confirm(work_dir: &Path, stage: &Stage, kind: DisputeKind) -> Result<DisputeKind> {
     if stage.plan_version != 2 {
         bail!(
-            "stage '{}' is not a plan version 2 stage; only its acceptance criteria can be \
-             disputed, with `loom stage dispute-criteria`",
+            "stage '{}' is not a plan version 2 stage; only its acceptance criteria, wiring \
+             checks and wiring tests can be disputed, with `loom stage dispute-criteria --field`",
             stage.id
         );
     }

@@ -14,11 +14,12 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use super::dispute_transport::{send, Dispute};
+use crate::models::dispute::CriterionField;
 use crate::relay::emit::{mode, EnvSnapshot, RelayMode, RelaySink, StdSink};
 
 const FAILURE_OUTPUT_MAX_BYTES: usize = 4096;
 
-/// Dispute an acceptance criterion.
+/// Dispute one entry of a stage's acceptance, wiring or wiring-tests list.
 ///
 /// Reads the process environment exactly once, then delegates to
 /// `dispute_criteria_with_mode` — the seam tests drive directly with an
@@ -26,6 +27,7 @@ const FAILURE_OUTPUT_MAX_BYTES: usize = 4096;
 /// mutate process-wide environment.
 pub fn dispute_criteria(
     stage_id: String,
+    field: CriterionField,
     criterion_index: usize,
     reason: String,
     evidence_commit: Option<String>,
@@ -39,6 +41,7 @@ pub fn dispute_criteria(
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
     dispute_criteria_with_mode(
         stage_id,
+        field,
         criterion_index,
         reason,
         evidence_commit,
@@ -54,6 +57,7 @@ pub fn dispute_criteria(
 #[allow(clippy::too_many_arguments)]
 fn dispute_criteria_with_mode(
     stage_id: String,
+    field: CriterionField,
     criterion_index: usize,
     reason: String,
     evidence_commit: Option<String>,
@@ -64,6 +68,7 @@ fn dispute_criteria_with_mode(
 ) -> Result<()> {
     let dispute = Dispute::criterion(
         stage_id,
+        field,
         criterion_index,
         reason,
         evidence_commit,

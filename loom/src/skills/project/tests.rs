@@ -289,3 +289,29 @@ fn infrastructure_markers_remain_detectable() {
         BTreeSet::from(["ci-cd", "docker", "kubernetes", "kustomize", "terraform"])
     );
 }
+
+#[test]
+fn packages_under_a_fixtures_directory_are_not_detected() {
+    let repo = TempDir::new().unwrap();
+    let cargo = "[package]\nname = 'p'\n";
+    write(repo.path(), "Cargo.toml", cargo);
+    write(repo.path(), "tests/fixtures/labeled/rust/Cargo.toml", cargo);
+    write(
+        repo.path(),
+        "fixtures/app/package.json",
+        r#"{"name":"app"}"#,
+    );
+    write(repo.path(), "tests/fixtures-extra/pkg/Cargo.toml", cargo);
+
+    let mut paths: Vec<_> = ProjectProfile::discover(repo.path())
+        .package_details()
+        .into_iter()
+        .map(|detail| detail.path)
+        .collect();
+    paths.sort();
+
+    assert_eq!(
+        paths,
+        vec![Path::new(""), Path::new("tests/fixtures-extra/pkg")]
+    );
+}

@@ -3,8 +3,34 @@
 //! so one retire and respawn covers a whole review round.
 
 use crate::commands::stage::{DisputeFiling, DisputeTarget};
+use crate::models::dispute::CriterionField;
 use crate::validation::{clap_description_validator, clap_id_validator};
-use clap::Args;
+use clap::{Args, ValueEnum};
+
+/// Which list `loom stage dispute-criteria` indexes.
+///
+/// A clap-level mirror of [`CriterionField`], the pattern `AmendField` uses;
+/// [`DisputeField::to_field`] maps it across.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DisputeField {
+    /// The stage's acceptance criteria.
+    Acceptance,
+    /// The stage's wiring checks.
+    Wiring,
+    /// The stage's wiring tests.
+    WiringTests,
+}
+
+impl DisputeField {
+    /// Map to the model-level field selector.
+    pub fn to_field(self) -> CriterionField {
+        match self {
+            DisputeField::Acceptance => CriterionField::Acceptance,
+            DisputeField::Wiring => CriterionField::Wiring,
+            DisputeField::WiringTests => CriterionField::WiringTests,
+        }
+    }
+}
 
 #[derive(Args)]
 pub struct DisputeFindingsArgs {

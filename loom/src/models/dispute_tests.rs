@@ -35,15 +35,27 @@ fn ids(names: &[&str]) -> Vec<String> {
 
 #[test]
 fn dispute_request_round_trip_yaml() {
-    let req = request(DisputeKind::Criterion { criterion_index: 2 });
+    let req = request(DisputeKind::criterion(CriterionField::Acceptance, 2));
     let y = serde_yaml::to_string(&req).unwrap();
     let back: DisputeRequest = serde_yaml::from_str(&y).unwrap();
     assert_eq!(req, back);
 }
 
 #[test]
+fn a_criterion_request_round_trips_its_field() {
+    let req = request(DisputeKind::criterion(CriterionField::WiringTests, 1));
+    let y = serde_yaml::to_string(&req).unwrap();
+    assert!(y.contains("field: wiring-tests"), "{y}");
+    let back: DisputeRequest = serde_yaml::from_str(&y).unwrap();
+    assert_eq!(
+        back.kind,
+        DisputeKind::criterion(CriterionField::WiringTests, 1)
+    );
+}
+
+#[test]
 fn the_kind_sits_beside_the_request_fields_in_the_frontmatter() {
-    let req = request(DisputeKind::Criterion { criterion_index: 2 });
+    let req = request(DisputeKind::criterion(CriterionField::Acceptance, 2));
     let yaml: serde_yaml::Value = serde_yaml::to_value(&req).unwrap();
     assert_eq!(yaml["kind"], serde_yaml::Value::from("criterion"));
     assert_eq!(yaml["criterion_index"], serde_yaml::Value::from(2));

@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::models::dispute::{FindingSnapshot, IntegritySnapshot};
+use crate::models::stage::{SuccessCriteria, WiringCheck, WiringTest};
 use crate::plan::schema::AcceptanceCriterion;
 use crate::verify::contracts::test_support::{contract, CONTRACT_ID};
 use crate::verify::integrity::EventKind;
@@ -86,11 +87,21 @@ fn briefing(kind: DisputeKind, reason: &str) -> Prompt {
 /// [`briefing`] under `root`, so two briefings can share the work dir their
 /// instructions name.
 fn briefing_in(root: &std::path::Path, kind: DisputeKind, reason: &str) -> Prompt {
+    staged_briefing_in(root, &stage(), kind, reason)
+}
+
+/// [`briefing_in`] for `stage`.
+fn staged_briefing_in(
+    root: &std::path::Path,
+    stage: &Stage,
+    kind: DisputeKind,
+    reason: &str,
+) -> Prompt {
     let plan = root.join("PLAN.md");
     std::fs::write(&plan, "stub plan").unwrap();
     let work = root.join(".loom").join("work");
     std::fs::create_dir_all(&work).unwrap();
-    build(&plan, &stage(), &request(kind, reason), &work)
+    build(&plan, stage, &request(kind, reason), &work)
 }
 
 /// A kind briefing is not the criterion briefing, names the disputed `id`,
@@ -116,7 +127,7 @@ fn assert_kind_briefing(prompt: &Prompt, id: &str) {
 #[test]
 fn criterion_dispute_reaches_the_criterion_builder() {
     let prompt = briefing(
-        DisputeKind::Criterion { criterion_index: 0 },
+        DisputeKind::criterion(CriterionField::Acceptance, 0),
         "criterion impossible",
     );
     assert!(prompt.instructions.contains("RUN THE CRITERION"));
@@ -163,4 +174,125 @@ fn every_kind_keeps_the_byte_cap_and_whole_instructions() {
             "the reason belongs in the evidence, and the instructions are never trimmed"
         );
     }
+}
+
+fn wiring_check(source: &str, pattern: &str) -> WiringCheck {
+    WiringCheck {
+        source: source.to_string(),
+        pattern: pattern.to_string(),
+        description: format!("{pattern} is wired"),
+        literal: false,
+    }
+}
+
+/// A wiring dispute names the disputed check, searches for it the way plan v2
+/// does (its `source` is a glob), and lets the verdict amend only `wiring`.
+#[test]
+fn a_wiring_dispute_shows_the_wiring_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let stage = Stage {
+        wiring: vec![
+            wiring_check("src/main.rs", "run_first"),
+            wiring_check("src/cli/*.rs", r"dispatch\("),
+        ],
+        ..stage()
+    };
+    let kind = DisputeKind::criterion(CriterionField::Wiring, 1);
+    let prompt = staged_briefing_in(tmp.path(), &stage, kind, "the pattern is wrong");
+
+    let instructions = &prompt.instructions;
+    assert!(
+        instructions.contains("RUN THE WIRING CHECK"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains(r"- pattern: `dispatch\(`"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("- source: `src/cli/*.rs`"),
+        "{instructions}"
+    );
+    let search = r"rg -n -e 'dispatch\(' --no-ignore --hidden --glob 'src/cli/*.rs' .";
+    assert!(instructions.contains(search), "{instructions}");
+    assert!(
+        instructions.contains("\"field\": \"wiring\""),
+        "{instructions}"
+    );
+    assert!(
+        !instructions.contains("\"acceptance\" | \"wiring\""),
+        "{instructions}"
+    );
+    assert!(instructions.contains(RECORD_COMMAND), "{instructions}");
+    assert!(
+        prompt
+            .evidence
+            .contains(r"→ [1] `dispatch\(` in `src/cli/*.rs`"),
+        "{}",
+        prompt.evidence
+    );
+    assert!(prompt
+        .evidence
+        .contains("  [0] `run_first` in `src/main.rs`"));
+}
+
+/// A wiring-tests dispute runs the test's own command from the execution site
+/// and lets the verdict amend only `wiring-tests`.
+#[test]
+fn a_wiring_tests_dispute_runs_the_wiring_test_command() {
+    let tmp = tempfile::tempdir().unwrap();
+    let stage = Stage {
+        wiring_tests: vec![WiringTest {
+            name: "help lists dispute-criteria".to_string(),
+            command: "loom stage --help".to_string(),
+            success_criteria: SuccessCriteria {
+                stdout_contains: vec!["dispute-criteria".to_string()],
+                ..SuccessCriteria::default()
+            },
+            description: None,
+        }],
+        ..stage()
+    };
+    let kind = DisputeKind::criterion(CriterionField::WiringTests, 0);
+    let prompt = staged_briefing_in(tmp.path(), &stage, kind, "the wiring test is wrong");
+
+    let instructions = &prompt.instructions;
+    assert!(
+        instructions.contains("RUN THE WIRING TEST"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("loom stage --help\necho \"exit: $?\"\n"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains(r#""stdout_contains":["dispute-criteria"]"#),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("\"field\": \"wiring-tests\""),
+        "{instructions}"
+    );
+    assert!(
+        prompt
+            .evidence
+            .contains("→ [0] help lists dispute-criteria: `loom stage --help`"),
+        "{}",
+        prompt.evidence
+    );
+}
+
+/// An index past the list says the entry may have been amended away.
+#[test]
+fn a_wiring_dispute_past_the_list_says_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let kind = DisputeKind::criterion(CriterionField::Wiring, 3);
+    let prompt = staged_briefing_in(tmp.path(), &stage(), kind, "the pattern is wrong");
+    assert!(
+        prompt
+            .instructions
+            .contains("no longer has a wiring check at index 3"),
+        "{}",
+        prompt.instructions
+    );
 }

@@ -98,7 +98,6 @@ function src/completions/install.rs install 52
 function src/context/refresh/tests_source_graph/enumeration.rs an_unreadable_file_survives_as_a_reported_lexical_only_entry 62
 function src/daemon/server/broadcast.rs run_status_broadcaster 80
 function src/daemon/server/client.rs handle_client_connection 87
-function src/daemon/server/dispute.rs handle_dispute_criteria 91
 function src/daemon/server/lifecycle.rs run_server 133
 function src/daemon/server/lifecycle.rs start 100
 function src/daemon/server/orchestrator.rs run_orchestrator 89
@@ -209,6 +208,7 @@ function src/verify/wiring_detection.rs is_referenced 66
 function tests/completion_flow.rs test_acceptance_failure_creates_correct_status 64
 function tests/completion_flow.rs test_completion_requires_merged_dependencies 70
 function tests/completion_flow.rs test_successful_completion_flow 55
+function tests/completion_gates_contracts.rs wiring_dispute_indexes_the_wiring_list 51
 function tests/e2e/daemon_config/manual_mode.rs test_orchestrator_with_manual_mode 84
 function tests/e2e/daemon_config/parallel_sessions.rs test_orchestrator_respects_max_parallel_sessions 106
 function tests/e2e/daemon_config/tests.rs test_daemon_respects_auto_merge 62

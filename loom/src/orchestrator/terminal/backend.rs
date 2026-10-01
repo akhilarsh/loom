@@ -206,7 +206,8 @@ impl SessionBackend {
         )
     }
 
-    /// Spawn the session that judges one disputed acceptance criterion.
+    /// Spawn the session that judges one disputed criterion
+    /// (acceptance criterion, wiring check, or wiring test).
     ///
     /// It never gets a worktree of its own: `repo_root` is whatever
     /// `judge_cwd` (`orchestrator/adjudication/session.rs`) picked — the

@@ -54,6 +54,8 @@ mod escalation_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_criterion_field;
+#[cfg(test)]
 mod tests_verdicts;
 
 use anyhow::Result;

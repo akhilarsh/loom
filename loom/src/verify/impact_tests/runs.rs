@@ -41,6 +41,15 @@ impl<'a> Selection<'a> {
         targets: &[TestTarget],
     ) -> Result<()> {
         let package_dir = self.root.join(package);
+        if adapter.language() == "javascript" && missing_node_modules(&package_dir, self.root) {
+            let name = package_label(package);
+            let note = format!(
+                "`{name}` has no node_modules in this worktree (a plan `provision` entry \
+                 installs it); {FULL_SUITE}"
+            );
+            self.notes.insert(note);
+            return Ok(());
+        }
         let Some(command) = adapter.select_command(targets, &package_dir) else {
             let runner = adapter.name();
             let note = format!("{runner} cannot select tests by file; {FULL_SUITE}");
@@ -74,6 +83,11 @@ impl<'a> Selection<'a> {
             stderr: &run.stderr,
             exit_code: run.exit_code,
         };
+        if run.exit_code == Some(127) {
+            let note = format!("`{command}` could not start (exit 127); {FULL_SUITE}");
+            self.notes.insert(note);
+            return;
+        }
         let tests = selected(targets);
         let runner = adapter.name();
         match classify(&adapter.parse(&output), run.exit_code) {
@@ -120,6 +134,44 @@ impl<'a> Selection<'a> {
             self.failures.join("\n  - ")
         )
     }
+}
+
+/// The package as a note names it: its checkout-relative path, `.` for the root.
+fn package_label(package: &Path) -> String {
+    if package.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        package.display().to_string()
+    }
+}
+
+/// Whether the JS package in `package_dir` declares dependencies yet has no
+/// `node_modules` there or in any ancestor up to and including `root`. A
+/// dependency-free package needs no install, so it never counts as missing; an
+/// unreadable or unparsable manifest counts as declaring dependencies.
+fn missing_node_modules(package_dir: &Path, root: &Path) -> bool {
+    declares_dependencies(package_dir)
+        && !package_dir
+            .ancestors()
+            .take_while(|dir| dir.starts_with(root))
+            .any(|dir| dir.join("node_modules").is_dir())
+}
+
+/// Whether `package_dir/package.json` lists a `dependencies` or
+/// `devDependencies` entry.
+fn declares_dependencies(package_dir: &Path) -> bool {
+    let Ok(manifest) = std::fs::read_to_string(package_dir.join("package.json")) else {
+        return true;
+    };
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest) else {
+        return true;
+    };
+    ["dependencies", "devDependencies"].iter().any(|key| {
+        manifest
+            .get(key)
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|entries| !entries.is_empty())
+    })
 }
 
 /// The selected tests, as a failure names them.

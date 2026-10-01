@@ -37,9 +37,9 @@ fn ensure_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write rejection feedback: the adjudicator concluded the criterion is
-/// correct and the agent must fix the implementation. Overwrites any
-/// prior content.
+/// Write rejection feedback: the adjudicator concluded the disputed check (an
+/// acceptance criterion, wiring check or wiring test) is correct and the
+/// agent must fix the implementation. Overwrites any prior content.
 pub fn append_rejection(
     work_dir: &Path,
     stage_id: &str,
@@ -49,7 +49,7 @@ pub fn append_rejection(
     let path = feedback_path(work_dir, stage_id);
     ensure_parent(&path)?;
     let mut body =
-        String::from("The adjudicator rejected your dispute. The acceptance criterion stands.\n\n");
+        String::from("The adjudicator rejected your dispute. The disputed check stands.\n\n");
     body.push_str("### Reasoning\n\n");
     body.push_str(reasoning.trim());
     body.push_str("\n\n");
@@ -62,7 +62,7 @@ pub fn append_rejection(
         }
         body.push('\n');
     }
-    body.push_str("Action: fix the implementation so the criterion passes. Do NOT re-dispute.\n");
+    body.push_str("Action: fix the implementation so the check passes. Do NOT re-dispute.\n");
     fs::write(&path, body).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }

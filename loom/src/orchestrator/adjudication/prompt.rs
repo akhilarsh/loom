@@ -5,9 +5,10 @@
 //! - `evidence`: what it judges the dispute against.
 //!
 //! Each kind of dispute has its own builder: `criterion` (a disputed
-//! acceptance criterion), `findings` (review findings), `contract` (a frozen
-//! contract) and `integrity` (test-integrity events). [`build`] routes by the
-//! request's kind.
+//! acceptance criterion), `criterion_entry` (a disputed wiring check or wiring
+//! test), `findings` (review findings), `contract` (a frozen contract) and
+//! `integrity` (test-integrity events). [`build`] routes by the request's kind
+//! and, for a criterion dispute, its field.
 //!
 //! The whole thing is hard-capped to roughly 100 KiB (see `truncate`), with
 //! the instructions never trimmed. `signals/adjudication.rs` wraps the result
@@ -15,6 +16,7 @@
 
 mod contract;
 mod criterion;
+mod criterion_entry;
 mod diff;
 mod execution_site;
 mod findings;
@@ -24,7 +26,7 @@ mod truncate;
 
 use std::path::Path;
 
-use crate::models::dispute::{DisputeKind, DisputeRequest};
+use crate::models::dispute::{CriterionField, DisputeKind, DisputeRequest};
 use crate::models::stage::Stage;
 
 pub use execution_site::ExecutionSite;
@@ -113,7 +115,7 @@ impl KindPromptInput<'_> {
 /// Build the briefing for the supplied dispute, routed by its kind.
 ///
 /// `plan_path` is the live plan markdown (a criterion briefing quotes the
-/// stage's acceptance criteria as the plan states them). `work_dir` is the
+/// stage's block as the plan states it). `work_dir` is the
 /// `.loom/work/` root, used to resolve the repository, the stage's worktree
 /// and the draft file the session writes its JSON verdict to before handing
 /// it to `loom stage adjudicate`.
@@ -132,9 +134,18 @@ pub fn build(plan_path: &Path, stage: &Stage, dispute: &DisputeRequest, work_dir
         work_dir,
     };
     let mut prompt = match &dispute.kind {
-        DisputeKind::Criterion { criterion_index } => {
-            criterion::build(&input, plan_path, *criterion_index)
-        }
+        DisputeKind::Criterion {
+            criterion_index,
+            field,
+        } => match field {
+            CriterionField::Acceptance => criterion::build(&input, plan_path, *criterion_index),
+            CriterionField::Wiring => {
+                criterion_entry::build_wiring(&input, plan_path, *criterion_index)
+            }
+            CriterionField::WiringTests => {
+                criterion_entry::build_wiring_test(&input, plan_path, *criterion_index)
+            }
+        },
         DisputeKind::Findings { .. } => findings::build(&input),
         DisputeKind::Contract { .. } => contract::build(&input),
         DisputeKind::Integrity { .. } => integrity::build(&input),

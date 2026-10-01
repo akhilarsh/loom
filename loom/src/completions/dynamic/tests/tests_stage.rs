@@ -254,3 +254,19 @@ fn test_complete_stage_ids_filtered_empty_returns_all() {
     assert!(results.contains(&"test".to_string()));
     assert!(results.contains(&"deploy".to_string()));
 }
+
+#[test]
+fn field_values_complete_for_dispute_criteria() {
+    let choices = complete_flag_choices(&["stage", "dispute-criteria"], "field", "wi").unwrap();
+    assert_eq!(choices, vec!["wiring", "wiring-tests"]);
+
+    let routed = complete_flag_value(
+        Path::new("."),
+        "wi",
+        "--field",
+        &["stage", "dispute-criteria"],
+        "loom stage dispute-criteria s1 --field wi",
+    )
+    .unwrap();
+    assert_eq!(routed, Some(choices));
+}

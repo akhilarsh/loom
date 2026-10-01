@@ -9,7 +9,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::daemon::handle_dispute_criteria;
 use crate::fs::work_dir::WorkDir;
-use crate::models::dispute::FindingSnapshot;
+use crate::models::dispute::{CriterionField, FindingSnapshot};
 use crate::models::stage::StageStatus;
 use crate::plan::schema::AcceptanceCriterion;
 use crate::verify::contracts::store::{write_freeze, FreezeRecord, FrozenContract};
@@ -156,6 +156,7 @@ fn criterion_dispute_behaviour_is_unchanged() {
     let response = handle_dispute_criteria(
         &work_dir,
         STAGE,
+        CriterionField::Acceptance,
         1,
         "criterion 1 is unrunnable".to_string(),
         Some("abc1234".to_string()),
@@ -177,6 +178,7 @@ fn criterion_dispute_behaviour_is_unchanged() {
         "criterion_index",
         "evidence_commit",
         "failure_output",
+        "field",
         "fix_attempts_at_dispute",
         "id",
         "kind",
@@ -279,4 +281,22 @@ fn a_plan_version_1_stage_disputes_only_its_criteria() {
         load_stage(STAGE, &work_dir).unwrap().tally.finding_disputes,
         0
     );
+}
+
+#[test]
+fn a_refused_file_dispute_writes_no_request() {
+    let (_tmp, work_dir) = setup(2);
+    record_open_finding(&work_dir);
+    update_stage(STAGE, &work_dir, |stage| {
+        stage.status = StageStatus::Completed;
+        Ok(())
+    })
+    .unwrap();
+
+    let message = refusal(file(&work_dir, findings(Vec::new())));
+
+    assert!(message.contains("cannot dispute stage"), "{message}");
+    assert!(!request_path(&work_dir, 1).exists());
+    let stage = load_stage(STAGE, &work_dir).unwrap();
+    assert_eq!(stage.tally.finding_disputes, 0);
 }

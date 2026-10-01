@@ -59,7 +59,7 @@ fn is_reconciler(pid: u32, epoch: u64, now: u64) -> bool {
 
 /// The process's argv: NUL-split from `/proc/<pid>/cmdline`, else the
 /// whitespace-split `ps -o command=` line.
-fn process_argv(pid: u32) -> Option<Vec<String>> {
+pub(super) fn process_argv(pid: u32) -> Option<Vec<String>> {
     if let Ok(raw) = fs::read(format!("/proc/{pid}/cmdline")) {
         return Some(
             raw.split(|byte| *byte == 0)

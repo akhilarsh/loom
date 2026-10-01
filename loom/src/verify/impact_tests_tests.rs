@@ -50,6 +50,21 @@ impl ProbeRunner for Recorder {
     }
 }
 
+/// Answers every command with exit 127 and no output, as a shell does for a
+/// command it cannot find.
+struct NotFound;
+
+impl ProbeRunner for NotFound {
+    fn run(&self, _command: &str, _package_dir: &Path) -> Result<ProbeRun> {
+        Ok(ProbeRun {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: Some(127),
+            timed_out: false,
+        })
+    }
+}
+
 /// Run git in `root` with ambient config neutralised; returns trimmed stdout.
 fn git(root: &Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
@@ -108,7 +123,7 @@ fn select_after_changing_add(root: &Path, recorder: &Recorder) -> ImpactOutcome 
     let graph = build_for_worktree(root).unwrap();
     assert_eq!(graph.degraded, None);
     assert_eq!(graph.changed, vec![PathBuf::from("src/lib.rs")]);
-    run_with(&Stage::default(), root, &graph, recorder).unwrap()
+    run_with(&Stage::default(), root, &graph, &graph.changed, recorder).unwrap()
 }
 
 #[test]
@@ -144,4 +159,131 @@ fn impact_selection_skips_unsupported_adapters() {
     assert!(outcome.ran.is_empty());
     let note = format!("ctest cannot select tests by file; {FULL_SUITE}");
     assert_eq!(outcome.notes, vec![note]);
+}
+
+const VITEST_MANIFEST: &str = r#"{"devDependencies":{"vitest":"^3.2.0"}}"#;
+
+/// A vitest test file with one named function, so the extractor gives it a node.
+const WEB_TEST: &str = "import { test } from \"vitest\";\n\
+                        function boom() { throw new Error(\"boom\") }\n\
+                        test(\"x\", boom);\n";
+
+/// A committed seed, then an uncommitted `web` package holding `manifest` and
+/// one test file; returns the repository and the test file's path.
+fn web_repo(manifest: &str) -> (TempDir, PathBuf) {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    git(&root, &["init", "-b", "main"]);
+    git(&root, &["config", "user.email", "t@t.com"]);
+    git(&root, &["config", "user.name", "t"]);
+    write(&root, "README.md", "probe\n");
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-m", "seed"]);
+    write(&root, "web/package.json", manifest);
+    write(&root, "web/src/a.test.ts", WEB_TEST);
+    (temp, root)
+}
+
+/// Select from the changed `web/src/a.test.ts` of the repository at `root`.
+fn select_web(root: &Path, runner: &dyn ProbeRunner) -> ImpactOutcome {
+    let graph = build_for_worktree(root).unwrap();
+    let changed = [PathBuf::from("web/src/a.test.ts")];
+    run_with(&Stage::default(), root, &graph, &changed, runner).unwrap()
+}
+
+#[test]
+fn a_js_package_without_node_modules_is_a_note() {
+    let (_temp, root) = web_repo(VITEST_MANIFEST);
+    let recorder = Recorder::default();
+
+    let mut outcome = select_web(&root, &recorder);
+    // `web_repo` publishes no base layer, so the graph reports itself degraded;
+    // that note depends on the environment, not on the selection under test.
+    outcome
+        .notes
+        .retain(|note| !note.starts_with("the source graph is degraded"));
+
+    assert!(recorder.commands.borrow().is_empty());
+    assert!(outcome.ran.is_empty());
+    let note = format!(
+        "`web` has no node_modules in this worktree (a plan `provision` entry installs it); \
+         {FULL_SUITE}"
+    );
+    assert_eq!(outcome.notes, vec![note]);
+}
+
+#[test]
+fn a_js_package_with_node_modules_in_an_ancestor_runs() {
+    let (_temp, root) = web_repo(VITEST_MANIFEST);
+    fs::create_dir_all(root.join("node_modules")).unwrap();
+    let recorder = Recorder::default();
+
+    select_web(&root, &recorder);
+
+    let commands = recorder.commands.into_inner();
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert!(commands[0].0.contains("vitest run"), "{}", commands[0].0);
+}
+
+#[test]
+fn a_dependency_free_node_test_package_still_runs() {
+    let (_temp, root) = web_repo(r#"{"scripts":{"test":"node --test"}}"#);
+    let recorder = Recorder::default();
+
+    select_web(&root, &recorder);
+
+    let commands = recorder.commands.into_inner();
+    assert_eq!(commands.len(), 1, "{commands:?}");
+    assert!(
+        commands[0].0.starts_with("node --test"),
+        "{}",
+        commands[0].0
+    );
+}
+
+#[test]
+fn exit_127_is_a_note() {
+    let temp = repo_with_base(("Cargo.toml", CARGO_TOML));
+    let root = temp.path().canonicalize().unwrap();
+    write(&root, "src/lib.rs", &LIB.replace("a + b", "b + a"));
+    let graph = build_for_worktree(&root).unwrap();
+
+    let outcome = run_with(&Stage::default(), &root, &graph, &graph.changed, &NotFound).unwrap();
+
+    assert!(outcome.ran.is_empty(), "{:?}", outcome.ran);
+    let notes = outcome.notes.join("\n");
+    assert!(notes.contains("could not start (exit 127)"), "{notes}");
+    assert!(notes.contains(FULL_SUITE), "{notes}");
+}
+
+#[test]
+fn run_selects_the_committed_stage_diff() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    git(&root, &["init", "-b", "main"]);
+    git(&root, &["config", "user.email", "t@t.com"]);
+    git(&root, &["config", "user.name", "t"]);
+    write(&root, "web/package.json", VITEST_MANIFEST);
+    write(&root, "web/src/a.test.ts", WEB_TEST);
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-m", "A"]);
+    git(&root, &["checkout", "-b", "loom/s"]);
+    write(
+        &root,
+        "web/src/a.test.ts",
+        &format!("{WEB_TEST}// edited\n"),
+    );
+    git(&root, &["commit", "-am", "the stage's commit"]);
+
+    let outcome = run(&Stage::default(), &root, &CriteriaConfig::default(), "main").unwrap();
+
+    assert!(outcome.ran.is_empty(), "{:?}", outcome.ran);
+    assert!(
+        outcome
+            .notes
+            .iter()
+            .any(|note| note.contains("has no node_modules")),
+        "{:?}",
+        outcome.notes
+    );
 }

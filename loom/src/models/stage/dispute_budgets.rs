@@ -77,6 +77,7 @@ pub fn spend(stage: &mut Stage, kind: &DisputeKind) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::dispute::CriterionField;
 
     fn contract() -> DisputeKind {
         DisputeKind::Contract {
@@ -93,7 +94,7 @@ mod tests {
         }
         assert!(exhausted(&stage, &contract()));
         assert_eq!(stage.tally.contract_disputes, MAX_DISPUTES_PER_KIND);
-        let criterion = DisputeKind::Criterion { criterion_index: 0 };
+        let criterion = DisputeKind::criterion(CriterionField::Acceptance, 0);
         assert!(!exhausted(&stage, &criterion));
         assert!(!stage.dispute_budget_exhausted());
         assert_eq!(
@@ -105,8 +106,25 @@ mod tests {
     #[test]
     fn a_criterion_dispute_spends_the_dispute_count() {
         let mut stage = Stage::default();
-        spend(&mut stage, &DisputeKind::Criterion { criterion_index: 1 });
+        spend(
+            &mut stage,
+            &DisputeKind::criterion(CriterionField::Acceptance, 1),
+        );
         assert_eq!(stage.dispute_count, 1);
+    }
+
+    #[test]
+    fn every_criterion_field_spends_the_criterion_budget() {
+        let mut stage = Stage::default();
+        for field in [
+            CriterionField::Acceptance,
+            CriterionField::Wiring,
+            CriterionField::WiringTests,
+        ] {
+            spend(&mut stage, &DisputeKind::criterion(field, 0));
+        }
+        assert_eq!(stage.dispute_count, 3);
+        assert_eq!(stage.tally, DisputeTally::default());
     }
 
     /// `#[serde(flatten)]` must keep each tally counter a top-level key of the

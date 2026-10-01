@@ -11,6 +11,7 @@
 
 pub mod changes;
 pub mod completion;
+pub mod format_gate;
 pub mod refusal;
 pub mod site;
 mod special_walk;

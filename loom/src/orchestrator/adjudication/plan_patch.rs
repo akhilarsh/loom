@@ -37,7 +37,8 @@ pub(super) fn build_amendment_request(
     })
 }
 
-/// Decode `inner` into `(field, patch, reason)`, accepting either shape.
+/// Decode `inner` into `(field, patch, reason)`, accepting either shape. The
+/// wiring-tests field is read in its kebab or snake spelling.
 ///
 /// Returns a human-readable error STRING rather than `anyhow::Error`:
 /// `verdict.rs` needs the message verbatim inside a re-prompt question, and
@@ -48,9 +49,10 @@ pub(super) fn normalize(
     let field = match inner.get("field").and_then(|v| v.as_str()) {
         Some("acceptance") => AmendmentField::Acceptance,
         Some("wiring") => AmendmentField::Wiring,
+        Some("wiring-tests" | "wiring_tests") => AmendmentField::WiringTests,
         Some(other) => {
             return Err(format!(
-                "plan_patch field '{other}' must be acceptance|wiring"
+                "plan_patch field '{other}' must be acceptance|wiring|wiring-tests"
             ))
         }
         None => return Err("plan_patch missing 'field' string".to_string()),
@@ -60,8 +62,8 @@ pub(super) fn normalize(
 }
 
 /// Decode the patch and reason of `inner`, in either shape, leaving its
-/// `field` to the caller: a criterion dispute amends `acceptance` or `wiring`,
-/// a contract dispute `contracts`.
+/// `field` to the caller: a criterion dispute amends `acceptance`, `wiring` or
+/// `wiring-tests`, a contract dispute `contracts`.
 pub(super) fn decode_patch(inner: &Value) -> Result<(AmendmentPatch, Option<String>), String> {
     let patch: AmendmentPatch = if let Some(patch_obj) = inner.get("patch") {
         serde_json::from_value(patch_obj.clone())
@@ -194,6 +196,20 @@ mod tests {
         }));
         let err = normalize(&patch.inner).unwrap_err();
         assert!(err.contains("bogus"), "error: {err}");
+    }
+
+    #[test]
+    fn wiring_tests_field_decodes_in_both_spellings() {
+        for spelling in ["wiring-tests", "wiring_tests"] {
+            let inner = serde_json::json!({
+                "field": spelling,
+                "patch": {"op": "delete", "index": 0},
+            });
+            let (field, _, _) = normalize(&inner).unwrap();
+            assert_eq!(field, AmendmentField::WiringTests, "spelling {spelling}");
+            let canonical = canonical_inner(field, &AmendmentPatch::Delete { index: 0 }, None);
+            assert_eq!(canonical["field"], "wiring-tests");
+        }
     }
 
     #[test]

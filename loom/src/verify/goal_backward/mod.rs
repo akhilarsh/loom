@@ -23,6 +23,7 @@ pub use wiring::verify_wiring;
 pub use wiring_tests::verify_wiring_tests;
 
 use crate::context::worktree_graph::build_for_worktree;
+use crate::models::dispute::CriterionField;
 use crate::plan::schema::{CommandConfinement, StageDefinition};
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -45,19 +46,15 @@ pub fn run_goal_backward_verification(
         gaps.extend(verify_artifacts(&stage_def.artifacts, working_dir)?);
     }
 
-    // 2. Verify wiring (connections between components)
-    if !stage_def.wiring.is_empty() {
-        gaps.extend(verify_wiring(&stage_def.wiring, working_dir, plan_version)?);
-    }
-
-    // 3. Verify wiring tests (command-based integration verification)
-    if !stage_def.wiring_tests.is_empty() {
-        gaps.extend(verify_wiring_tests(
-            &stage_def.wiring_tests,
-            working_dir,
-            confinement,
-        )?);
-    }
+    // 2-3. Verify wiring checks (connections between components) and wiring
+    // tests (command-based integration verification), each gap labelled with
+    // its entry's index
+    gaps.extend(wiring_gaps(
+        stage_def,
+        working_dir,
+        confinement,
+        plan_version,
+    )?);
 
     // 4. Run dead code check if configured
     if let Some(dead_code_check) = &stage_def.dead_code_check {
@@ -82,6 +79,42 @@ pub fn run_goal_backward_verification(
     Ok(GoalBackwardResult::from_gaps(gaps))
 }
 
+/// The stage's wiring checks and wiring tests, verified one entry at a time so
+/// each gap's description starts `[wiring <n>]` or `[wiring_tests <n>]`: the
+/// 0-based index `loom stage dispute-criteria --field` takes.
+fn wiring_gaps(
+    stage_def: &StageDefinition,
+    working_dir: &Path,
+    confinement: CommandConfinement,
+    plan_version: u32,
+) -> Result<Vec<VerificationGap>> {
+    let mut gaps = Vec::new();
+    for (index, check) in stage_def.wiring.iter().enumerate() {
+        let found = verify_wiring(std::slice::from_ref(check), working_dir, plan_version)?;
+        gaps.extend(indexed_gaps(CriterionField::Wiring, index, found));
+    }
+    for (index, test) in stage_def.wiring_tests.iter().enumerate() {
+        let found = verify_wiring_tests(std::slice::from_ref(test), working_dir, confinement)?;
+        gaps.extend(indexed_gaps(CriterionField::WiringTests, index, found));
+    }
+    Ok(gaps)
+}
+
+/// `gaps` of entry `index` of `field`'s list, each description prefixed with
+/// `[<label> <index>]`.
+fn indexed_gaps(
+    field: CriterionField,
+    index: usize,
+    gaps: Vec<VerificationGap>,
+) -> Vec<VerificationGap> {
+    gaps.into_iter()
+        .map(|mut gap| {
+            gap.description = format!("[{} {index}] {}", field.gap_label(), gap.description);
+            gap
+        })
+        .collect()
+}
+
 /// Run a v2 stage's `reachable` checks against one worktree graph, built once
 /// for all of them. A graph that cannot be built is an error, never a pass.
 fn reachable_gaps(
@@ -95,4 +128,59 @@ fn reachable_gaps(
     let graph = build_for_worktree(working_dir)
         .context("building the worktree source graph for reachable checks")?;
     Ok(reachable::verify_reachable(&stage_def.reachable, &graph))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::schema::{SuccessCriteria, WiringCheck, WiringTest};
+
+    fn check(pattern: &str) -> WiringCheck {
+        WiringCheck {
+            source: "lib.rs".to_string(),
+            pattern: pattern.to_string(),
+            description: format!("{pattern} is wired"),
+            literal: false,
+        }
+    }
+
+    #[test]
+    fn gaps_name_their_wiring_and_wiring_tests_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("lib.rs"), "fn main() { start(); }\n").unwrap();
+        let stage_def = StageDefinition {
+            wiring: vec![check("start\\(\\)"), check("never_called")],
+            wiring_tests: vec![WiringTest {
+                name: "always fails".to_string(),
+                command: "false".to_string(),
+                success_criteria: SuccessCriteria::default(),
+                description: None,
+            }],
+            ..StageDefinition::default()
+        };
+
+        let result = run_goal_backward_verification(
+            &stage_def,
+            tmp.path(),
+            CommandConfinement::default(),
+            1,
+        )
+        .unwrap();
+
+        let descriptions: Vec<&str> = result
+            .gaps()
+            .iter()
+            .map(|gap| gap.description.as_str())
+            .collect();
+        assert_eq!(descriptions.len(), 2, "{descriptions:?}");
+        assert!(
+            descriptions[0].starts_with("[wiring 1] "),
+            "{descriptions:?}"
+        );
+        assert!(descriptions[0].contains("never_called"), "{descriptions:?}");
+        assert!(
+            descriptions[1].starts_with("[wiring_tests 0] "),
+            "{descriptions:?}"
+        );
+    }
 }

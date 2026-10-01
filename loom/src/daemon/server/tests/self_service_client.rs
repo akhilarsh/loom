@@ -99,6 +99,7 @@ fn dispute_request(stage_id: &str, session_id: &str) -> Request {
         auth_token: NO_TOKEN.to_string(),
         stage_id: stage_id.to_string(),
         session_id: session_id.to_string(),
+        field: crate::models::dispute::CriterionField::Acceptance,
         criterion_index: 0,
         reason: "criterion 41 contradicts its own data source".to_string(),
         evidence_commit: None,

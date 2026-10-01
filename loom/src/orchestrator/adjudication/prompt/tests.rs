@@ -23,7 +23,7 @@ fn dispute(criterion_index: usize) -> DisputeRequest {
     DisputeRequest {
         id: 1,
         stage_id: "demo".to_string(),
-        kind: DisputeKind::Criterion { criterion_index },
+        kind: DisputeKind::criterion(CriterionField::Acceptance, criterion_index),
         reason: "criterion impossible".to_string(),
         evidence_commit: None,
         failure_output: Some("err: something broke".to_string()),

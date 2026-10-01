@@ -14,7 +14,7 @@ mod review;
 
 pub use amend::{AmendField, AmendOp};
 pub use contracts::ContractsCommands;
-pub use disputes::{DisputeContractArgs, DisputeFindingsArgs, DisputeIntegrityArgs};
+pub use disputes::{DisputeContractArgs, DisputeField, DisputeFindingsArgs, DisputeIntegrityArgs};
 pub use review::ReviewCommands;
 
 #[derive(Subcommand)]
@@ -207,16 +207,22 @@ pub enum StageCommands {
         reject: Option<String>,
     },
 
-    /// Dispute an acceptance criterion. Files a structured dispute via the
-    /// daemon RPC; the daemon writes request.md and transitions the stage
-    /// to NeedsAdjudication. Verdict.md is written by the adjudicator
-    /// (daemon-only), never by the agent.
+    /// Dispute an acceptance criterion, a wiring check or a wiring test.
+    /// Files a structured dispute via the daemon RPC; the daemon writes
+    /// request.md and transitions the stage to NeedsAdjudication. Verdict.md
+    /// is written by the adjudicator (daemon-only), never by the agent.
     DisputeCriteria {
         /// Stage ID (alphanumeric, dash, underscore only; max 128 characters)
         #[arg(value_parser = clap_id_validator)]
         stage_id: String,
 
-        /// Index (0-based) of the acceptance criterion being disputed.
+        /// Which list --criterion-index indexes: `acceptance` (the default),
+        /// `wiring` or `wiring-tests`, as `loom stage complete` labels a
+        /// failure `[criterion n]`, `[wiring n]` or `[wiring_tests n]`.
+        #[arg(long, value_enum, default_value = "acceptance")]
+        field: DisputeField,
+
+        /// Index (0-based) of the disputed entry in --field's list.
         #[arg(long = "criterion-index")]
         criterion_index: usize,
 

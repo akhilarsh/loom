@@ -56,8 +56,7 @@ impl RelaySink for VecSink {
 
 #[test]
 fn relay_mode_writes_exactly_one_ticket_with_truncated_failure_output() {
-    use crate::models::session::SessionType;
-    use crate::relay::emit::test_support::context_for;
+    use crate::{models::session::SessionType, relay::emit::test_support::context_for};
     use std::fs;
 
     let fixture = context_for(SessionType::Stage);
@@ -65,6 +64,7 @@ fn relay_mode_writes_exactly_one_ticket_with_truncated_failure_output() {
 
     dispute_criteria_with_mode(
         "stage-a".to_string(),
+        CriterionField::Acceptance,
         0,
         "flaky".to_string(),
         None,
@@ -87,6 +87,7 @@ fn relay_mode_writes_exactly_one_ticket_with_truncated_failure_output() {
     assert_eq!(
         decoded,
         StageRequest::Dispute {
+            field: CriterionField::Acceptance,
             criterion_index: 0,
             reason: "flaky".to_string(),
             evidence_commit: None,
@@ -116,6 +117,7 @@ fn an_adjudication_session_is_refused_before_any_ticket_is_written() {
 
     let error = dispute_criteria_with_mode(
         "stage-a".to_string(),
+        CriterionField::Acceptance,
         0,
         "flaky".to_string(),
         None,
@@ -131,6 +133,38 @@ fn an_adjudication_session_is_refused_before_any_ticket_is_written() {
         fs::read_dir(&fixture.context.scratch_dir).unwrap().count(),
         0
     );
+}
+
+#[test]
+fn relay_mode_dispute_carries_its_field() {
+    use crate::models::session::SessionType;
+    use crate::relay::emit::test_support::context_for;
+    use std::fs;
+
+    let fixture = context_for(SessionType::Stage);
+    let mut sink = VecSink::default();
+
+    dispute_criteria_with_mode(
+        "stage-a".to_string(),
+        CriterionField::Wiring,
+        1,
+        "wrong check".to_string(),
+        None,
+        None,
+        RelayMode::Relay(fixture.context.clone()),
+        &fixture.cwd,
+        &mut sink,
+    )
+    .unwrap();
+
+    let ticket_path = fs::read_dir(&fixture.context.scratch_dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .next()
+        .unwrap();
+    let ticket = crate::relay::Ticket::decode(&fs::read(ticket_path).unwrap()).unwrap();
+    assert_eq!(ticket.payload["field"], "wiring");
+    assert_eq!(ticket.payload["criterion_index"], 1);
 }
 
 fn contract_dispute() -> Dispute {

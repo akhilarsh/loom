@@ -128,6 +128,29 @@ pub fn compute_or_local(
 /// anything else calls [`compute`].
 pub fn compute_local(repo: &WorktreeGit, target_branch: &str) -> Result<ChangeFingerprint> {
     let worktree = repo.work_tree();
+    let (base, paths) = changes_since_merge_base(repo, target_branch)?;
+    let mut entries = Vec::new();
+    for path in paths {
+        let content = match read_bounded(worktree, Path::new(&path), MAX_REVIEW_FILE_BYTES) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if is_not_found(&error) => None,
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading changed file {path}"));
+            }
+        };
+        entries.push((path, content));
+    }
+    Ok(fingerprint_from(&base, &entries))
+}
+
+/// The merge base of `HEAD` and `target_branch`, and every worktree-relative path changed
+/// since it: committed on the branch, changed in the index or working tree, or untracked
+/// and not ignored; worktree scaffolding and untracked sandbox artifacts left out.
+pub(crate) fn changes_since_merge_base(
+    repo: &WorktreeGit,
+    target_branch: &str,
+) -> Result<(String, BTreeSet<String>)> {
+    let worktree = repo.work_tree();
     let merge_base = git(repo, &["merge-base", "HEAD", target_branch])
         .with_context(|| format!("finding merge base with {target_branch}"))?;
     let base = String::from_utf8_lossy(&merge_base).trim().to_string();
@@ -141,22 +164,8 @@ pub fn compute_local(repo: &WorktreeGit, target_branch: &str) -> Result<ChangeFi
             .into_iter()
             .filter(|path| !is_tool_artifact(worktree, path)),
     );
-
-    let mut entries = Vec::new();
-    for path in paths {
-        if is_worktree_scaffold_path(&path) {
-            continue;
-        }
-        let content = match read_bounded(worktree, Path::new(&path), MAX_REVIEW_FILE_BYTES) {
-            Ok(bytes) => Some(bytes),
-            Err(error) if is_not_found(&error) => None,
-            Err(error) => {
-                return Err(error).with_context(|| format!("reading changed file {path}"));
-            }
-        };
-        entries.push((path, content));
-    }
-    Ok(fingerprint_from(&base, &entries))
+    paths.retain(|path| !is_worktree_scaffold_path(path));
+    Ok((base, paths))
 }
 
 /// The NUL-separated paths git listed, each required to be UTF-8.

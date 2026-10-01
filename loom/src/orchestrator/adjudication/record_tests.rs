@@ -1,5 +1,5 @@
 use super::*;
-use crate::models::dispute::{request_file, DisputeRequest, DisputeVerdictRecord};
+use crate::models::dispute::{request_file, CriterionField, DisputeRequest, DisputeVerdictRecord};
 use crate::models::stage::Stage;
 use crate::plan::schema::AcceptanceCriterion;
 use chrono::Utc;
@@ -26,7 +26,7 @@ fn write_request(work: &Path, dispute_id: u32) {
     let req = DisputeRequest {
         id: dispute_id,
         stage_id: "s1".to_string(),
-        kind: DisputeKind::Criterion { criterion_index: 0 },
+        kind: DisputeKind::criterion(CriterionField::Acceptance, 0),
         reason: "impossible".to_string(),
         evidence_commit: None,
         failure_output: None,

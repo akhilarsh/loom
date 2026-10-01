@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::fs::session_files::{load_session_exact, mark_session_terminal_reason};
 use crate::models::session::{Session, SessionExitReason, SessionStatus, SessionType};
+use crate::orchestrator::adjudication::close_open_disputes;
 use crate::orchestrator::session_registry::in_progress_sessions_for_stage;
 use crate::orchestrator::terminal::backend::SessionBackend;
 use crate::orchestrator::terminal::native::{session_process_status, SessionProcessStatus};
@@ -91,6 +92,9 @@ pub(super) fn reset_with(
         apply_reset(current);
         Ok(())
     })?;
+    // After the stage lock is released: a dispute filing takes the dispute
+    // lock, then the stage lock, and closing takes them in that order too.
+    close_open_disputes(work_dir, stage_id);
     let mode = if hard { "hard" } else { "soft" };
     println!("Stage '{stage_id}' reset to pending ({mode} reset)");
     Ok(())

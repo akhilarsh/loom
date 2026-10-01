@@ -803,9 +803,9 @@ pub enum StageStatus {
     #[serde(rename = "needs-human-review")]
     NeedsHumanReview,
 
-    /// Stage's acceptance criterion was disputed; awaiting an
-    /// adjudicator verdict. The dispute records live at
-    /// `.loom/work/disputes/<stage>/<n>/`.
+    /// Stage's criterion was disputed (acceptance criterion, wiring
+    /// check, or wiring test); awaiting an adjudicator verdict.
+    /// The dispute records live at `.loom/work/disputes/<stage>/<n>/`.
     #[serde(rename = "needs-adjudication")]
     NeedsAdjudication,
 }
