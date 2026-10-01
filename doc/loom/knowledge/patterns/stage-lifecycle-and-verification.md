@@ -183,3 +183,13 @@ instead of skipping functional verification of the static path.
 `Oversized`, `ParseError` — so a consumer can tell "no symbols here" from "not analysed".
 When adding a new extractor or analyser, the degraded paths are the ones to test: the happy
 path fails loudly, the degraded paths fail silently.
+
+## Stage Block Retires the Session (BLOCK-F)
+
+A stage that cannot finish disputes a wrong check or blocks on a need only a person can meet. The doctrine text is `STAGE_EXIT_RULES` (`orchestrator/signals/helpers.rs`), emitted by `append_completion_rules` for the standard, integration-verify and knowledge-distill prefixes and byte-identical in `skills/loom-orchestration/SKILL.md`; `STABLE_PREFIX_MAX_BYTES` is 8,192 (`tests_size.rs`).
+
+- **Block record.** `loom stage block <id> "<reason>"` (relayed, spooled, socket, or the daemon-down write in `commands/stage/state_relay.rs`) sets `Blocked`, `close_reason` and clears `failure_info`; so does `human-review --reject`. "Blocked with no `failure_info`" therefore means an agent's or operator's block or a rejected review, never a crash. Without the clearing, a stage that crashed once would read as crash-blocked after its agent's block: no retirement, the exit filed as a crash, an auto-retry of the stage the agent blocked.
+- **Retirement.** `StageBlocked` makes the daemon retire the live agent (`event_handler/blocked.rs`, `stage_takedown.rs::retirable_agents`), the operator's block included (a handoff is written). It never retires an adjudication or merge-resolution session (`MergeConflict -> Blocked` is legal and a killed resolver would never report `MergeSessionCompleted`), and a block with nothing to retire writes nothing, because a daemon restart re-emits `StageBlocked` for every Blocked stage. `take_down_agents` drops the `active_sessions` entry only when the tracked session was among the agents it took down, so a spared resolver keeps its handle.
+- **Display.** `loom status` shows `close_reason` after `commands/status/data/sanitize.rs` flattens it (an agent writes it); `attention_model.rs::blocked_guidance` gives an agent block the `loom stage retry <id>` guidance (`--force` at the retry limit) and keeps a crash-blocked stage with retries left on the auto-retry arm.
+- **Subagents never block or dispute.** `CLAUDE.md.template` and `loom-hooks/_subagent-preamble.txt` tell a subagent to report the need to its orchestrator: a relayed subagent block would retire the main session mid-orchestration. A relayed dispute's notice tells the agent to end its turn, as a relayed block's does.
+- **Gaps.** See [agent-rule-bending-hardening](../concerns/agent-rule-bending-hardening.md#stage-agents-stop-and-report-instead-of-disputing-or-blocking).

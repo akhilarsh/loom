@@ -319,3 +319,9 @@ declined", not "the workers finished".
 - `mistakes/subagent-orchestration.md` — delegation model, briefing, and non-liveness orchestration mistakes.
 - `mistakes/verification-harness.md` — when every check fails at once, suspect the harness.
 - `patterns/subagent-hierarchy.md` — choosing flat fan-out, a coordinator hierarchy, or a team.
+
+## `loom subagents watch` Exited 6 for a Worker That Had Already Handed Back
+
+**What happened:** a watch bound to two workers exited 6 (stalled) for one that had returned through `SubagentHandback` and completed about 15 minutes earlier. The watch did not take the handback as terminal evidence, kept waiting on the sibling, then judged the finished worker hung after 902 s (`.loom/work/subagents/<stage>/starts.jsonl`).
+
+**Prevention:** exit 6 is not proof of a dead worker. Harvest from disk (`loom subagents harvest`) and check the worker's handback before re-delegating its work.

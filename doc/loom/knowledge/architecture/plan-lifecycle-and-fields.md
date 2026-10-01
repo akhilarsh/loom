@@ -214,3 +214,39 @@ locations that need no new `mod` declaration; a stage whose only goal-backward c
 verified (the field is counted in `has_any_goal_checks`), but pair it with `artifacts` anyway; the integration-verify
 stage lists the full test command. The verification report document that two briefs cited as required reading was never tracked and is
 absent from every stage worktree: a plan whose briefs cite a doc commits it with the plan.
+
+## Plan Provision: Snapshot, Spawn Gate, Hardening
+
+`provision` is a `version: 2` plan field (`loom.provision`, entries `{ working_dir, command }`, `plan/schema/types_v2.rs::ProvisionEntry`) for host commands that prepare a worktree, such as a dependency install. It differs from `setup:`, which only prefixes acceptance commands inside the sandbox.
+
+- **Snapshot, never the live plan.** `loom init` copies the entries into the work directory's config file under `[plan_provision]`, beside `[plan_sandbox]` (`orchestrator/provision.rs::persist_plan_snapshots`, called from `commands/init/plan_setup.rs::initialize_with_plan`). The spawn gate reads only that copy: a stage's sandbox may write `doc/**`, plan files are not merge-gate control paths, and provision runs on the host, so reading the live plan would let a merged stage edit run host commands. To change entries mid-run the operator edits `[plan_provision]` and runs `loom stage retry <id>`.
+- **Where it runs.** `orchestrator/core/stage_executor.rs::start_stage` calls `pre_spawn_gates_passed`: the `before_stage` checks run on the pristine worktree FIRST, then `core/provision_gate.rs` provisions (`find_prior_stage_work` skips the before-stage delta proof when it sees an uncommitted, non-ignored file, which a provision could write). `start_stage` is the one path by which a worktree stage leaves the queue, so a first spawn, a retry, a handoff successor and a requeue after a verdict all pass it, for standard stages (before the contract session), integration-verify and knowledge-distill. Knowledge-bootstrap, adjudication and merge sessions, adopted live sessions and the contract phase's own spawns on the same worktree (`event_handler/contract_phase.rs::spawn_on_stage_worktree`) do not.
+- **Synchronous.** The gate runs in the daemon's scheduling pass like `before_stage`: each entry may take up to `PROVISION_TIMEOUT` (600 s) and other stages' events, crashes and completions wait. `run_with_fresh_tick` runs `keep_tick_fresh` on a helper thread that stamps the tick every 10 s, with a drop guard that stops the ticker even if `run_provision` panics, so `loom status` does not report a stalled loop. The executor waits for output up to about 10 s per stream after the deadline, so a timed-out entry lives about 620 s.
+- **Ignored files only.** The gate lists `git status --porcelain -z --untracked-files=all` before and after provisioning (`split_status_entries` joins a rename or copy entry with its NUL-separated origin path). An entry that appears only afterwards blocks the stage, naming the paths and "a provision command may write only files git ignores"; such a file would otherwise count as the contract session's own non-contract edit (`contracts/freeze.rs::checked_reports`) or as prior stage work. The comparison matches entry strings, so a provision rewriting a file already listed before it ran passes. A failing listing skips the comparison with a warning.
+- **Failure.** A failing command or an unignored write sets `failure_info` (`InfrastructureError`, the last 10 non-blank stderr lines cut to 300 characters) as well as `close_reason`, so attention never labels it an agent block. `loom stop` mid-install leaves the command to finish; the stage is still Queued and the next spawn provisions again.
+- **Handoff successors provision too.** If the previous session edited `package.json` without updating the lockfile, `--frozen-lockfile` fails and the stage blocks with `InfrastructureError` instead of continuing.
+
+**Install hardening is a plan validation error** (`plan/schema/validation/v2_fields/provision_installs.rs`), run by `loom plan verify` and `loom init`, so no unhardened entry reaches the snapshot: an agent-written `postinstall` or a repository `.npmrc` would otherwise run on the host on the next retry or handoff.
+
+| Install | Required form |
+| --- | --- |
+| `bun install` | `--ignore-scripts --backend=copyfile --config=/dev/null` (`BUN_INSTALL`) |
+| `npm ci` / `npm install` | `--ignore-scripts` |
+| `pnpm install` | `--ignore-scripts --ignore-pnpmfile` |
+| `yarn install` | `--ignore-scripts` (classic syntax) |
+| `uv sync` | `--frozen --no-install-project` |
+
+Every JS install also needs the leading `.npmrc` refusal: `test ! -e .npmrc && test ! -L .npmrc && ...` as the first two commands with every top-level operator `&&` (a newline after `&&` or at the end is allowed), because `test ! -e .npmrc; npm ci` or `... || true && ...` accepts a refusal that gates nothing. `changes_directory` walks `visit_argvs` (nested scripts, wrapper-stripped argv) and rejects `cd`, `pushd` and `popd` after the refusal, since the refusal tests only the entry's working directory. The JS-provision lint suggests exactly these forms from the same constants and skips dependency-free packages (`skills::project::probe::declares_dependencies`, which reads `package.json` root-anchored through `safe_read`; a symlinked or over 256 KiB manifest counts as declaring dependencies).
+
+## Plan Environment Lints
+
+`loom plan verify` judges the environment a stage needs, not only its fields (`plan/schema/validation/v2_lints/`):
+
+- **Registry domains** (`registry_domains.rs`): a sandboxed command that runs a registry tool (`bunx`, `npm install`, `cargo install`, `uv sync`) needs the registry's domain in the stage's allowed domains. `*.x` matches any host ending in `.x`, `*` matches every host, anything else matches exactly. It scans acceptance, setup, wiring tests, after-stage checks and the dead-code check, and skips `before_stage`, which runs on the host.
+- **JS provision** (`js_provision.rs`): a JS package with dependencies and no `provision` entry is an error. It runs on version 2 plans only because `provision` is v2-only; the registry and hook lints warn on v1 plans.
+- **Repository hooks** (`repo_hooks.rs`): a pre-commit hook that needs the network (a `bunx` call) requires the registry in every stage that commits. `read_to_string_bounded` refuses symlinked and non-regular hooks.
+- **Repository-level judgement.** The JS-provision and hook lints judge the checkout the plan sits in, so every v2 plan in this repository needs `provision: [{ working_dir: web, command: <hardened bun install> }]` and `registry.npmjs.org` in every sandboxed stage, and `loom/tests/fixtures/plans/v2-valid.md` passes `loom plan verify --strict` only from a scratch git repository holding that file.
+
+## Freeze-Time Formatter Gate
+
+`loom stage contracts freeze` refuses a contract file a formatter check would rewrite (`verify/contracts/format_gate.rs::format_problems`, called from `commands/stage/contracts/freeze.rs`), because a frozen file the stage's own `cargo fmt --check` rejects can never be fixed by the stage. Each formatter-check criterion of the stage runs with the stage's `setup` prefix, from its working directory, under its command confinement and the acceptance runner's timeouts (Simple 300 s, Extended 30 s). A criterion is a formatter check only when every simple command it expands to is one (`FLAG_CHECKS`, `BIOME_SUBCOMMANDS`, `SCRIPT_CHECKS`): a compound `cargo fmt --check && cargo clippy` is not run because contracts are red and uncompilable at freeze time, and `gofmt -l` is no check (it exits 0). Any failed or timed-out criterion gives a problem, so a formatter check that already fails at the stage's base blocks every freeze; plans keep formatter commands green at base. The refusal suffix in `freeze.rs` alone says to freeze again.

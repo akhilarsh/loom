@@ -65,7 +65,16 @@ event id because `gate::shortfall` reads the FIRST record per event. The evidenc
 dispute is what an accept records, not a re-scan.
 
 **Impact-selected tests** (`verify/impact_tests.rs`): tests reaching the changed nodes through `impact_with`,
-run per adapter through the criteria runner (300 s, certified cache). It also selects the nodes of changed
+run per adapter through the criteria runner (300 s, certified cache). The selection set is every node in a file the
+stage changed since its merge base with the target branch (`git merge-base HEAD <target>`, via
+`verify/review/fingerprint.rs::changes_since_merge_base`), not since the nearest published graph base; the graph itself
+is still layered on that base, and a commit that lands on the target after the stage branched is not a stage change.
+A runner's package comes from project detection, which skips `fixtures` directories, so test-data manifests are no
+packages. A JS package that declares dependencies but has no `node_modules` in its directory or any ancestor up to the
+root (`impact_tests/runs.rs::missing_node_modules`; a dependency-free package, or an unreadable or unparsable
+manifest, counts per `skills::project::probe::declares_dependencies`) is a note, as is any runner run that exits 127.
+Exit 127 cannot tell a missing runner from a suite that itself exits 127. Yarn PnP packages declare dependencies and
+have no `node_modules`, so they get the same note. It also selects the nodes of changed
 test files, since `impact_with` never returns its start node, but skips every test inside a contract FILE,
 so non-contract tests placed in a contract file run nowhere before integration-verify. Cargo targets are
 `Function` nodes named by a libtest path derived from `mod` declarations, `#[path]` included. The Rust

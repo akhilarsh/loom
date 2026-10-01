@@ -490,7 +490,7 @@ loom stage skip <stage-id> [--reason <text>]
 loom stage retry <stage-id> [--force] [--context <message>]
 loom stage merge [stage-id] [--resolved]
 loom stage human-review <stage-id> [--approve|--force-complete|--reject <reason>]
-loom stage dispute-criteria <stage-id> --criterion-index N --reason <text> [--evidence-commit <sha>] [--failure-output <path>]
+loom stage dispute-criteria <stage-id> [--field acceptance|wiring|wiring-tests] --criterion-index N --reason <text> [--evidence-commit <sha>] [--failure-output <path>]
 loom stage dispute-findings <stage-id> --finding <id>... --reason <text>       # Plan version 2: challenge open review findings
 loom stage dispute-contract <stage-id> --contract <id> --reason <text>        # Plan version 2: challenge a frozen contract
 loom stage dispute-integrity <stage-id> --event <id>... --reason <text>       # Plan version 2: challenge a test-integrity event
@@ -823,6 +823,7 @@ into `.loom/work/config.toml`'s `[context]` section at `loom init`.
 | `reachable` | stage | `symbol`, `from`, `description`, optional `min_confidence`: the new unit must be reachable from an entry point in the source graph |
 | `literal: true`, glob `source` | `wiring` entry | Match the pattern as literal text; let `source` be a glob (`*`, `?`, `[`). A pattern that matches only a definition of a name defined in that file is rejected, so point it at a consumer |
 | `ratchet_files` | plan | Exact paths of baseline or ledger files a stage could loosen; any change to one raises a test-integrity event |
+| `provision` | plan | Host commands that prepare each worktree (for example a dependency install), each with a `working_dir` and a `command`. `loom init` snapshots the entries into the work directory's `config.toml`; the daemon runs that snapshot, never the plan file, on the host in each worktree after the `before_stage` checks and before the session spawns. A failing entry blocks the stage. Entries must be idempotent, and `loom plan verify` rejects an install without the hardening flags and a JS package with no entry |
 
 ```yaml
 loom:
@@ -925,9 +926,11 @@ The comparison reports new failures and fixed failures. `policy` decides what a 
 
 ### Disputes, Adjudication, and Amendments
 
-`loom stage dispute-criteria` is how an agent challenges a criterion instead of quietly weakening it. The daemon moves the stage to `NeedsAdjudication` and spawns a real session — with the full tool surface, running the disputed criterion itself — to judge it; `loom stage adjudicate` records that session's verdict, and a stage's own worktree session is refused so it can never judge its own dispute.
+`loom stage dispute-criteria` is how an agent challenges a criterion instead of quietly weakening it; `--field wiring` or `--field wiring-tests` makes the index point into those lists instead of `acceptance`. The daemon moves the stage to `NeedsAdjudication` and spawns a real session — with the full tool surface, running the disputed criterion itself — to judge it; `loom stage adjudicate` records that session's verdict, and a stage's own worktree session is refused so it can never judge its own dispute.
 
-A verdict does one of three things: `Accept` patches `acceptance` or `wiring` and re-queues the stage; `NeedsMoreEvidence` appends the judge's questions to the next signal and re-queues, up to a capped number of rounds; `Reject` moves the stage to `NeedsHumanReview`. Every accepted amendment writes a numbered snapshot under `.loom/work/plan_versions/` plus an audit row.
+A need only a person can meet (a credential, a host install, a network domain the plan does not grant) is not a dispute: the agent runs `loom stage block <stage-id> "<what is needed and why>"`. A block, the agent's or the operator's, retires the stage's live session, so the agent's later exit is not filed as a crash, and shows the reason in `loom status`.
+
+A verdict does one of three things: `Accept` patches the disputed list (`acceptance`, `wiring` or `wiring_tests`; an acceptance dispute may also patch `wiring`) and re-queues the stage; `NeedsMoreEvidence` appends the judge's questions to the next signal and re-queues, up to a capped number of rounds; `Reject` moves the stage to `NeedsHumanReview`. Every accepted amendment writes a numbered snapshot under `.loom/work/plan_versions/` plus an audit row.
 
 Version 2 plans add three more dispute kinds, each filed once per review round with several ids: `dispute-findings` (a judge rules each finding `uphold`, `dismiss` or `defer` to a dependent stage that is not yet finished; integration-verify never defers), `dispute-contract` (`Accept` re-freezes the contract and may amend `contracts`; `Reject` sends the agent to `loom stage contracts restore`) and `dispute-integrity` (`Accept` records the event as accepted at its current count or hash). Each kind has its own budget of three disputes per stage.
 
