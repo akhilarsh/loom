@@ -6,9 +6,7 @@ use chrono::Utc;
 use crate::git::branch::branch_name_for_stage;
 use crate::git::cleanup::CleanupConfig;
 use crate::git::merge::{check_merge_state, MergeState};
-use crate::git::merge::{
-    get_conflicting_files_from_status, verify_merge_succeeded, MergeProbeOutcome,
-};
+use crate::git::merge::{merge_tree, verify_merge_succeeded, TreeMerge};
 use crate::models::failure::{FailureInfo, FailureType};
 use crate::models::session::Session;
 use crate::models::stage::StageStatus;
@@ -892,21 +890,15 @@ impl Orchestrator {
             &self.config.repo_root,
         );
 
-        // Get conflicting files. If MERGE_HEAD is already set,
-        // get_conflicting_files_from_status refuses (helper-level guard) — in
-        // that case we fall back to reading the active merge's unmerged paths
-        // directly. Only run the probe merge when there is NO active merge.
+        // Get conflicting files from a merge-tree dry run (touches no working
+        // tree). Skipped when MERGE_HEAD is already set: the signal then reads
+        // the active merge's unmerged paths directly.
         let conflicting_files = if crate::git::merge::merge_head_exists(&self.config.repo_root)? {
             Vec::new()
         } else {
-            match get_conflicting_files_from_status(
-                &source_branch,
-                &target_branch,
-                &self.config.repo_root,
-                &self.config.work_dir,
-            )? {
-                MergeProbeOutcome::Clean => Vec::new(),
-                MergeProbeOutcome::Conflicts(files) => files,
+            match merge_tree(&self.config.repo_root, &target_branch, &source_branch)? {
+                TreeMerge::Clean { .. } => Vec::new(),
+                TreeMerge::Conflict { paths } => paths,
             }
         };
 

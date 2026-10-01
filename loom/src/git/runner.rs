@@ -39,7 +39,7 @@ fn git_timeout(args: &[&str]) -> Duration {
         Some("clone" | "fetch" | "pull" | "push") => GIT_NETWORK_TIMEOUT,
         Some(
             "checkout" | "commit" | "merge" | "rebase" | "reset" | "restore" | "switch"
-            | "worktree",
+            | "worktree" | "merge-tree" | "commit-tree" | "update-ref" | "stash",
         ) => GIT_MUTATION_TIMEOUT,
         _ => GIT_READ_TIMEOUT,
     }
@@ -185,6 +185,9 @@ mod tests {
     fn git_deadlines_are_operation_specific() {
         assert_eq!(git_timeout(&["status"]), GIT_READ_TIMEOUT);
         assert_eq!(git_timeout(&["merge"]), GIT_MUTATION_TIMEOUT);
+        for sub in ["merge-tree", "commit-tree", "update-ref", "stash"] {
+            assert_eq!(git_timeout(&[sub]), GIT_MUTATION_TIMEOUT);
+        }
         assert_eq!(git_timeout(&["fetch"]), GIT_NETWORK_TIMEOUT);
         assert!(GIT_READ_TIMEOUT < GIT_MUTATION_TIMEOUT);
         assert!(GIT_MUTATION_TIMEOUT < GIT_NETWORK_TIMEOUT);

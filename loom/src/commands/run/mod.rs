@@ -6,6 +6,7 @@
 pub(crate) mod checks;
 mod confinement;
 mod foreground;
+mod git_preflight;
 mod graph_loader;
 mod plan_inputs;
 mod sandbox_preflight;
@@ -107,6 +108,7 @@ fn prepare_background_run(backend: Option<String>) -> Result<WorkDir> {
 /// The startup preflights both entry points run before the plan is marked in
 /// progress, in order: the confinement refusals (`confinement`, plan section
 /// 12); advisory Remote Control, which never aborts startup; the hard
+/// git-version check (merges need `git merge-tree --write-tree`); the hard
 /// sandbox-prerequisite check, because like `require_jq` a missing
 /// `bwrap`/`socat` or WSL1 makes every session exit at startup, and failing
 /// here beats burning the retry budget on a deterministic refusal; then the
@@ -117,6 +119,7 @@ fn run_startup_preflights(work_dir: &WorkDir) -> Result<()> {
     if let Ok(claude_path) = crate::claude::find_claude_path() {
         crate::remote_control::run_startup_preflight(&claude_path, work_dir.root());
     }
+    git_preflight::require_min_git_version(work_dir.root())?;
     sandbox_preflight::require_sandbox_prerequisites(work_dir.root())?;
     checks::advisory_codex_lane_preflight(work_dir.root());
     Ok(())

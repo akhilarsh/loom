@@ -4,7 +4,7 @@
 //! when stages reach the Completed status. It integrates with the existing
 //! merge infrastructure and can spawn conflict resolution sessions when needed.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::path::Path;
 
 use crate::git::branch::branch_name_for_stage;
@@ -98,13 +98,14 @@ pub fn attempt_auto_merge(
             files_changed,
             insertions,
             deletions,
+            ..
         } => Ok(AutoMergeResult::Success {
             files_changed,
             insertions,
             deletions,
         }),
 
-        MergeResult::FastForward => Ok(AutoMergeResult::FastForward),
+        MergeResult::Blocked(block) => bail!("Merge blocked: {block}"),
 
         MergeResult::AlreadyUpToDate => Ok(AutoMergeResult::AlreadyUpToDate),
 
@@ -113,9 +114,8 @@ pub fn attempt_auto_merge(
             let source_branch = branch_name_for_stage(&stage.id);
             let session = Session::new_merge(source_branch.clone(), target_branch.to_string());
 
-            // Generate the merge signal file. Fresh conflict path: no
-            // in-progress merge to inherit (the test merge in merge_stage was
-            // aborted before returning Conflict).
+            // Generate the merge signal file. Fresh conflict path: merge_stage
+            // uses merge-tree, so there is no in-progress merge to inherit.
             let signal_path = generate_merge_signal(
                 &session,
                 stage,

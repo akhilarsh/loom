@@ -6,9 +6,8 @@
 //!
 //! * Active merges in the main repo must NOT be silently piggybacked when
 //!   they cannot be attributed to the stage being completed.
-//! * Helpers that rewrite git state (`merge_stage`,
-//!   `get_conflicting_files_from_status`) refuse to run when `MERGE_HEAD`
-//!   is set — never `git merge --abort` an in-progress resolution.
+//! * `merge_stage` refuses to run when `MERGE_HEAD` is set and leaves the
+//!   in-progress resolution alone.
 //! * `--force-unsafe --assume-merged` checks ancestry before lying.
 //! * `--force-unsafe` alone refuses when an active merge for the stage is
 //!   in progress (would orphan MERGE_HEAD).
@@ -23,7 +22,7 @@ use serial_test::serial;
 use tempfile::TempDir;
 
 use loom::commands::stage::complete::{route_complete_for_conflicts, CompleteConflictRoute};
-use loom::git::merge::{merge_head_exists, merge_stage};
+use loom::git::merge::{merge_head_exists, merge_stage, MergeBlock, MergeResult};
 use loom::models::stage::{Stage, StageStatus, StageType};
 use loom::orchestrator::merge_attribution::{
     reconcile_main_repo_active_merge, ReconciliationOutcome,
@@ -215,8 +214,11 @@ fn merge_stage_refuses_when_merge_head_set_main_repo() {
     let work_dir = make_work_dir(root);
     let result = merge_stage("blockee", "main", root, &work_dir);
     assert!(
-        result.is_err(),
-        "merge_stage must refuse with active MERGE_HEAD"
+        matches!(
+            result,
+            Ok(MergeResult::Blocked(MergeBlock::OperatorOperation { .. }))
+        ),
+        "merge_stage must refuse with active MERGE_HEAD, got {result:?}"
     );
     assert!(
         merge_head_exists(root).unwrap(),

@@ -11,7 +11,7 @@ file src/commands/graph/tests.rs 425
 file src/commands/init/tests.rs 449
 file src/commands/plan/verify.rs 555
 file src/commands/stage/complete.rs 759
-file src/commands/stage/merge.rs 493
+file src/commands/stage/merge.rs 483
 file src/commands/stage/tests/complete.rs 534
 file src/fs/permissions/hooks.rs 446
 file src/fs/permissions/settings.rs 422
@@ -22,7 +22,7 @@ file src/git/worktree/base.rs 469
 file src/git/worktree/settings.rs 462
 file src/models/stage/methods.rs 677
 file src/models/stage/types.rs 1015
-file src/orchestrator/core/merge_handler.rs 1115
+file src/orchestrator/core/merge_handler.rs 1107
 file src/orchestrator/core/recovery.rs 1462
 file src/orchestrator/core/stage_executor.rs 597
 file src/orchestrator/merge_attribution.rs 543
@@ -49,7 +49,7 @@ file src/verify/transitions/state.rs 433
 file tests/adjudication_e2e.rs 525
 file tests/e2e/tmux_backend.rs 588
 file tests/failure_resume.rs 468
-file tests/integration/merge_conflict_recovery.rs 412
+file tests/integration/merge_conflict_recovery.rs 414
 file tests/integration/plan_verify.rs 1028
 
 function src/cli/dispatch.rs dispatch 86
@@ -81,7 +81,7 @@ function src/commands/stage/complete.rs route_complete_for_conflicts 159
 function src/commands/stage/complete.rs run_verification_phase 99
 function src/commands/stage/knowledge_complete.rs complete_knowledge_stage 122
 function src/commands/stage/merge.rs merge_resolved 80
-function src/commands/stage/merge.rs merge_retry 129
+function src/commands/stage/merge.rs merge_retry 119
 function src/commands/stage/merge_resolver.rs spawn_merge_resolver 64
 function src/commands/stage/progressive_complete.rs attempt_progressive_merge 113
 function src/commands/stage/progressive_complete.rs complete_with_merge 80
@@ -114,7 +114,6 @@ function src/fs/safe_fs.rs safe_replace_outside_workdir 138
 function src/fs/session_files.rs find_session_file 55
 function src/fs/work_integrity.rs validate_work_dir_state 60
 function src/fs/worktree_files/sessions.rs cleanup_sessions_for_stage 79
-function src/git/merge/mod.rs merge_stage 112
 function src/git/worktree/base.rs resolve_base_branch 92
 function src/git/worktree/discovery.rs find_worktree_by_prefix 55
 function src/git/worktree/operations.rs create_worktree 115
@@ -130,7 +129,7 @@ function src/orchestrator/core/event_handler.rs handle_one_event 116
 function src/orchestrator/core/merge_handler.rs finalize_merge_resolution 97
 function src/orchestrator/core/merge_handler.rs handle_merge_session_completed 168
 function src/orchestrator/core/merge_handler.rs read_plan_level_auto_merge 61
-function src/orchestrator/core/merge_handler.rs spawn_merge_resolution_session 78
+function src/orchestrator/core/merge_handler.rs spawn_merge_resolution_session 72
 function src/orchestrator/core/merge_handler.rs try_auto_merge 214
 function src/orchestrator/core/merge_handler.rs verify_and_finalize_merge 65
 function src/orchestrator/core/orchestrator.rs new 67

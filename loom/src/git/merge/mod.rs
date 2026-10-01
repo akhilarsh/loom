@@ -1,16 +1,18 @@
 //! Git merge operations for integrating worktree branches
 
+mod checkout_apply;
+mod checkout_state;
 pub mod in_progress;
 pub mod lock;
-mod probe;
 mod status;
+mod tree;
 
 use anyhow::{bail, Result};
 use std::path::Path;
 use std::time::Duration;
 
-use super::branch::{branch_exists, branch_name_for_stage, current_branch, is_ancestor_of};
-use crate::git::runner::{run_git, run_git_checked};
+use super::branch::{branch_exists, branch_name_for_stage, is_ancestor_of};
+use crate::git::runner::run_git_checked;
 use lock::MergeLock;
 
 // Re-export status types for use by other modules
@@ -18,15 +20,13 @@ pub use in_progress::{
     detect_in_progress_merge_at, detect_in_progress_merge_at_worktree, detect_in_progress_merges,
     git_dir_for_repo_path, merge_head_exists, ActiveMergeState, InProgressMerge, MergeLocation,
 };
-pub use probe::{
-    get_conflicting_files_from_status, MergeProbeError, MergeProbeOutcome, MergeProbeResult,
-};
 pub use status::{build_merge_report, check_merge_state, MergeState, MergeStatusReport};
+pub use tree::{advance_target, commit_merge, merge_tree, Advance, MergeBlock, TreeMerge};
 
 /// Result of a merge operation
 #[derive(Debug, Clone)]
 pub enum MergeResult {
-    /// Merge completed successfully
+    /// The target branch now points at a two-parent merge commit.
     Success {
         /// Number of files changed
         files_changed: u32,
@@ -34,54 +34,58 @@ pub enum MergeResult {
         insertions: u32,
         /// Number of deletions
         deletions: u32,
+        /// Ref holding the operator's stashed changes when they were
+        /// reapplied around the merge.
+        backup_ref: Option<String>,
     },
-    /// Merge has conflicts that need resolution
+    /// Merge has conflicts that need resolution; nothing was changed.
     Conflict {
         /// List of files with conflicts
         conflicting_files: Vec<String>,
     },
-    /// Fast-forward merge (no actual merge commit needed)
-    FastForward,
-    /// Nothing to merge (branches are identical)
+    /// Nothing to merge (the stage branch is already in the target)
     AlreadyUpToDate,
+    /// The merge was computed but the target was not advanced.
+    Blocked(MergeBlock),
 }
 
-/// Refuse to run a merge operation if `MERGE_HEAD` is already set on the
-/// given repo path. Returns a distinct error so callers can surface it
-/// instead of clobbering the existing merge.
-///
-/// Defense in depth alongside attribution-aware recovery: even if a caller
-/// forgets to check, the helper-level guard prevents `git merge --abort`
-/// from running over the user's in-progress resolution.
-fn require_no_active_merge(repo_root: &Path) -> Result<()> {
+/// Operator operations that make a merge refuse: marker paths relative to
+/// the git dir of the main checkout.
+const OPERATOR_MARKERS: [&str; 4] = [
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "rebase-merge",
+    "rebase-apply",
+];
+
+/// The marker of an operator operation in progress in the main checkout.
+fn operator_operation(repo_root: &Path) -> Result<Option<String>> {
     if merge_head_exists(repo_root)? {
-        bail!(
-            "Refusing to run merge operation: a merge is already in progress at {}. \
-             Resolve or abort it first (cd {}; git merge --abort).",
-            repo_root.display(),
-            repo_root.display(),
-        );
+        return Ok(Some("MERGE_HEAD".to_string()));
     }
-    Ok(())
+    let git_dir = git_dir_for_repo_path(repo_root)?;
+    Ok(OPERATOR_MARKERS
+        .iter()
+        .find(|marker| git_dir.join(marker).exists())
+        .map(|marker| marker.to_string()))
 }
 
-/// Merge a stage branch to target branch (typically main)
+/// Merge a stage branch into the target branch (typically main) without
+/// changing the main checkout beyond a final fast-forward.
 ///
-/// Steps:
-/// 1. Acquire merge lock to prevent concurrent merges
-/// 2. Checkout target branch
-/// 3. Merge stage branch (loom/{stage_id})
-/// 4. Return merge result
-///
-/// The merge lock is held for the duration of the operation and automatically
-/// released when the function returns.
+/// Steps, under the merge lock:
+/// 1. Refuse while the operator has a merge, cherry-pick, revert or rebase
+///    in progress in the checkout.
+/// 2. Compute the merge with `git merge-tree`; conflicts leave everything
+///    untouched.
+/// 3. Commit it with `git commit-tree` and advance the target with
+///    [`advance_target`].
 pub fn merge_stage(
     stage_id: &str,
     target_branch: &str,
     repo_root: &Path,
     work_dir: &Path,
 ) -> Result<MergeResult> {
-    // Acquire merge lock to prevent concurrent merges
     let _lock = MergeLock::acquire(work_dir, Duration::from_secs(30)).map_err(|e| {
         anyhow::anyhow!(
             "Could not acquire merge lock: {}. Another merge may be in progress.",
@@ -89,103 +93,60 @@ pub fn merge_stage(
         )
     })?;
 
-    // Refuse if MERGE_HEAD already exists — running here would `git merge
-    // --abort` an active resolution and lose work.
-    require_no_active_merge(repo_root)?;
+    if let Some(marker) = operator_operation(repo_root)? {
+        return Ok(MergeResult::Blocked(MergeBlock::OperatorOperation {
+            marker,
+        }));
+    }
 
     let branch_name = branch_name_for_stage(stage_id);
-
-    // First, check that the branch exists
     if !branch_exists(&branch_name, repo_root)? {
         bail!("Branch '{branch_name}' does not exist");
     }
-
-    // Get current branch to restore later if needed
-    let original_branch = current_branch(repo_root)?;
-
-    // Checkout target branch
-    checkout_branch(target_branch, repo_root)?;
-
-    // Attempt merge
-    let msg = format!("Merge {branch_name} into {target_branch}");
-    let output = run_git(&["merge", "--no-ff", "-m", &msg, &branch_name], repo_root)?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if output.status.success() {
-        // Parse merge output to determine result type (git output is C locale, safe to match)
-        if stdout.contains("Already up to date") || stdout.contains("Already up-to-date") {
-            return Ok(MergeResult::AlreadyUpToDate);
-        }
-
-        if stdout.contains("Fast-forward") {
-            return Ok(MergeResult::FastForward);
-        }
-
-        // Parse stats from merge output
-        let stats = parse_merge_stats(&stdout);
-        return Ok(MergeResult::Success {
-            files_changed: stats.0,
-            insertions: stats.1,
-            deletions: stats.2,
-        });
+    let old = tree::rev_parse(repo_root, target_branch)?;
+    let branch_tip = tree::rev_parse(repo_root, &branch_name)?;
+    if is_ancestor_of(&branch_tip, &old, repo_root)? {
+        return Ok(MergeResult::AlreadyUpToDate);
     }
 
-    // C-8: Detect conflicts structurally — check MERGE_HEAD (set by git on conflict)
-    // and confirm with `git diff --diff-filter=U`. This is locale-independent unlike
-    // matching the word "CONFLICT" in stderr (which git localises).
-    let has_merge_head = merge_head_exists(repo_root).unwrap_or(false);
-    let unmerged_files = if has_merge_head {
-        get_conflicting_files(repo_root).unwrap_or_default()
-    } else {
-        Vec::new()
+    merge_and_advance(repo_root, stage_id, target_branch, &old, &branch_tip)
+}
+
+/// Compute, commit and land the merge of `branch_tip` into `old`.
+fn merge_and_advance(
+    repo_root: &Path,
+    stage_id: &str,
+    target_branch: &str,
+    old: &str,
+    branch_tip: &str,
+) -> Result<MergeResult> {
+    let merged_tree = match merge_tree(repo_root, old, branch_tip)? {
+        TreeMerge::Clean { tree } => tree,
+        TreeMerge::Conflict { paths } => {
+            return Ok(MergeResult::Conflict {
+                conflicting_files: paths,
+            })
+        }
     };
-
-    if has_merge_head && !unmerged_files.is_empty() {
-        // Abort the merge to leave repo in clean state
-        abort_merge(repo_root).ok();
-
-        // Restore original branch
-        checkout_branch(&original_branch, repo_root).ok();
-
-        return Ok(MergeResult::Conflict {
-            conflicting_files: unmerged_files,
-        });
-    }
-
-    // Non-conflict failure — abort any partial merge state and restore branch,
-    // so all failure paths leave the repo clean (C-8 requirement).
-    if merge_head_exists(repo_root).unwrap_or(false) {
-        abort_merge(repo_root).ok();
-    }
-    checkout_branch(&original_branch, repo_root).ok();
-
-    // D-9: use canonical command+dir+exit+stdout+stderr error format (conventions.md).
-    let exit_code = output
-        .status
-        .code()
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| "signal".to_string());
-
-    bail!(
-        "git merge failed (exit code {exit_code}):\n\
-         Command: git merge --no-ff -m <msg> {branch_name}\n\
-         Directory: {}\n\
-         Stdout: {}\n\
-         Stderr: {}",
-        repo_root.display(),
-        if stdout.trim().is_empty() {
-            "(empty)"
-        } else {
-            stdout.trim()
-        },
-        if stderr.trim().is_empty() {
-            "(empty)"
-        } else {
-            stderr.trim()
-        },
+    let msg = format!(
+        "Merge {} into {target_branch}",
+        branch_name_for_stage(stage_id)
     );
+    let merge_commit = commit_merge(repo_root, &merged_tree, [old, branch_tip], &msg)?;
+    let shortstat = run_git_checked(&["diff", "--shortstat", old, &merge_commit], repo_root)?;
+    let (files_changed, insertions, deletions) = parse_merge_stats(&shortstat);
+
+    Ok(
+        match advance_target(repo_root, target_branch, old, &merge_commit, stage_id)? {
+            Advance::Advanced { backup_ref } => MergeResult::Success {
+                files_changed,
+                insertions,
+                deletions,
+                backup_ref,
+            },
+            Advance::Blocked(block) => MergeResult::Blocked(block),
+        },
+    )
 }
 
 /// Parse merge statistics from git output
@@ -227,106 +188,6 @@ pub fn get_conflicting_files(repo_root: &Path) -> Result<Vec<String>> {
     Ok(files)
 }
 
-/// Abort a merge in progress
-pub fn abort_merge(repo_root: &Path) -> Result<()> {
-    let output = run_git(&["merge", "--abort"], repo_root)?;
-
-    if !output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let exit_code = output
-            .status
-            .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "signal".to_string());
-
-        bail!(
-            "git merge --abort failed (exit code {exit_code}):\n\
-             Directory: {}\n\
-             Stdout: {}\n\
-             Stderr: {}",
-            repo_root.display(),
-            if stdout.is_empty() {
-                "(empty)"
-            } else {
-                stdout.trim()
-            },
-            if stderr.is_empty() {
-                "(empty)"
-            } else {
-                stderr.trim()
-            }
-        );
-    }
-
-    Ok(())
-}
-
-/// Checkout a branch
-pub fn checkout_branch(branch_name: &str, repo_root: &Path) -> Result<()> {
-    let output = run_git(&["checkout", branch_name], repo_root)?;
-
-    if !output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let exit_code = output
-            .status
-            .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "signal".to_string());
-
-        bail!(
-            "git checkout '{branch_name}' failed (exit code {exit_code}):\n\
-             Directory: {}\n\
-             Stdout: {}\n\
-             Stderr: {}",
-            repo_root.display(),
-            if stdout.is_empty() {
-                "(empty)"
-            } else {
-                stdout.trim()
-            },
-            if stderr.is_empty() {
-                "(empty)"
-            } else {
-                stderr.trim()
-            }
-        );
-    }
-
-    Ok(())
-}
-
-/// Get conflict resolution instructions
-pub fn conflict_resolution_instructions(
-    stage_id: &str,
-    target_branch: &str,
-    conflicts: &[String],
-) -> String {
-    let mut instructions = String::new();
-
-    instructions.push_str(&format!(
-        "Merge conflict detected when merging loom/{stage_id} into {target_branch}\n\n"
-    ));
-    instructions.push_str("Conflicting files:\n");
-    for file in conflicts {
-        instructions.push_str(&format!("  - {file}\n"));
-    }
-    instructions.push_str("\nTo resolve:\n");
-    instructions.push_str("  1. cd to repository root\n");
-    instructions.push_str(&format!("  2. git checkout {target_branch}\n"));
-    instructions.push_str(&format!("  3. git merge loom/{stage_id}\n"));
-    instructions.push_str("  4. Resolve conflicts in the listed files\n");
-    instructions.push_str("  5. git add <resolved files>\n");
-    instructions.push_str("  6. git commit\n");
-    instructions.push_str(&format!(
-        "  7. loom stage merge {stage_id} --resolved (the daemon removes the worktree and \
-         branch after applying this)\n"
-    ));
-
-    instructions
-}
-
 /// Verify that a merge actually succeeded by checking git ancestry.
 ///
 /// This prevents "phantom merges" where the merged flag is set but the code
@@ -350,5 +211,9 @@ pub fn verify_merge_succeeded(
     is_ancestor_of(completed_commit, target_branch, repo_root)
 }
 
+#[cfg(test)]
+mod stage_tests;
+#[cfg(test)]
+mod test_support;
 #[cfg(test)]
 mod tests;

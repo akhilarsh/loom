@@ -57,7 +57,13 @@ pub fn merge_completed_stage(
         MergeResult::Success { files_changed, .. } => {
             ProgressiveMergeResult::Success { files_changed }
         }
-        MergeResult::FastForward => ProgressiveMergeResult::FastForward,
+        MergeResult::Blocked(block) => {
+            return Err(anyhow::anyhow!(
+                "Merge of stage {} into {} blocked: {block}",
+                stage.id,
+                merge_point
+            ))
+        }
         MergeResult::AlreadyUpToDate => ProgressiveMergeResult::AlreadyMerged,
         MergeResult::Conflict { conflicting_files } => {
             ProgressiveMergeResult::Conflict { conflicting_files }

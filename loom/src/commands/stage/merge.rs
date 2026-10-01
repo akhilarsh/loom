@@ -196,6 +196,7 @@ fn merge_retry(stage_id: Option<String>) -> Result<()> {
             files_changed,
             insertions,
             deletions,
+            ..
         }) => {
             println!("Merge successful!");
             println!("  {files_changed} files changed, +{insertions} -{deletions}");
@@ -222,23 +223,12 @@ fn merge_retry(stage_id: Option<String>) -> Result<()> {
             }
         }
 
-        Ok(MergeResult::FastForward) => {
-            println!("Fast-forward merge completed!");
-
-            update_stage(&stage_id, work_dir, |s| {
-                s.merge_conflict = false;
-                s.try_complete_merge()
-            })?;
-
-            println!("Stage '{stage_id}' merge complete! (Completed, merged: true)");
-
-            trigger_and_report(&stage_id, work_dir, &repo_root, &target_branch)?;
-
-            let outcome = finish_merge_and_report(&stage_id, &repo_root, work_dir, &target_branch);
-            if !matches!(outcome, CleanupOutcome::Done(_)) {
-                println!("\nConsider cleaning up: loom worktree remove {stage_id}");
-            }
-        }
+        Ok(MergeResult::Blocked(block)) => report_merge_error(
+            &stage,
+            work_dir,
+            &repo_root,
+            &anyhow::anyhow!("Merge blocked: {block}"),
+        ),
 
         Ok(MergeResult::AlreadyUpToDate) => {
             println!("Branch is already up to date with {target_branch}.");
