@@ -26,7 +26,6 @@ fn test_generate_merge_signal_basic() {
         "loom/stage-1",
         "main",
         &conflicting_files,
-        None,
         &work_dir,
     );
 
@@ -54,15 +53,7 @@ fn test_generate_merge_signal_empty_conflicts() {
     let session = create_test_session();
     let stage = create_test_stage();
 
-    let result = generate_merge_signal(
-        &session,
-        &stage,
-        "loom/stage-1",
-        "main",
-        &[],
-        None,
-        &work_dir,
-    );
+    let result = generate_merge_signal(&session, &stage, "loom/stage-1", "main", &[], &work_dir);
 
     assert!(result.is_ok());
     let signal_path = result.unwrap();
@@ -78,14 +69,8 @@ fn test_format_merge_signal_content_sections() {
     let stage = create_test_stage();
     let conflicting_files = vec!["src/test.rs".to_string()];
 
-    let content = format_merge_signal_content(
-        &session,
-        &stage,
-        "loom/stage-1",
-        "main",
-        &conflicting_files,
-        None,
-    );
+    let content =
+        format_merge_signal_content(&session, &stage, "loom/stage-1", "main", &conflicting_files);
 
     // Check all required sections are present
     assert!(content.contains("# Merge Signal:"));
@@ -98,8 +83,8 @@ fn test_format_merge_signal_content_sections() {
     assert!(content.contains("## Important"));
 
     // Check key instructions
-    assert!(content.contains("git merge loom/stage-1"));
-    assert!(content.contains("Resolve conflicts"));
+    assert!(content.contains("git merge main"));
+    assert!(content.contains("Resolve the conflicts"));
     assert!(content.contains("git add"));
     assert!(content.contains("git commit"));
     // The daemon removes the worktree after `--resolved`; the session is never
@@ -124,7 +109,6 @@ fn test_read_merge_signal() {
         "loom/stage-1",
         "main",
         &conflicting_files,
-        None,
         &work_dir,
     )
     .unwrap();
@@ -180,76 +164,59 @@ fn test_read_merge_signal_nonexistent() {
 }
 
 #[test]
-fn signal_text_for_none_includes_run_git_merge() {
+fn signal_directs_the_resolver_to_the_stage_worktree() {
     let session = create_test_session();
     let stage = create_test_stage();
 
-    let content = format_merge_signal_content(&session, &stage, "loom/stage-1", "main", &[], None);
+    let content = format_merge_signal_content(&session, &stage, "loom/stage-1", "main", &[]);
+    assert!(content.contains(".worktrees/stage-1"), "{content}");
     assert!(
-        content.contains("git merge loom/stage-1"),
-        "fresh-merge signal must direct agent to run `git merge`"
+        content.contains("git merge main"),
+        "the resolver merges the target into the stage branch: {content}"
     );
+    assert!(
+        content.contains("continue it; do not start a new `git merge`"),
+        "{content}"
+    );
+    assert!(
+        content.contains("never run git or edit files there"),
+        "{content}"
+    );
+    assert!(!content.contains("in the main repository"), "{content}");
+    assert!(!content.contains("git merge loom/stage-1"), "{content}");
 }
 
 #[test]
-fn signal_text_for_has_unmerged_paths_says_do_not_run_git_merge_again() {
-    use crate::git::merge::{ActiveMergeState, InProgressMerge, MergeLocation};
-    use std::path::PathBuf;
-
+fn signal_has_the_acceptance_step_and_section_for_a_stage_with_criteria() {
     let session = create_test_session();
     let stage = create_test_stage();
-    let merge = InProgressMerge {
-        location: MergeLocation::MainRepo {
-            repo_path: PathBuf::from("/tmp/repo"),
-            git_dir: PathBuf::from("/tmp/repo/.git"),
-        },
-        merge_heads: vec!["abc1234".to_string()],
-        state: ActiveMergeState::HasUnmergedPaths(vec!["file.rs".to_string()]),
-    };
 
-    let content = format_merge_signal_content(
-        &session,
-        &stage,
-        "loom/stage-1",
-        "main",
-        &["file.rs".to_string()],
-        Some(&merge),
-    );
+    let content = format_merge_signal_content(&session, &stage, "loom/stage-1", "main", &[]);
     assert!(
-        content.contains("merge is already in progress at"),
-        "signal must announce existing merge: {content}"
+        content.contains("acceptance criteria (listed below) in this worktree"),
+        "{content}"
     );
-    assert!(
-        content.contains("Do NOT run `git merge` again"),
-        "signal must instruct against re-running git merge: {content}"
-    );
+    assert!(content.contains("## Acceptance Criteria"), "{content}");
+    assert!(content.contains("- [ ] All tests pass"), "{content}");
+    assert!(!content.contains("Do NOT re-run"), "{content}");
+    assert!(!content.contains("already passed"), "{content}");
+    let task = content.find("## Your Task").unwrap();
+    let resolved = content.find("loom stage merge stage-1 --resolved").unwrap();
+    assert!(task < resolved, "{content}");
 }
 
 #[test]
-fn signal_text_for_resolved_but_uncommitted_says_review_staged_changes() {
-    use crate::git::merge::{ActiveMergeState, InProgressMerge, MergeLocation};
-    use std::path::PathBuf;
-
+fn signal_omits_the_acceptance_section_for_a_stage_without_criteria() {
     let session = create_test_session();
-    let stage = create_test_stage();
-    let merge = InProgressMerge {
-        location: MergeLocation::MainRepo {
-            repo_path: PathBuf::from("/tmp/repo"),
-            git_dir: PathBuf::from("/tmp/repo/.git"),
-        },
-        merge_heads: vec!["abc1234".to_string()],
-        state: ActiveMergeState::ResolvedButUncommitted,
-    };
+    let mut stage = create_test_stage();
+    stage.acceptance.clear();
 
-    let content =
-        format_merge_signal_content(&session, &stage, "loom/stage-1", "main", &[], Some(&merge));
+    let content = format_merge_signal_content(&session, &stage, "loom/stage-1", "main", &[]);
+    assert!(!content.contains("## Acceptance Criteria"), "{content}");
+    assert!(!content.contains("(listed below)"), "{content}");
     assert!(
-        content.contains("Review the staged changes"),
-        "resolved-but-uncommitted signal must direct user to review: {content}"
-    );
-    assert!(
-        content.contains("git commit"),
-        "resolved-but-uncommitted signal must instruct to commit: {content}"
+        content.contains("Rerun the stage's acceptance criteria"),
+        "{content}"
     );
 }
 
@@ -259,7 +226,7 @@ fn test_parse_merge_signal_content() {
 
 ## Merge Context
 
-You are resolving a **merge conflict** in the main repository.
+You are resolving a **merge conflict** in the stage worktree.
 
 ## Target
 

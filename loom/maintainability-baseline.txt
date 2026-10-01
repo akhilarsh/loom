@@ -10,7 +10,7 @@
 file src/commands/graph/tests.rs 425
 file src/commands/init/tests.rs 449
 file src/commands/plan/verify.rs 555
-file src/commands/stage/complete.rs 759
+file src/commands/stage/complete.rs 743
 file src/commands/stage/merge.rs 483
 file src/commands/stage/tests/complete.rs 534
 file src/fs/permissions/hooks.rs 446
@@ -22,7 +22,7 @@ file src/git/worktree/base.rs 469
 file src/git/worktree/settings.rs 462
 file src/models/stage/methods.rs 677
 file src/models/stage/types.rs 1015
-file src/orchestrator/core/merge_handler.rs 1107
+file src/orchestrator/core/merge_handler.rs 1105
 file src/orchestrator/core/recovery.rs 1462
 file src/orchestrator/core/stage_executor.rs 597
 file src/orchestrator/merge_attribution.rs 543
@@ -76,14 +76,13 @@ function src/commands/sessions.rs kill 54
 function src/commands/sessions.rs kill_single_session 51
 function src/commands/skill_index.rs parse_skill_triggers 80
 function src/commands/stage/acceptance_runner.rs resolve_acceptance_dir 60
-function src/commands/stage/complete.rs complete 173
-function src/commands/stage/complete.rs route_complete_for_conflicts 159
+function src/commands/stage/complete.rs complete 169
+function src/commands/stage/complete.rs route_complete_for_conflicts 157
 function src/commands/stage/complete.rs run_verification_phase 99
 function src/commands/stage/knowledge_complete.rs complete_knowledge_stage 122
 function src/commands/stage/merge.rs merge_resolved 80
 function src/commands/stage/merge.rs merge_retry 119
-function src/commands/stage/merge_resolver.rs spawn_merge_resolver 64
-function src/commands/stage/progressive_complete.rs attempt_progressive_merge 113
+function src/commands/stage/progressive_complete.rs attempt_progressive_merge 112
 function src/commands/stage/progressive_complete.rs complete_with_merge 80
 function src/commands/stage/skip_retry.rs retry 214
 function src/commands/status.rs execute_static 81
@@ -124,12 +123,12 @@ function src/models/stage/defaults.rs default 76
 function src/models/stage/methods.rs from_definition_copies_all_runtime_policy_fields 118
 function src/models/stage/transitions.rs can_transition_to 73
 function src/models/stage/transitions.rs valid_transitions 57
-function src/orchestrator/auto_merge.rs attempt_auto_merge 63
+function src/orchestrator/auto_merge.rs attempt_auto_merge 62
 function src/orchestrator/core/event_handler.rs handle_one_event 116
 function src/orchestrator/core/merge_handler.rs finalize_merge_resolution 97
 function src/orchestrator/core/merge_handler.rs handle_merge_session_completed 168
 function src/orchestrator/core/merge_handler.rs read_plan_level_auto_merge 61
-function src/orchestrator/core/merge_handler.rs spawn_merge_resolution_session 72
+function src/orchestrator/core/merge_handler.rs spawn_merge_resolution_session 70
 function src/orchestrator/core/merge_handler.rs try_auto_merge 214
 function src/orchestrator/core/merge_handler.rs verify_and_finalize_merge 65
 function src/orchestrator/core/orchestrator.rs new 67
@@ -157,8 +156,6 @@ function src/orchestrator/signals/format/sections.rs format_dynamic_section 205
 function src/orchestrator/signals/format/sections.rs format_recitation_section 58
 function src/orchestrator/signals/format/sections.rs format_semi_stable_section 278
 function src/orchestrator/signals/knowledge.rs format_knowledge_signal_content 77
-function src/orchestrator/signals/merge.rs format_merge_signal_content 110
-function src/orchestrator/signals/merge_conflict.rs format_merge_conflict_signal_content 67
 function src/orchestrator/signals/parse.rs parse_signal_content 113
 function src/orchestrator/signals/recovery_format.rs format_recovery_signal 102
 function src/orchestrator/signals/recovery_parsing.rs read_recovery_signal 67

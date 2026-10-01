@@ -14,6 +14,7 @@ use crate::models::stage::Stage;
 use crate::orchestrator::core::persistence::Persistence;
 use crate::orchestrator::core::{clear_status_line, Orchestrator};
 use crate::orchestrator::signals::find_live_merge_session_for_stage;
+use crate::orchestrator::terminal::backend::merge_resolver_worktree;
 
 use super::resolver_attempts::{
     merge_resolver_attempts, ReservedAttempt, MAX_MERGE_RESOLVER_ATTEMPTS,
@@ -41,6 +42,7 @@ impl Orchestrator {
             || self.cleanup_stale_merge_session(stage_id)
             || self.signalled_resolver_blocks_spawn(stage_id)
             || self.missing_branch_blocks_spawn(stage_id, &branch, &target_branch)
+            || self.missing_worktree_blocks_spawn(stage_id)
         {
             return false;
         }
@@ -66,8 +68,7 @@ impl Orchestrator {
 
     /// Returns true — after stopping any resolver running for `stage_id` and
     /// routing the stage to `NeedsHumanReview` — when the merge gate holds
-    /// `branch`. A stopped resolver ran in the main checkout, so the reason
-    /// says so and names the way out.
+    /// `branch`.
     fn gate_holds_merge_stage(&mut self, stage_id: &str, branch: &str, target: &str) -> bool {
         let Some(mut reason) = self.merge_gate_reason(stage_id, branch, target) else {
             return false;
@@ -85,7 +86,7 @@ impl Orchestrator {
     /// or — after routing the stage to `NeedsHumanReview` — when a merge
     /// signal that cannot be read cannot be attributed to a stage either. It
     /// is then unknown whether a resolver is running: spawning could put a
-    /// second one in the main checkout, and waiting would never end, since
+    /// second one in the stage worktree, and waiting would never end, since
     /// only the daemon writes merge signals while it runs and nothing repairs
     /// a broken one.
     fn signalled_resolver_blocks_spawn(&mut self, stage_id: &str) -> bool {
@@ -127,6 +128,23 @@ impl Orchestrator {
             }
         }
         false
+    }
+
+    /// Returns true — after routing `stage_id` to `NeedsHumanReview` — when
+    /// the stage worktree `.worktrees/<id>` is missing: the resolver works
+    /// there, so none can spawn until it is recreated or the merge is done by
+    /// hand.
+    fn missing_worktree_blocks_spawn(&mut self, stage_id: &str) -> bool {
+        if merge_resolver_worktree(&self.config.repo_root, stage_id).is_ok() {
+            return false;
+        }
+        let steps = self.manual_merge_steps(stage_id);
+        let reason = format!(
+            "the stage worktree .worktrees/{stage_id} is missing and the merge resolver works \
+             there; recreate it or merge by hand, then {steps}"
+        );
+        self.route_merge_stage_to_review(stage_id, reason, None);
+        true
     }
 
     /// Whether the fresh on-disk `stage_id` is still `MergeConflict` or

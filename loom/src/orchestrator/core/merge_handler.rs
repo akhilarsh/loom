@@ -904,9 +904,8 @@ impl Orchestrator {
 
         let session = Session::new_merge(source_branch.clone(), target_branch.clone());
 
-        // Detect any active merge in the main repo so the signal can branch
-        // between "start a fresh merge" and "continue the existing one", and
-        // so its unmerged paths stand in when the probe above was skipped.
+        // Detect any active merge in the main repo so its unmerged paths
+        // stand in when the probe above was skipped.
         let in_progress = crate::git::merge::detect_in_progress_merge_at(&self.config.repo_root)?;
         let conflicting_files = if conflicting_files.is_empty() {
             match in_progress.as_ref().map(|m| &m.state) {
@@ -923,7 +922,6 @@ impl Orchestrator {
             &source_branch,
             &target_branch,
             &conflicting_files,
-            in_progress.as_ref(),
             &self.config.work_dir,
         )
         .context("Failed to generate merge signal")?;

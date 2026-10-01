@@ -1,4 +1,4 @@
-//! Markdown section formatters shared by the merge, merge-conflict, and
+//! Markdown section formatters shared by the merge and
 //! knowledge signal generators.
 //!
 //! These render the small, self-contained sections ("## Target",
@@ -12,7 +12,7 @@ use crate::models::stage::Stage;
 
 /// Format the "## Target" markdown section for conflict-type signals.
 ///
-/// Shared across merge and merge-conflict signal generators.
+/// Used by the merge signal generator.
 /// Standard stage signals have a more complex target section (with working_dir,
 /// execution path, etc.) and use their own formatter in `format/sections.rs`.
 pub(super) fn format_target_section(
@@ -38,7 +38,7 @@ pub(super) fn format_target_section(
 /// Format the "## Execution Rules" section for conflict resolution signals.
 ///
 /// The `preserve_intent` parameter controls the wording:
-/// - `"BOTH branches"` for merge and merge_conflict signals
+/// - `"BOTH branches"` for merge signals
 pub(super) fn format_execution_rules_section(preserve_intent: &str) -> String {
     let mut content = String::new();
 
@@ -69,7 +69,7 @@ pub(super) fn format_stage_context_section(stage: &Stage) -> String {
 /// Format the "## Conflicting Files" section as a bullet list of backtick-wrapped paths.
 ///
 /// Shows a fallback message when no files are listed.
-/// Shared across merge and merge-conflict signal generators.
+/// Used by the merge signal generator.
 pub(super) fn format_conflicting_files_section(files: &[String]) -> String {
     let mut content = String::new();
 

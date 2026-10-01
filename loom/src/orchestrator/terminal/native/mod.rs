@@ -254,11 +254,11 @@ impl NativeBackend {
     }
 
     /// Spawn a session that runs in the MAIN REPOSITORY rather than in a
-    /// stage worktree: merge resolution, knowledge gathering, adjudication.
+    /// stage worktree: knowledge gathering and adjudication.
     ///
     /// `kind` is the only thing that varies between them — it selects the
     /// prompt, the model/effort policy and the window title — so one entry
-    /// point serves all three.
+    /// point serves both.
     pub fn spawn_main_repo_session(
         &self,
         kind: SessionType,

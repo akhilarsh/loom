@@ -11,12 +11,30 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use crate::git::branch::branch_name_for_stage;
 use crate::models::session::{Session, SessionBackendKind, SessionType};
 use crate::models::stage::Stage;
 use crate::models::worktree::Worktree;
 
 use super::native::NativeBackend;
 use super::tmux::TmuxBackend;
+
+/// The stage worktree a merge resolver works in. Errors when its directory
+/// is missing: the caller routes the stage to human review.
+pub fn merge_resolver_worktree(repo_root: &Path, stage_id: &str) -> Result<Worktree> {
+    let path = Worktree::worktree_path(repo_root, stage_id);
+    if !path.is_dir() {
+        anyhow::bail!(
+            "the stage worktree {} is missing; the merge resolver works there",
+            path.display()
+        );
+    }
+    Ok(Worktree::new(
+        stage_id.to_string(),
+        path,
+        branch_name_for_stage(stage_id),
+    ))
+}
 
 fn default_tmux_available() -> bool {
     which::which("tmux").is_ok()
@@ -164,6 +182,18 @@ impl SessionBackend {
         self.spawn_worktree_session(SessionType::Contract, stage, worktree, session, signal_path)
     }
 
+    /// Spawn the merge conflict resolver. It runs in the stage worktree and
+    /// merges the target branch into the stage branch there.
+    pub fn spawn_merge_session_in_worktree(
+        &self,
+        stage: &Stage,
+        worktree: &Worktree,
+        session: Session,
+        signal_path: &Path,
+    ) -> Result<Session> {
+        self.spawn_worktree_session(SessionType::Merge, stage, worktree, session, signal_path)
+    }
+
     /// Lane dispatch for every session kind that runs in the stage worktree.
     fn spawn_worktree_session(
         &self,
@@ -230,7 +260,8 @@ impl SessionBackend {
         )
     }
 
-    /// Lane dispatch for every session kind that runs in the main repository.
+    /// Lane dispatch for every session kind that runs in the main repository
+    /// (knowledge and adjudication).
     fn spawn_main_repo_session(
         &self,
         kind: SessionType,

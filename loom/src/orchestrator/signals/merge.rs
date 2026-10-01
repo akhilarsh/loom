@@ -3,7 +3,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::fs::session_files::load_session_exact;
-use crate::git::merge::{ActiveMergeState, InProgressMerge};
 use crate::models::session::{Session, SessionType};
 use crate::models::stage::Stage;
 use crate::process::is_process_alive;
@@ -13,18 +12,16 @@ use super::types::MergeSignalContent;
 
 /// Generate a signal file for a merge conflict resolution session.
 ///
-/// Unlike regular stage signals that run in worktrees, merge signals direct
-/// the session to work in the main repository to resolve merge conflicts.
-///
-/// `in_progress` describes any active merge state on disk so the signal text
-/// can branch between "start a fresh merge" and "continue the existing one".
+/// The signal directs the session to merge the target branch into the stage
+/// branch inside the stage worktree, resolve the conflicts there, rerun the
+/// stage's acceptance criteria, and report with `loom stage merge --resolved`.
+/// It never works in the main checkout.
 pub fn generate_merge_signal(
     session: &Session,
     stage: &Stage,
     source_branch: &str,
     target_branch: &str,
     conflicting_files: &[String],
-    in_progress: Option<&InProgressMerge>,
     work_dir: &Path,
 ) -> Result<PathBuf> {
     let content = format_merge_signal_content(
@@ -33,7 +30,6 @@ pub fn generate_merge_signal(
         source_branch,
         target_branch,
         conflicting_files,
-        in_progress,
     );
     helpers::write_signal_file(&session.id, &content, work_dir)
 }
@@ -150,109 +146,102 @@ pub(super) fn format_merge_signal_content(
     source_branch: &str,
     target_branch: &str,
     conflicting_files: &[String],
-    in_progress: Option<&InProgressMerge>,
 ) -> String {
-    let mut content = String::new();
-
-    content.push_str(&format!("# Merge Signal: {}\n\n", session.id));
-
-    // Merge context - explain the situation
-    content.push_str("## Merge Context\n\n");
-    content.push_str("You are resolving a **merge conflict** in the main repository.\n\n");
-    content.push_str("- This is NOT a regular stage execution - you are fixing conflicts\n");
-    content.push_str("- Work directly in the main repository (not a worktree)\n");
-    content.push_str("- Follow the merge instructions below carefully\n\n");
-
-    // Execution rules for merge sessions
+    let mut content = format!("# Merge Signal: {}\n\n", session.id);
+    content.push_str(&format_merge_context(stage, source_branch, target_branch));
     content.push_str(&helpers::format_execution_rules_section("BOTH branches"));
-
-    // Target information
     content.push_str(&helpers::format_target_section(
         &session.id,
         &stage.id,
         Some(source_branch),
         target_branch,
     ));
-
-    // Stage context (if available)
     content.push_str(&helpers::format_stage_context_section(stage));
-
-    // Conflicting files
     content.push_str(&helpers::format_conflicting_files_section(
         conflicting_files,
     ));
-
-    // Task instructions — branch by in-progress merge state.
-    content.push_str("## Your Task\n\n");
-    match in_progress.map(|m| (&m.state, m.location_path().display().to_string())) {
-        None => {
-            content.push_str(&format!(
-                "1. Run: `git merge {source_branch}` (if not already in merge state)\n"
-            ));
-            content.push_str("2. Resolve conflicts in the files listed above\n");
-            content.push_str("3. Stage resolved files: `git add <resolved-files>`\n");
-            content.push_str("4. Review changes and complete the merge: `git commit`\n");
-            content.push_str(&format!(
-                "5. Run: `loom stage merge {} --resolved`\n\n",
-                stage.id
-            ));
-        }
-        Some((ActiveMergeState::HasUnmergedPaths(_), location)) => {
-            content.push_str(&format!(
-                "A merge is already in progress at `{location}`. \
-                 **Do NOT run `git merge` again.**\n\n"
-            ));
-            content.push_str("1. Resolve conflicts in the files listed above\n");
-            content.push_str("2. Stage resolved files: `git add <resolved-files>`\n");
-            content.push_str("3. Review changes and complete the merge: `git commit`\n");
-            content.push_str(&format!(
-                "4. Run: `loom stage merge {} --resolved`\n\n",
-                stage.id
-            ));
-        }
-        Some((ActiveMergeState::ResolvedButUncommitted, location)) => {
-            content.push_str(&format!(
-                "A merge is already in progress at `{location}` with all conflicts resolved.\n\n"
-            ));
-            content.push_str("1. **Review the staged changes** (`git diff --staged`)\n");
-            content.push_str("2. Complete the merge: `git commit`\n");
-            content.push_str(&format!(
-                "3. Run: `loom stage merge {} --resolved`\n\n",
-                stage.id
-            ));
-        }
-    }
-
-    // Important notes
-    content.push_str("## Important\n\n");
-    content.push_str("- Do NOT modify code beyond what's needed for conflict resolution\n");
-    content.push_str("- Preserve intent from BOTH branches where possible\n");
-    content.push_str("- If unclear how to resolve, ask the user for guidance\n");
-    content.push_str(
-        "- The orchestrator removes the stage's worktree and branch once it accepts \
-         `--resolved`; do not run `loom worktree remove` yourself\n",
-    );
-
-    content.push_str("## Inherited Responsibilities\n\n");
-    content.push_str(
-        "This resolution session now **owns** this stage. \
-         The original execution session has exited.\n\n",
-    );
-    content.push_str(
-        "- The original stage's acceptance criteria already passed before the merge conflict\n",
-    );
-    content.push_str("- Do NOT re-run the original stage's tasks or acceptance criteria\n");
-    content.push_str(&format!(
-        "- After resolving: `loom stage merge {} --resolved` marks the stage Completed \
-         and triggers dependents\n",
-        stage.id
+    content.push_str(&format_merge_task(stage, target_branch));
+    content.push_str(&format_acceptance_section(stage));
+    content.push_str(&format_merge_important());
+    content.push_str(&format_inherited_responsibilities(
+        &stage.id,
+        source_branch,
+        target_branch,
     ));
-    content.push_str("- The orchestrator handles plan completion when all stages finish\n");
-    content.push_str(
-        "- If this session exits without resolving, the orchestrator will spawn a new resolver\n\n",
-    );
-
     content
+}
+
+fn format_merge_context(stage: &Stage, source_branch: &str, target_branch: &str) -> String {
+    format!(
+        "## Merge Context\n\n\
+         You are resolving a **merge conflict** between `{source_branch}` and `{target_branch}`.\n\n\
+         - You work in the stage worktree `.worktrees/{}` (your current directory), on branch \
+         `{source_branch}`\n\
+         - You merge `{target_branch}` INTO the stage branch here\n\
+         - The main checkout belongs to the operator: never run git or edit files there\n\
+         - Loom lands the merge on `{target_branch}` itself after `--resolved`\n\n",
+        stage.id
+    )
+}
+
+fn format_merge_task(stage: &Stage, target_branch: &str) -> String {
+    let criteria = if stage.acceptance.is_empty() {
+        "the stage's acceptance criteria"
+    } else {
+        "the stage's acceptance criteria (listed below)"
+    };
+    format!(
+        "## Your Task\n\n\
+         1. If `git status` shows a merge already in progress in this worktree, continue it; \
+         do not start a new `git merge`. Otherwise run `git merge {target_branch}` in this worktree\n\
+         2. Resolve the conflicts in the files listed above, preserving intent from both sides\n\
+         3. Rerun {criteria} in this worktree and fix what the merge broke\n\
+         4. Commit the merge: `git add <resolved-files>`, then `git commit`. The worktree must \
+         end clean with no merge in progress\n\
+         5. Run: `loom stage merge {} --resolved`\n\n",
+        stage.id
+    )
+}
+
+/// The stage's acceptance criteria; empty when the stage has none.
+fn format_acceptance_section(stage: &Stage) -> String {
+    if stage.acceptance.is_empty() {
+        return String::new();
+    }
+    let mut content = String::from("## Acceptance Criteria\n\n");
+    for criterion in &stage.acceptance {
+        content.push_str(&format!("- [ ] {criterion}\n"));
+    }
+    content.push('\n');
+    content
+}
+
+fn format_merge_important() -> String {
+    "## Important\n\n\
+     - Do NOT change code beyond what the conflicts and the acceptance criteria require\n\
+     - Preserve intent from BOTH branches where possible\n\
+     - If unclear how to resolve, ask the user for guidance\n\
+     - Never touch the main checkout\n\
+     - Do not run `loom worktree remove`: the orchestrator removes the worktree after this \
+     session exits and the merge has landed\n\n"
+        .to_string()
+}
+
+fn format_inherited_responsibilities(
+    stage_id: &str,
+    source_branch: &str,
+    target_branch: &str,
+) -> String {
+    format!(
+        "## Inherited Responsibilities\n\n\
+         This resolution session now **owns** this stage. The original execution session has \
+         exited.\n\n\
+         - `loom stage merge {stage_id} --resolved` makes loom re-run the merge, which lands \
+         `{source_branch}` on `{target_branch}`\n\
+         - If `{target_branch}` moved meanwhile and conflicts again, loom spawns another resolver\n\
+         - If this session exits without resolving, loom spawns a new resolver, up to the \
+         attempt cap\n\n"
+    )
 }
 
 pub(super) fn parse_merge_signal_content(

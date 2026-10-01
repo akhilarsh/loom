@@ -110,15 +110,14 @@ pub fn attempt_progressive_merge(
                 s.try_mark_merge_conflict()
             })?;
 
-            // Try to auto-spawn a merge resolver session. Fresh-conflict path:
-            // the test merge in merge_stage was already aborted before
-            // returning Conflict, so there is no active MERGE_HEAD here.
+            // Try to auto-spawn a merge resolver session. merge_stage computes
+            // the merge without touching the checkout, so the resolver starts
+            // from a clean stage worktree.
             use super::merge_resolver::MergeResolverResult;
             match super::merge_resolver::spawn_merge_resolver(
                 stage,
                 &conflicting_files,
                 &merge_point,
-                None,
                 repo_root,
                 work_dir,
             ) {

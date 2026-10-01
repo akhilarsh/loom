@@ -90,6 +90,8 @@ pub(crate) fn orchestrator_with_conflict(repo_root: &Path, stage_id: &str) -> Or
         ..Stage::default()
     };
     save_stage(&stage, &work_dir).unwrap();
+    // The resolver works in the stage worktree, so the spawn pass needs one.
+    std::fs::create_dir_all(repo_root.join(".worktrees").join(stage_id)).unwrap();
     let config = OrchestratorConfig {
         work_dir,
         repo_root: repo_root.to_path_buf(),

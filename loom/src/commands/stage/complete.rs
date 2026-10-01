@@ -70,7 +70,6 @@ pub enum CompleteConflictRoute {
     SpawnResolver {
         conflicting_files: Vec<String>,
         target_branch: String,
-        in_progress: Option<InProgressMerge>,
     },
     /// Active main-repo merge attributed to this stage but the stage's status
     /// is not yet `MergeConflict | MergeBlocked`. Caller MUST persist
@@ -79,7 +78,6 @@ pub enum CompleteConflictRoute {
     RevertAndSpawnResolver {
         conflicting_files: Vec<String>,
         target_branch: String,
-        in_progress: InProgressMerge,
     },
     /// Refuse the operation. Caller prints `message` and exits non-zero.
     Refuse { message: String },
@@ -217,7 +215,6 @@ pub fn route_complete_for_conflicts(
         return Ok(CompleteConflictRoute::SpawnResolver {
             conflicting_files,
             target_branch,
-            in_progress: attributed_merge.cloned(),
         });
     }
 
@@ -240,7 +237,6 @@ pub fn route_complete_for_conflicts(
         return Ok(CompleteConflictRoute::RevertAndSpawnResolver {
             conflicting_files,
             target_branch,
-            in_progress: merge,
         });
     }
 
@@ -267,7 +263,6 @@ fn spawn_resolver_for_route(
     stage: &Stage,
     conflicting_files: &[String],
     target_branch: &str,
-    in_progress: Option<InProgressMerge>,
     repo_root: &Path,
     work_dir: &Path,
 ) -> Result<()> {
@@ -275,14 +270,7 @@ fn spawn_resolver_for_route(
     // resolver status and return Ok(()). Each message says so explicitly so a
     // session (or agent) reading exit 0 here does not mistake it for
     // completion.
-    match spawn_merge_resolver(
-        stage,
-        conflicting_files,
-        target_branch,
-        in_progress,
-        repo_root,
-        work_dir,
-    )? {
+    match spawn_merge_resolver(stage, conflicting_files, target_branch, repo_root, work_dir)? {
         MergeResolverResult::DaemonManaged => {
             print_daemon_managed_notice(&stage.id);
         }
@@ -387,13 +375,11 @@ pub fn complete(
         CompleteConflictRoute::SpawnResolver {
             conflicting_files,
             target_branch,
-            in_progress,
         } => {
             return spawn_resolver_for_route(
                 &stage,
                 &conflicting_files,
                 &target_branch,
-                in_progress,
                 &repo_root,
                 work_dir,
             );
@@ -401,7 +387,6 @@ pub fn complete(
         CompleteConflictRoute::RevertAndSpawnResolver {
             conflicting_files,
             target_branch,
-            in_progress,
         } => {
             // Phantom-merge revert (CLI parity with daemon's
             // reconcile_main_repo_active_merge): persist BEFORE spawn so the
@@ -431,7 +416,6 @@ pub fn complete(
                 &stage,
                 &conflicting_files,
                 &target_branch,
-                Some(in_progress),
                 &repo_root,
                 work_dir,
             );

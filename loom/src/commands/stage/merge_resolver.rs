@@ -8,12 +8,11 @@ use std::path::Path;
 
 use crate::daemon::DaemonServer;
 use crate::git::branch::branch_name_for_stage;
-use crate::git::merge::InProgressMerge;
 use crate::models::session::Session;
 use crate::models::stage::{Stage, StageStatus};
 use crate::orchestrator::continuation::save_session;
 use crate::orchestrator::signals::{find_live_merge_session_for_stage, generate_merge_signal};
-use crate::orchestrator::terminal::backend::SessionBackend;
+use crate::orchestrator::terminal::backend::{merge_resolver_worktree, SessionBackend};
 
 /// Result of attempting to spawn a merge resolver session.
 pub enum MergeResolverResult {
@@ -35,13 +34,12 @@ pub enum MergeResolverResult {
 /// * `stage` - The stage with merge conflicts (must be in MergeConflict or MergeBlocked status)
 /// * `conflicting_files` - List of files with conflicts
 /// * `merge_point` - The target branch to merge into
-/// * `repo_root` - Path to the main repository root
+/// * `repo_root` - Path to the main repository root, where `.worktrees/` lives
 /// * `work_dir` - Path to the state directory
 pub fn spawn_merge_resolver(
     stage: &Stage,
     conflicting_files: &[String],
     merge_point: &str,
-    in_progress: Option<InProgressMerge>,
     repo_root: &Path,
     work_dir: &Path,
 ) -> Result<MergeResolverResult> {
@@ -68,35 +66,49 @@ pub fn spawn_merge_resolver(
         return Ok(MergeResolverResult::AlreadyRunning { session_id });
     }
 
-    // Construct the configured session backend for spawning the merge session.
+    spawn_resolver_session(stage, conflicting_files, merge_point, repo_root, work_dir)
+}
+
+/// Write the merge signal and spawn the resolver in the stage worktree.
+fn spawn_resolver_session(
+    stage: &Stage,
+    conflicting_files: &[String],
+    merge_point: &str,
+    repo_root: &Path,
+    work_dir: &Path,
+) -> Result<MergeResolverResult> {
     let backend = SessionBackend::from_config(work_dir.to_path_buf())
         .context("Failed to construct session backend for merge resolver")?;
 
-    // Get the source branch name for this stage
-    let source_branch = branch_name_for_stage(&stage.id);
+    // The resolver works in the stage worktree; without it the operator
+    // recreates the worktree or resolves by hand. Checked before the signal
+    // is written so a missing worktree leaves nothing behind.
+    let worktree = merge_resolver_worktree(repo_root, &stage.id).with_context(|| {
+        format!(
+            "Cannot spawn a merge resolver for stage '{}': recreate its worktree or resolve the \
+             conflict by hand",
+            stage.id
+        )
+    })?;
 
-    // Create a merge resolution session.
+    let source_branch = branch_name_for_stage(&stage.id);
     let session = Session::new_merge(source_branch.clone(), merge_point.to_string());
     let session_id = session.id.clone();
 
-    // Generate the merge signal file
     let signal_path = generate_merge_signal(
         &session,
         stage,
         &source_branch,
         merge_point,
         conflicting_files,
-        in_progress.as_ref(),
         work_dir,
     )
     .context("Failed to generate merge signal")?;
 
-    // Spawn the merge session via the configured session backend.
     let spawned_session = backend
-        .spawn_merge_session(stage, session, &signal_path, repo_root)
+        .spawn_merge_session_in_worktree(stage, &worktree, session, &signal_path)
         .context("Failed to spawn merge resolver session")?;
 
-    // Save the session file
     save_session(&spawned_session, work_dir).context("Failed to save merge resolver session")?;
 
     Ok(MergeResolverResult::Spawned(session_id))

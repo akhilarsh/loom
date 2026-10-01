@@ -198,6 +198,7 @@ fn an_at_cap_merge_stage_is_escalated_before_the_daemon_exits() {
         ..Stage::default()
     };
     let (mut orchestrator, temp) = orchestrator_with_one_node(StageStatus::MergeConflict, stage);
+    std::fs::create_dir_all(temp.path().join(".worktrees").join("alpha")).unwrap();
     std::fs::create_dir_all(attempts_dir(temp.path())).unwrap();
     let cap = MAX_MERGE_RESOLVER_ATTEMPTS.to_string();
     std::fs::write(attempts_file(temp.path(), "alpha"), cap).unwrap();

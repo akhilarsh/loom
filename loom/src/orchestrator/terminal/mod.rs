@@ -6,7 +6,7 @@
 //!
 //! Supports three session types:
 //! - Stage sessions: run in isolated worktrees for parallel stage execution
-//! - Merge sessions: run in main repository for conflict resolution
+//! - Merge sessions: run in the stage worktree, merging the target into the stage branch
 //! - Knowledge sessions: run in main repository for knowledge gathering (no worktree)
 
 pub mod backend;

@@ -171,16 +171,7 @@ fn a_spawned_resolver_with_no_session_record_holds_its_stage_while_tracked() {
         id: "unrecorded".to_string(),
         ..Stage::default()
     };
-    generate_merge_signal(
-        &resolver,
-        &stage,
-        "loom/unrecorded",
-        "main",
-        &[],
-        None,
-        &work_dir,
-    )
-    .unwrap();
+    generate_merge_signal(&resolver, &stage, "loom/unrecorded", "main", &[], &work_dir).unwrap();
     let tracked = resolver.clone();
     orchestrator
         .active_sessions
@@ -271,4 +262,42 @@ fn a_gated_branch_has_its_tracked_resolver_stopped_before_review() {
         .unwrap()
         .unwrap();
     assert_eq!(record.exit_reason, Some(SessionExitReason::OperatorStop));
+}
+
+#[test]
+fn a_missing_stage_worktree_gives_the_attempt_back_and_removes_the_signal() {
+    let repo = repo_with_stage_branches(&["no-worktree"]);
+    let orchestrator = orchestrator_with_conflict(repo.path(), "no-worktree");
+    let work_dir = orchestrator.config.work_dir.clone();
+    std::fs::remove_dir(repo.path().join(".worktrees").join("no-worktree")).unwrap();
+    let attempt = ReservedAttempt::record(&work_dir, "no-worktree", 0).unwrap();
+    let session = resolver_for("no-worktree");
+    let signal = write_signal(&orchestrator, &session.id);
+    let stage = Stage {
+        id: "no-worktree".to_string(),
+        ..Stage::default()
+    };
+    let error = orchestrator
+        .launch_resolver(&stage, session, &signal, attempt)
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("worktree"), "{error:#}");
+    assert!(!attempts_file(&work_dir, "no-worktree").exists());
+    assert!(!signal.exists());
+}
+
+#[test]
+fn a_missing_stage_worktree_routes_the_stage_to_review() {
+    let repo = repo_with_stage_branches(&["no-worktree"]);
+    let mut orchestrator = orchestrator_with_conflict(repo.path(), "no-worktree");
+    std::fs::remove_dir(repo.path().join(".worktrees").join("no-worktree")).unwrap();
+    assert_eq!(orchestrator.spawn_merge_resolution_sessions().unwrap(), 0);
+    let work_dir = &orchestrator.config.work_dir;
+    let stage = load_stage("no-worktree", work_dir).unwrap();
+    assert_eq!(stage.status, StageStatus::NeedsHumanReview);
+    let reason = stage.review_reason.unwrap();
+    assert!(
+        reason.contains(".worktrees/no-worktree is missing"),
+        "{reason}"
+    );
+    assert!(!attempts_file(work_dir, "no-worktree").exists());
 }

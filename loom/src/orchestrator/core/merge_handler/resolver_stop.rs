@@ -15,6 +15,7 @@ use crate::models::session::{Session, SessionBackendKind, SessionExitReason, Ses
 use crate::models::stage::Stage;
 use crate::orchestrator::core::Orchestrator;
 use crate::orchestrator::signals::{find_live_merge_session_for_stage, remove_signal};
+use crate::orchestrator::terminal::backend::merge_resolver_worktree;
 
 use super::resolver_attempts::ReservedAttempt;
 
@@ -39,8 +40,10 @@ impl fmt::Display for UnstoppedResolver {
 }
 
 impl Orchestrator {
-    /// Hand the resolver `session` for `stage` to the backend, then settle
-    /// its answer with [`Self::settle_resolver_spawn`].
+    /// Hand the resolver `session` for `stage` to the backend, to run in the
+    /// stage worktree, then settle its answer with
+    /// [`Self::settle_resolver_spawn`]. A missing worktree fails before the
+    /// backend is touched and gives `attempt` back.
     pub(super) fn launch_resolver(
         &self,
         stage: &Stage,
@@ -48,10 +51,27 @@ impl Orchestrator {
         signal_path: &Path,
         attempt: ReservedAttempt,
     ) -> Result<Session> {
-        let root = &self.config.repo_root;
-        let spawned = self
-            .backend
-            .spawn_merge_session(stage, session.clone(), signal_path, root);
+        let worktree = match merge_resolver_worktree(&self.config.repo_root, &stage.id) {
+            Ok(worktree) => worktree,
+            Err(error) => {
+                // Nothing spawned: dropping `attempt` gives it back, and the
+                // signal names no session record.
+                if let Err(remove_error) = remove_signal(&session.id, &self.config.work_dir) {
+                    tracing::warn!(
+                        session_id = %session.id,
+                        error = %remove_error,
+                        "Failed to remove the signal of a merge resolver that did not spawn"
+                    );
+                }
+                return Err(error);
+            }
+        };
+        let spawned = self.backend.spawn_merge_session_in_worktree(
+            stage,
+            &worktree,
+            session.clone(),
+            signal_path,
+        );
         self.settle_resolver_spawn(&stage.id, session, spawned, attempt)
     }
 

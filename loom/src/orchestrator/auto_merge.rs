@@ -122,7 +122,6 @@ pub fn attempt_auto_merge(
                 &source_branch,
                 target_branch,
                 &conflicting_files,
-                None,
                 work_dir,
             )
             .context("Failed to generate merge signal")?;

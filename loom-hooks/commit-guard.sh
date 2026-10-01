@@ -421,7 +421,7 @@ main() {
 	debug_log "LOOM_HOOK_DEBUG: ${LOOM_HOOK_DEBUG:-0}"
 
 	# Merge resolution sessions are exempt from commit requirements
-	# They run on the main repo to resolve merge conflicts and don't need to commit
+	# They resolve merge conflicts in the stage worktree; the stop hook does not require a commit
 	if [ "${LOOM_MERGE_SESSION:-}" = "1" ]; then
 		debug_log "Merge session detected (LOOM_MERGE_SESSION=1) - allowing stop"
 		exit 0

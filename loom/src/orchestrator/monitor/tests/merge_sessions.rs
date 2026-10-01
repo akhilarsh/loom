@@ -20,7 +20,7 @@ fn test_is_merge_session_with_merge_signal() {
 
 ## Merge Context
 
-You are resolving a **merge conflict** in the main repository.
+You are resolving a **merge conflict** in the stage worktree.
 
 ## Target
 

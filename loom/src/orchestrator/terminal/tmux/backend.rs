@@ -107,7 +107,7 @@ impl TmuxBackend {
     }
 
     /// Spawn a session that runs in the MAIN REPOSITORY rather than in a
-    /// stage worktree — merge resolution, knowledge gathering, adjudication —
+    /// stage worktree — knowledge gathering and adjudication —
     /// mirroring [`native::NativeBackend::spawn_main_repo_session`].
     pub fn spawn_main_repo_session(
         &self,

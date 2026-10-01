@@ -103,7 +103,7 @@ fn write_readable_signal(work_dir: &Path) -> (Session, PathBuf) {
         ..Stage::default()
     };
     let signal =
-        generate_merge_signal(&resolver, &stage, "loom/mine", "main", &[], None, work_dir).unwrap();
+        generate_merge_signal(&resolver, &stage, "loom/mine", "main", &[], work_dir).unwrap();
     (resolver, signal)
 }
 

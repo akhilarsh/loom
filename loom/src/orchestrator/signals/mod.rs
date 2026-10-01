@@ -7,7 +7,6 @@ mod generate;
 mod helpers;
 mod knowledge;
 mod merge;
-mod merge_conflict;
 mod parse;
 mod recovery;
 mod recovery_format;
@@ -51,8 +50,7 @@ pub use recovery::generate_recovery_signal;
 pub use recovery_parsing::read_recovery_signal;
 pub use recovery_types::{LastHeartbeatInfo, RecoveryReason, RecoverySignalContent};
 pub use types::{
-    DependencyStatus, EmbeddedContext, MergeConflictSignalContent, MergeSignalContent,
-    SignalContent, SignalUpdates,
+    DependencyStatus, EmbeddedContext, MergeSignalContent, SignalContent, SignalUpdates,
 };
 
 // Re-export public functions
@@ -80,4 +78,3 @@ pub use generate::{
 };
 pub use knowledge::generate_knowledge_signal;
 pub use merge::{find_live_merge_session_for_stage, generate_merge_signal, read_merge_signal};
-pub use merge_conflict::{generate_merge_conflict_signal, read_merge_conflict_signal};
