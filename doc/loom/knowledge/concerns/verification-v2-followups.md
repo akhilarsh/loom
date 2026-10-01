@@ -106,3 +106,13 @@ Plan authors are trusted, so these are author-mistake gaps, not stage-agent bypa
 - An unreadable or unparsable manifest counting as declaring dependencies (`impact_tests/runs.rs`) and a manifest over 256 KiB (`skills/project/tests.rs`) have no test.
 - `joined_by_and`'s `|`, `&` and parenthesis arms have no test (`plan/schema/tests/v2_tests.rs`); the `pushd web && refusal && install` case fails the `opens` check first, so it does not guard `changes_directory`.
 - `crash-blocked-stage-is-not-an-agent-block` covers a crash with retries left only; a `(_, Some(reason))` arm placed after the auto-retry arm is caught only by `attention_model_guidance_tests.rs`. `pre-commit-hook-registry-need-is-an-error` has no negative control (unit tests cover it). The `close_reason` sanitizer test asserts only the absence of ESC and bidi characters, not the flattened text.
+
+## Contract Freeze Format Gate Recognises a Fixed Formatter List
+
+`verify/contracts/format_gate.rs` treats an acceptance criterion as a formatter check only when its command text matches `FLAG_CHECKS`, the biome rule or `SCRIPT_CHECKS`: cargo fmt, rustfmt, prettier, oxfmt, ruff format, black, biome, and `format:check` scripts. A plan with no match gets no gate, and other languages (Go, C/C++, Elixir, .NET, Dart, Swift, Ruby, Kotlin) are not covered. `gofmt -l` is excluded because it prints unformatted files and exits 0.
+
+**Options, none implemented:**
+
+- A `format_check: bool` field on `TruthCheck` (`models/stage/checks.rs`, `deny_unknown_fields`, serde default and skip-if-false like `WiringCheck.literal`), honoured by `is_format_check`. A Simple (string) criterion cannot carry it. The field must be threaded through plan amendment (`plan/amendment.rs`, `plan/amendment_fields.rs`), `acceptance_command.rs` validation, the adjudication prompt and `verify/criteria/cache_contract.rs` (pass-cache keys); check whether it needs the `version: 2` gate.
+- A `stdout_empty` field beside `stderr_empty`, so `gofmt -l .` fails on any output without a `test -z` wrapper.
+- A narrower rule recognising `test -z "$(gofmt -l ...)"` and more formatter commands in `format_gate.rs`, one file, no schema; `invocations()` splits subshells and pipelines, so each accepted shape needs a test, with near-miss tests as the module already has.

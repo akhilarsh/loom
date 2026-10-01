@@ -177,5 +177,5 @@
 | [state-confinement-gaps](concerns/state-confinement-gaps.md) | Shared package caches session-writable | 18 |
 | [token-accounting-and-proof-defects](concerns/token-accounting-and-proof-defects.md) | Token-optimization and efficiency follow-ups | 92 |
 | [typed-config-values](concerns/typed-config-values.md) | Accepted gaps in the config read-path | 27 |
-| [verification-v2-followups](concerns/verification-v2-followups.md) | v2 adapters, parser gaps, known gaps | 108 |
+| [verification-v2-followups](concerns/verification-v2-followups.md) | v2 adapters, parser gaps, known gaps | 117 |
 | [web-dashboard-latent-issues](concerns/web-dashboard-latent-issues.md) | Latent issues found in commands/status/web/ | 94 |
