@@ -219,6 +219,7 @@ function tests/e2e/parallel.rs test_parallel_group_isolation 58
 function tests/e2e/parallel.rs test_parallel_stages_triggered_together 57
 function tests/e2e/sequential.rs test_dependency_chain_respected 81
 function tests/language_packs_contracts.rs wave_pack_dialects_extract_declarations 56
+function tests/plan_environment_contracts.rs plan 64
 function tests/e2e/sequential.rs test_sequential_plan_full_completion 64
 function tests/e2e/sequential.rs test_sequential_plan_stage_order 56
 function tests/e2e/tmux_backend.rs tmux_liveness_ignores_running_server_when_pid_is_dead 107

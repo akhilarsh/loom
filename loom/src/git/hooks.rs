@@ -160,6 +160,27 @@ pub fn is_pre_commit_hook_installed(repo_root: &Path) -> bool {
     }
 }
 
+/// `git config <scope> --get core.hooksPath` in `repo_root` (`scope` is `--local`,
+/// `--global` or `--system`), or `None` when unset at that scope or the read fails.
+///
+/// The reads are scoped because the git runner prepends `-c core.hooksPath=/dev/null`
+/// to every command, which wins on precedence over an unscoped `config --get` and
+/// over `rev-parse --git-path hooks`: an unscoped read always returns `/dev/null`.
+pub fn read_hooks_path_scope(repo_root: &Path, scope: &str) -> Option<String> {
+    let configured =
+        super::run_git_checked(&["config", scope, "--get", "core.hooksPath"], repo_root).ok()?;
+    let trimmed = configured.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// The effective `core.hooksPath`: the first of the local, global and system scopes
+/// that sets it, which is git's own precedence order. `None` when no scope sets it.
+pub fn configured_hooks_path(repo_root: &Path) -> Option<String> {
+    ["--local", "--global", "--system"]
+        .into_iter()
+        .find_map(|scope| read_hooks_path_scope(repo_root, scope))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

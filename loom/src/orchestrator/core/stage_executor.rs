@@ -295,9 +295,9 @@ impl StageExecutor for Orchestrator {
             return Ok(());
         };
 
-        // Run before-stage checks if configured (verify pre-conditions in a
-        // pristine worktree). Blocks the stage when they fail.
-        if !self.before_stage_gate_passed(&stage, &worktree.path, resolved.branch_name())? {
+        // Run the before-stage checks on the pristine worktree, then provision
+        // it. Either one failing blocks the stage.
+        if !self.pre_spawn_gates_passed(&stage, &worktree.path, resolved.branch_name())? {
             return Ok(());
         }
 
@@ -503,7 +503,7 @@ impl Orchestrator {
     /// # Returns
     /// `Ok(true)` if the spawn may proceed, `Ok(false)` if the stage was marked
     /// `Blocked` because a pre-condition did not hold.
-    fn before_stage_gate_passed(
+    pub(super) fn before_stage_gate_passed(
         &mut self,
         stage: &Stage,
         worktree_path: &std::path::Path,

@@ -16,9 +16,12 @@ use super::criterion_hazards::{command_start, nested_scripts, MAX_NESTING};
 use super::shell_lex::{lex, simple_commands, Word};
 
 mod contracts;
+mod js_provision;
 mod knowledge_check;
 mod loom_subcommands;
 mod regex_patterns;
+mod registry_domains;
+mod repo_hooks;
 mod rust_filters;
 mod sandbox_capability;
 
@@ -63,6 +66,9 @@ pub(crate) fn run(ctx: &LintContext<'_>, notes: &mut Vec<String>) -> Vec<LintFin
     knowledge_check::check(ctx, &mut out);
     contracts::check(ctx, &mut out);
     notes.extend(rust_filters::check(ctx, &mut out));
+    registry_domains::check(ctx, &mut out);
+    repo_hooks::check(ctx, &mut out);
+    notes.extend(js_provision::check(ctx, &mut out));
     out
 }
 
@@ -83,6 +89,9 @@ impl<'a> StageCommand<'a> {
     }
 }
 
+/// Label prefix of a `before_stage` check, which runs on the daemon's host.
+const BEFORE_STAGE_LABEL: &str = "before_stage check";
+
 /// Every command D4 scans: acceptance, setup, wiring tests, before/after-stage
 /// checks and the dead-code check.
 fn stage_commands(stage: &StageDefinition) -> Vec<StageCommand<'_>> {
@@ -101,7 +110,7 @@ fn stage_commands(stage: &StageDefinition) -> Vec<StageCommand<'_>> {
     });
     let before =
         stage.before_stage.iter().enumerate().map(|(idx, check)| {
-            StageCommand::new(numbered("before_stage check", idx), &check.command)
+            StageCommand::new(numbered(BEFORE_STAGE_LABEL, idx), &check.command)
         });
     let after =
         stage.after_stage.iter().enumerate().map(|(idx, check)| {
@@ -118,6 +127,14 @@ fn stage_commands(stage: &StageDefinition) -> Vec<StageCommand<'_>> {
         .chain(after)
         .chain(dead_code)
         .collect()
+}
+
+/// The commands that run inside the stage's sandbox: every scanned command
+/// except `before_stage`, which runs on the daemon's host.
+fn sandboxed_commands(stage: &StageDefinition) -> Vec<StageCommand<'_>> {
+    let mut commands = stage_commands(stage);
+    commands.retain(|command| !command.label.starts_with(BEFORE_STAGE_LABEL));
+    commands
 }
 
 /// Call `visit` with each stage command and the argv (past assignments and

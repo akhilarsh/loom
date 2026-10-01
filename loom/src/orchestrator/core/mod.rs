@@ -22,6 +22,7 @@ mod merge_handler;
 mod orchestrator;
 mod orphan_adoption;
 mod persistence;
+mod provision_gate;
 mod recovery;
 mod recovery_guards;
 mod recovery_queued_sync;

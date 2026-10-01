@@ -9,6 +9,7 @@ use super::super::detect::detect_stage_type;
 use super::super::types::{
     ContractSpec, LoomMetadata, ReachableCheck, StageDefinition, StageType, ValidationError,
 };
+use super::super::types_v2::ProvisionEntry;
 use super::v2_lints::LintFinding;
 
 /// Push the errors the v2-only fields raise for the plan's version: every use
@@ -54,6 +55,9 @@ fn push_v1_uses(metadata: &LoomMetadata, errors: &mut Vec<ValidationError>) {
     if !metadata.loom.ratchet_files.is_empty() {
         errors.push(requires_v2("`ratchet_files`", None));
     }
+    if !metadata.loom.provision.is_empty() {
+        errors.push(requires_v2("`provision`", None));
+    }
     for stage in &metadata.loom.stages {
         let stage_id = Some(stage.id.as_str());
         for (field, empty) in [
@@ -74,9 +78,10 @@ fn push_v1_uses(metadata: &LoomMetadata, errors: &mut Vec<ValidationError>) {
     }
 }
 
-/// The D3 rules for a v2 plan's `ratchet_files` and each stage's `contracts`,
-/// `harness` and `reachable`.
+/// The D3 rules for a v2 plan's `ratchet_files` and `provision` and each stage's
+/// `contracts`, `harness` and `reachable`.
 fn push_v2_rules(metadata: &LoomMetadata, errors: &mut Vec<ValidationError>) {
+    push_provision_problems(&metadata.loom.provision, errors);
     for path in &metadata.loom.ratchet_files {
         if let Some(problem) = path_problem(path) {
             errors.push(ValidationError {
@@ -97,6 +102,30 @@ fn push_v2_rules(metadata: &LoomMetadata, errors: &mut Vec<ValidationError>) {
         errors.extend(messages.into_iter().map(|message| ValidationError {
             message,
             stage_id: Some(stage.id.clone()),
+        }));
+    }
+}
+
+/// Each provision entry needs a non-empty relative `working_dir` free of `..` and a
+/// non-empty `command`; entries are numbered from 1 in the messages.
+fn push_provision_problems(entries: &[ProvisionEntry], errors: &mut Vec<ValidationError>) {
+    for (idx, entry) in entries.iter().enumerate() {
+        let label = format!("provision entry #{}", idx + 1);
+        let dir = entry.working_dir.as_str();
+        let mut messages = Vec::new();
+        if dir.trim().is_empty() {
+            messages.push(format!(
+                "{label} working_dir must not be empty (use \".\" for the repository root)"
+            ));
+        } else if let Some(problem) = path_problem(dir) {
+            messages.push(format!("{label} working_dir '{dir}' {problem}"));
+        }
+        if entry.command.trim().is_empty() {
+            messages.push(format!("{label} has an empty command"));
+        }
+        errors.extend(messages.into_iter().map(|message| ValidationError {
+            message,
+            stage_id: None,
         }));
     }
 }

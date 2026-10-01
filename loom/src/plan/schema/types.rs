@@ -2,12 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::types_v2::deserialize_reasoning_effort;
+use super::types_v2::{deserialize_reasoning_effort, ProvisionEntry};
 
-/// Claude Code permission mode controlling default tool-approval behavior.
-///
-/// Re-exported from models::stage for backward compatibility.
-/// The canonical definition is in crate::models::stage::PermissionMode.
+/// Claude Code permission mode; defined in [`crate::models::stage::PermissionMode`].
 pub use crate::models::stage::PermissionMode;
 
 /// Plan-level sandbox configuration (defaults for all stages)
@@ -170,6 +167,9 @@ pub struct LoomConfig {
     /// Files a stage changes only through an accepted integrity review; copied onto every `Stage`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ratchet_files: Vec<String>,
+    /// Commands the daemon runs on the host in each stage worktree before a session spawns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provision: Vec<ProvisionEntry>,
     pub stages: Vec<StageDefinition>,
 }
 

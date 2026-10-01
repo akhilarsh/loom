@@ -41,3 +41,73 @@ worktree stage's acceptance.** `loom map`, anything touching `.work/` or `.loom/
 memory/knowledge journal all write state shared with every sibling stage. The read-only
 `loom map --outline` / `--find-all` / `--impact` views are source-graph queries, but keep them
 out of worktree acceptance because the derived graph is shared state.
+
+## `provision`: dependencies installed on the host before each session
+
+`loom.provision` (`version: 2` plans only) is a list of `{ working_dir, command }` entries. It gives a
+fresh worktree its dependencies (`node_modules/`, `.venv/`) before any stage agent runs, so no stage
+spends a session task on an install the sandbox may not permit.
+
+```yaml
+loom:
+  provision:
+    - working_dir: "web"
+      command: "test ! -e .npmrc && test ! -L .npmrc && bun install --frozen-lockfile --ignore-scripts --backend=copyfile --config=/dev/null"
+```
+
+- **When.** Each time a stage session spawns in a worktree: first spawn, retry, handoff successor and
+  requeue after a verdict, for standard, integration-verify and knowledge-distill stages. The daemon
+  runs the stage's `before_stage` checks on the pristine worktree first, then each provision command
+  in order, in `<worktree>/<working_dir>`, 600 s each. A `before_stage` check therefore cannot need
+  provisioned dependencies. The contract phase's own spawns on a worktree (the
+  contract-to-implementation handoff and a replacement contract session) reuse the install.
+- **Where.** On the host, outside the sandbox, with the stage-command environment: `HOME` and `PATH`
+  kept, credentials dropped. The registry needs no `allowed_domains` entry for provision itself.
+- **Idempotent.** Every retry, handoff successor and verdict requeue runs the commands again, so use
+  the frozen forms: `bun install --frozen-lockfile`, `npm ci`,
+  `uv sync --frozen --no-install-project`, `pnpm install --frozen-lockfile`, with
+  `--ignore-scripts` on the JS installs (next item). `uv sync` without `--no-install-project`
+  builds the local project through its build backend, which runs repository code on the host.
+- **No repository-controlled code.** Provision runs on the host, outside the sandbox, in a worktree
+  whose files a stage can edit, so a command must not run anything the repository or an agent
+  controls. A JS install interprets four such channels: `package.json` lifecycle scripts, the bun
+  cache, `bunfig.toml` and `.npmrc`. Close them with `--ignore-scripts` (no `postinstall`), and for
+  bun `--backend=copyfile` (no hardlinks into the real bun cache) and `--config=/dev/null` (an
+  agent-written `bunfig.toml` is ignored). An agent-written `.npmrc` still redirects the registry
+  even then, so the command refuses to run while one exists. The hardened form is the example above.
+- **Git-ignored writes only.** The daemon lists `git status` once before the first entry and once
+  after the last, and blocks the stage on any entry that is new: it would read as a non-contract
+  edit at the contract freeze and as prior stage work on a retry.
+- **Failure.** A failing command blocks the stage; `loom status` shows ``provision `<cmd>` in `<dir>`
+  failed: <stderr tail>``.
+- **The snapshot.** `loom init` copies the entries into the work directory's `config.toml`
+  (`[plan_provision]`). The daemon runs only that copy and never the plan file, because a stage can
+  edit the plan file and provision runs on the host. To change the entries during a run, the operator
+  edits `[plan_provision]` and runs `loom stage retry <id>`.
+- **Versus `setup:`.** `setup:` only prefixes acceptance commands; it never runs as part of a
+  session's own work and runs wherever the acceptance command runs, sandboxed inside
+  `loom stage complete`. `provision` runs once per spawn, on the host, before the agent starts.
+- **Repository-level lints.** `loom plan verify` judges the repository, not the stage: a repository
+  with a JS package (this one has `web/`) needs a `provision` entry for it in every v2 plan, and a
+  JS package with a test runner that no entry covers is an error.
+
+## The pre-commit hook needs the network too
+
+Every stage commits, so the repository's pre-commit hook (from `core.hooksPath`, else `.git/hooks`)
+runs inside every stage's sandbox. A hook that runs `bunx` fetches from the npm registry: every
+sandboxed stage then needs `registry.npmjs.org` in `allowed_domains`, including stages whose own
+acceptance needs no network. `loom plan verify` errors when a stage's sandbox omits a registry the
+hook fetches from.
+
+## Registry domains `loom plan verify` checks
+
+A command in a stage's acceptance, setup, wiring tests, after-stage checks or dead-code check that
+fetches from a registry its sandbox does not allow is a `loom plan verify` error. `loom init` prints
+the same suggestions.
+
+| Command | Domains the stage's `allowed_domains` needs |
+| --- | --- |
+| `bunx`, `npx`, `npm install`, `bun install`, `pnpm install`, `yarn install` | `registry.npmjs.org` |
+| `cargo install`, `cargo fetch` | `crates.io`, `index.crates.io`, `static.crates.io` |
+| `uv sync`, `uv add`, `uv pip install`, `uvx`, `pip install` | `pypi.org`, `files.pythonhosted.org` |
+| `go get`, `go mod download` | `proxy.golang.org` |

@@ -383,7 +383,7 @@ pub fn execute(path: &Path, strict: bool, json: bool, no_color: bool) -> Result<
     // ── Validation ────────────────────────────────────────────────────────
 
     let stages = &loom_metadata.loom.stages;
-    let repo_root = find_repo_root(path);
+    let repo_root = find_repo_root(&std::path::absolute(path)?);
     let mut hard_errors: Vec<JsonError> = Vec::new();
     let mut soft_warnings = JsonWarnings::default();
     let mut levels: Vec<Vec<JsonStageLevel>> = Vec::new();
