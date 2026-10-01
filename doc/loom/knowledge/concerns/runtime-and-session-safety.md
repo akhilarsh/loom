@@ -142,7 +142,7 @@ behaviour that makes it a latent bug elsewhere.
 
 `--approve` refuses while a worker session is live, so no path into `NeedsHumanReview` can queue a stage onto a live agent. A filing checks the status transition (`transition_refusal`) before the request file is written, and `loom stage reset` closes open disputes (`commands/stage/state/loop_recovery/mod.rs`). Two gaps stay open:
 
-- **Refused filings leave an open dispute in one race.** `daemon/server/dispute.rs` and `dispute_kinds.rs` check the transition on a clone under the dispute lock, not the stage lock. A status change between that check and `update_stage` makes `update_stage` fail after `write_request` created the request file, so an open dispute remains for a stage that never moved. Fix: remove the request directory when `update_stage` fails, or take the stage lock for the whole filing.
+- **A refused filing can still leave an open request in one race.** `daemon/server/dispute.rs` and `dispute_kinds.rs` check the transition on a clone under the dispute lock, not the stage lock. A status change between that check and `update_stage` makes `update_stage` fail after `write_request` created the request file, so an open dispute remains for a stage that never moved. Fix: remove the request directory when `update_stage` fails, or take the stage lock for the whole filing.
 - **Unverified: a survivor may block the fresh spawn.** A surviving session with no PID identity reads as dead, so approve succeeds. It stays in `active_sessions` and `stage.session`, though, and `insert_active_session` (`orchestrator/core/session_lifecycle.rs`) may then refuse the fresh session.
 
 ## `failure_info` Outlives the Attempt That Set It

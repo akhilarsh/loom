@@ -219,11 +219,11 @@ tests parent, `rg` the name in sibling files that glob-import `super::*`.
 
 ## The Signal's Acceptance List Drops `exit_code`
 
-**What happened:** two stages (plan-environment, stage-exits) read negative `rg` criteria (`exit_code: 1`, absence expected) as presence checks, because the signal's Acceptance Criteria list prints only the command.
+**What happened:** three stages (plan-environment, stage-exits, knowledge-distill, which then wrote a phrase its own criterion required to be absent) read negative `rg` criteria (`exit_code: 1`, absence expected) as presence checks, because the signal's Acceptance Criteria list prints only the command.
 
 **Why:** the signal renders the command without the criterion's `exit_code`; the plan YAML and `.loom/work/stages/<id>.md` are authoritative.
 
-**Prevention:** before treating a signal criterion as failing, read the stage file under `.loom/work/stages/` for its `exit_code`.
+**Prevention:** before treating a signal criterion as failing, read the stage file under `.loom/work/stages/` for its `exit_code` BEFORE writing any text a `rg` criterion matches. A hook or `loom plan verify` check that prints `exit_code` in the signal would end the recurrence.
 
 ## Hook Guards That Refuse a Stage's Legitimate Command
 
