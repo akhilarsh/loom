@@ -205,3 +205,25 @@ move an existing section's detail into its tier-2 topic first. Split a tier-2 se
 reaches 80 lines. Write prose without file-name-shaped tokens that do not exist. Feed long bodies to `loom knowledge update
 <topic> -` from a scratch file rather than a heredoc: `loom-control-complete.sh` blocks a Bash command whose text names
 `loom` and the stage-completion path.
+
+## Moving a Knowledge Section Silently Breaks Eval Ground Truth (2026-10-01)
+
+**What happened:** `loom knowledge eval` failed its gates. Splitting
+`architecture/context-retrieval.md` moved "Delivery Records and Epoch Suppression" to
+`architecture/context-retrieval-state.md`, and `genuine-win-delivery-epoch-suppression` in
+`loom/eval/retrieval-cases.yaml` kept the old section id, so it could never hit. Separately,
+`genuine-win-sandbox-settings-rules` still expected two `mistakes/sandbox-and-settings.md`
+chunks after the session capsule replaced the `settings.local.json` rebuild one of them describes;
+architecture sections that answer the query outranked them (17th and 21st).
+
+**Why:** eval cases name section anchors by hand, and nothing ties them to the knowledge files.
+A distillation that moves, splits or rewrites a section never looks at the case file.
+
+**Prevention:** when a change moves, renames or splits a knowledge section, grep
+`loom/eval/retrieval-cases.yaml` for the old anchor in the same change and re-point it after
+confirming the new id in `loom knowledge context` output for that case's query. When the tree
+change makes a section the eval expects out of date, re-judge that case against the current top 5.
+
+**Fix:** the delivery-records case expects the `context-retrieval-state.md` id; the sandbox case
+expects the two `architecture/security-and-isolation.md` sections and counts `sandbox_settings`
+and the contradictory-path-rules lesson as relevant. Eval passes at hit@5 1.00, p@5 0.45.

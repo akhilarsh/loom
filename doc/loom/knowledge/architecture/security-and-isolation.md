@@ -31,21 +31,23 @@ After worktree creation, `.claude/settings.local.json` is appended (idempotently
 ## Claude Code Worktree Isolation Disabled in Generated Settings
 
 Loom owns the per-stage git worktree, so it disables Claude Code's _own_ worktree
-isolation (`worktree.bgIsolation`) in every settings file it generates. Claude
+isolation (`worktree.bgIsolation`) in every settings document it generates. Claude
 Code's default (`"worktree"`) blocks Edit/Write in the checkout until
 `EnterWorktree`, which would push subagents into nested worktrees on top of loom's
 — leaving stray branches and tangled checkouts. Loom emits `"none"` so subagents
 edit the loom worktree directly (Claude Code v2.1.143+; older versions ignore it).
 
-Two write sites, both targeting `settings.local.json` (never the committed
-`settings.json`, to avoid imposing on non-loom teammates):
+Two write sites:
 
-- **Worktree stage sessions** — `sandbox/settings.rs:generate_settings_json()`
-  emits a top-level `"worktree": { "bgIsolation": "none" }` block. Survives the
-  `merge_existing_permissions()` step, which only touches `permissions.*`.
-- **Main-repo sessions** (knowledge stages, interactive) —
-  `fs/permissions/settings.rs:ensure_loom_hooks_local()` sets it idempotently
-  alongside the agent-teams env var.
+- **Loom-spawned sessions** — `sandbox/settings.rs::generate_settings_json` emits a
+  top-level `"worktree": { "bgIsolation": "none" }` block, and `sandbox::build_settings`
+  carries it into the session capsule
+  (`orchestrator/terminal/native/session_settings/contents.rs::capsule_settings`).
+  `merge_existing_permissions` only touches `permissions.*`, so the block survives it.
+- **Interactive sessions in the main repo** —
+  `fs/permissions/settings.rs::ensure_loom_hooks_local` sets it idempotently in
+  `.claude/settings.local.json` (never the committed `settings.json`, to avoid
+  imposing on non-loom teammates), alongside the agent-teams env var.
 
 ## Worktree Membership Is Anchored to the END of the Path (2026-09-12)
 

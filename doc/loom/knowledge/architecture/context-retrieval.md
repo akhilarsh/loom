@@ -343,15 +343,15 @@ scores a checked-in case file (default `loom/eval/retrieval-cases.yaml`) through
 `retrieve_for_stage` against the LIVE on-disk index and reports per-case
 hit@5/MRR plus aggregate precision@5, exiting non-zero when the aggregate hit
 rate falls below the file's `pass_floor`, aggregate precision@5 falls below its
-`precision_floor` (0.40, set to 0.9 x the 0.45 measured on 2026-09-19), or any
+`precision_floor` (0.40, set to 0.9 x the 0.45 measured on 2026-10-01), or any
 `forbid` id appears anywhere in a case's results (`eval/report.rs::exit_reason`).
 **Which pack is judged depends on the case `mode`** (`eval/metrics.rs::score_case` /
 `judged_pack`): `precision_at_5` and `relevant_token_fraction` are scored over the
 pack the prompt hook would actually deliver for `mode: prompt` cases (0.0 when the
 hook would abstain, computed through `commands/hook/user_prompt_compose.rs::delivered`)
 and over the raw retrieved pack for `mode: stage` cases; hit@5, MRR, forbid checks,
-mandatory recall and rendered cost always use the raw pack. The reason: each case
-judges exactly one relevant id (two for one case) and packs are budget-filled to five
+mandatory recall and rendered cost always use the raw pack. The reason: most cases
+judge a single relevant id and packs are budget-filled to five
 or more items, so raw-pack p@5 is capped near 1/min(5,len) per case and no ranking or
 floor change can move it; the delivered-set metric moved from 0.32 to 0.45 with the
 naming floor. Raising raw p@5 needs more relevance judgments. `forbid`-only cases are excluded from the
@@ -367,6 +367,20 @@ calling session's `LOOM_WORK_DIR` (see
 [Never Spawn a Surviving Process From a Test](../mistakes/detached-spawn-in-tests.md)
 for why an inherited env var made an "isolated" harness mutate the real
 checkout).
+
+Before any case runs, eval brings the local source graph up to date
+(`eval.rs::refresh_source_graph`, `ensure_snapshot` as `loom map` does), since
+retrieval never refreshes it and a stale overlay leaves every source-node case
+without results. The refresh is advisory: a failure is reported on stderr and
+the cases still run. Under a read-only cache (a stage sandbox) the refreshed
+layers stay in eval's own `GraphStore` while retrieval opens another and reads
+disk, so the refresh has no effect there; measure from a checkout with a
+writable cache. Without `--cases`, eval reads the MAIN checkout's case file
+(`main_project_root`), so a worktree edit to `retrieval-cases.yaml` needs
+`--cases` to be scored. Every `expect`/`relevant` id is a section anchor or a
+source-node id: moving a knowledge section or changing an extractor's ids breaks
+the case that names it (see
+[Moving a Knowledge Section Silently Breaks Eval Ground Truth](../mistakes/knowledge-base-drift.md#moving-a-knowledge-section-silently-breaks-eval-ground-truth-2026-10-01)).
 
 ## Routing, Explained Neighbours and Caveats
 
