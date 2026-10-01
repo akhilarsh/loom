@@ -1,13 +1,17 @@
 # Sandbox And Confinement Gaps
 
-> Sandbox gaps: no E2E canary, env lists
+> Sandbox gaps: canary, credential reads, codex home
 
 ## Sandbox Denial Has No End-to-End CI Canary
 
-The generated sandbox policy is covered by unit and flow tests, but nothing proves denial actually
-holds against a live Claude runtime: CI has no callable credentialed Claude sandbox runtime, so
-Bash, interpreter, build-script, symlink, and file-tool denial cannot be exercised end to end.
-That verification is manual release validation.
+The generated sandbox policy is covered by unit and flow tests, but nothing proves denial holds
+against a live Claude Code runtime: CI has no credentialed Claude Code sandbox, so Bash,
+interpreter, build-script, symlink and file-tool denial cannot be exercised end to end there.
+That verification is manual release validation. The srt harness that stands in for it outside the
+sandbox lacks Claude Code's linked-worktree grant of the git common directory and probes no
+`denyRead` path ([Agent Rule-Bending Hardening](agent-rule-bending-hardening.md), G3).
+PLAN-sandbox-escape-hardening adds an in-session canary that integration-verify runs inside a
+live stage sandbox, data-driven from the session's own capsule.
 
 ## ReDoS Potential in Plan Pattern Regex
 
@@ -17,28 +21,27 @@ Files: src/verify/baseline/capture.rs:76-79, src/verify/baseline/compare.rs:155-
 
 ## Two Diverging Copies of the Stage Environment Allowlist (2026-08-17)
 
-The host env allowlist exists twice, and the copies have **already** diverged:
+The host env allowlist exists twice, and the copies differ:
 
 | Copy | Form | Consumer |
 | --- | --- | --- |
-| `process/environment.rs:14-59` `STAGE_HOST_ENV_ALLOWLIST` | Rust `&[&str]` | `spawn_confined`, i.e. plan-authored commands |
-| `orchestrator/terminal/native/wrapper.rs:181-195` `ENV_ALLOWLIST` | embedded shell loop | the native terminal wrapper, i.e. stage agent sessions |
+| `process/environment.rs` `STAGE_HOST_ENV_ALLOWLIST` | Rust `&[&str]` | `spawn_confined`, i.e. plan-authored commands |
+| `orchestrator/terminal/native/wrapper/script_text.rs` `env_allowlist` | shell loop feeding the wrapper's `exec env -i` | stage agent sessions |
 
-The shell copy omits `CARGO_HOME`, `RUSTUP_HOME`, all eight proxy variables
-(`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`/`ALL_PROXY` and their lowercase twins) and
-all three CA-bundle locations (`SSL_CERT_FILE`, `SSL_CERT_DIR`,
-`NIX_SSL_CERT_FILE`). Verified by reading both.
+The shell copy forwards `HOME`, `PATH`, the locale and terminal variables, the display and
+session variables, the tmux variables, `TMPDIR`, `SCCACHE_DIR` and `SCCACHE_CACHE_SIZE`. It omits
+`CARGO_HOME`, `RUSTUP_HOME`, all eight proxy variables (`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`/
+`ALL_PROXY` and their lowercase twins) and all three CA-bundle locations (`SSL_CERT_FILE`,
+`SSL_CERT_DIR`, `NIX_SSL_CERT_FILE`), which the Rust copy forwards. Verified by reading both.
 
-**Concrete failure mode, not hypothetical:** on a host behind a corporate proxy, a
-plan-authored acceptance command can fetch and a stage agent session cannot — and
-the symptom is a mysterious network failure inside the agent, with no error
-pointing at an env allowlist. The same divergence hides a relocated
-`CARGO_HOME`.
+**Concrete failure mode:** on a host behind a corporate proxy, a plan-authored acceptance command
+can fetch and a stage agent session cannot, and the symptom is a network failure inside the agent
+with no error pointing at an env allowlist. The same divergence hides a relocated `CARGO_HOME`.
 
-**Fix:** derive the shell loop from the Rust constant (generate the variable-name
-list at build time or render it into the wrapper from the same slice), and add a
-test asserting the two agree. Two tables encoding one real-world fact will drift;
-the test that matters pins them to each other, not more tests on either side.
+**Fix:** derive the shell loop from the Rust constant (generate the variable-name list at build
+time or render it into the wrapper from the same slice), and add a test asserting the two agree.
+Two tables encoding one real-world fact will drift; the test that matters pins them to each
+other.
 
 ## Confined Commands Still Reach a Live Credential Bus (2026-08-17)
 
@@ -59,16 +62,12 @@ confinement does and does not guarantee.
 
 ## Sandbox-Widening Fields Need No Author Acknowledgement (2026-08-17)
 
-STALE (corrected 2026-09-13): this named `plan/schema/validation.rs`'s `unsafe_plan_reasons`,
-which the state-confinement plan's phase-4 flag removal deleted along with `--allow-unsafe-plan`.
-The two settings it used to gate are now refused unconditionally, no acknowledgement possible:
-`sandbox::validate_config` (`sandbox/config.rs:167`) rejects `sandbox.enabled: false` and
-`sandbox.allow_unsandboxed_escape: true` outright, and a plan carrying either cannot run at all.
-
-The residual gap stands for the fields that check never covered: `allow_write`,
+`sandbox::validate_config` (`sandbox/config.rs`) refuses `sandbox.enabled: false` and
+`sandbox.allow_unsandboxed_escape: true` outright, with no acknowledgement possible, so a plan
+carrying either cannot run. The fields that check does not cover, `allow_write`,
 `allow_all_unix_sockets`, `allow_local_binding` and `linux.enable_weaker_nested`
-(`models/stage/types.rs:305-326`) still widen the sandbox with no acknowledgement from the plan
-author — confirmed 2026-09-13, `plan/schema/validation.rs` has no check on any of the four.
+(`models/stage/types.rs`), widen the sandbox with no acknowledgement from the plan author:
+`plan/schema/validation.rs` only checks that `allow_write` entries are valid globs.
 
 ## Uncalled Path-Escape Validators Read As Protection (2026-08-17)
 
@@ -98,19 +97,18 @@ protection.**
 
 ## Accepted Gaps From the State-Confinement Work (2026-09-13)
 
-Two gaps from `doc/plans/PLAN-loom-state-confinement.md` (see the corrected entry above) were
-accepted, not closed:
+Two gaps from PLAN-loom-state-confinement were accepted, not closed:
 
-- **The approved-permissions filter reads rule text only** (`fs/permissions/sync.rs`'s fold-back). A
-  rule naming a symlink into a control surface (`.loom`, `.claude`, `.worktrees`, a hook directory,
-  `~/.loom`, the scratch root) still passes the filter. The phase-3 OS deny rules close this in
-  practice — a deny always wins over an allow, and the sandbox resolves symlinks before applying
-  either — but the filter itself does not detect the symlink.
-- **Shared package-manager caches stay writable**
-  (`sandbox::PACKAGE_MANAGER_CACHE_WRITE_PATHS`). Owner decision 11 removed
-  `~/.rustup/toolchains` and `~/.local/share/uv` from every session's grants, but the remaining
-  shared caches (cargo, npm, pnpm, yarn, deno, pip, go) are still one directory shared by every
-  concurrent session; per-session isolation is a follow-up plan, not part of this one.
+- **The approved-permissions filter reads rule text only** (`fs/permissions/sync.rs`'s fold-back).
+  A rule naming a symlink into a control surface (`.loom`, `.claude`, `.worktrees`, a hook
+  directory, `~/.loom`, the scratch root) still passes the filter. The OS deny rules close this
+  in practice — a deny always wins over an allow, and the sandbox resolves symlinks before
+  applying either — but the filter itself does not detect the symlink.
+- **Shared package-manager caches stay writable** (`sandbox::PACKAGE_MANAGER_CACHE_WRITE_PATHS`).
+  `~/.rustup/toolchains` and `~/.local/share/uv` are not granted, but the cargo, bun, npm, pnpm,
+  yarn, deno, uv, pip and go caches are one directory shared by every concurrent session and read
+  by the operator's own builds. [State Confinement Gaps](state-confinement-gaps.md) has the
+  consequence; PLAN-sandbox-escape-hardening (decision D3) makes them per-session.
 
 ## No `Read(...)` Deny Rule May Exist in Any Settings File (2026-09-04)
 
@@ -128,8 +126,8 @@ bypass-immune and not classifier-approvable, so auto mode stalls on an operator 
    (user, project, local, worktree). Shape and location are irrelevant. The predicate is
    `Object.values(alwaysDenyRules).flat().some(r => r === "Read" || r.startsWith("Read("))`.
 
-The 2026-09-03 mitigation, token rules with the project directory globbed out
-(`Read(//home/you/src/*/.loom/work/admin.token)`), defeated only check 1 and added a worse defect: on
+Globbing the project directory out of a token rule
+(`Read(//home/you/src/*/.loom/work/admin.token)`) defeats only check 1 and adds a worse defect: on
 Linux every `Read(...)` deny is fed to the OS sandbox, whose glob expander takes the wildcard-free
 prefix (`/home/you/src`), runs `readdirSync(prefix, {recursive: true})` synchronously on the main
 thread and regex-tests every entry, per sandboxed Bash command. Only a prefix of exactly `/` is
@@ -146,16 +144,24 @@ them from every loom-written file and reports, warn-only, an operator-authored `
 will not remove. `generated_settings_carry_no_read_deny_rules`
 (`sandbox/settings/tests_token_rules.rs`) pins the property.
 
-The boundary those rules described is kept by two other layers. `sandbox.filesystem.denyRead` is an
-OS list, not a permission rule: it triggers neither check and keeps Bash out of the credential
-directories and both tokens (`policy::MANDATORY_DENY_READ` now carries all five credential paths, so
-a plan's `deny_read` cannot drop them). `loom-hooks/credential-guard.sh` is a PreToolUse guard on Read,
-Glob, Grep, Edit, MultiEdit, Write and NotebookEdit that blocks `admin.token`/`user.token` under any
-state root unconditionally and applies the project's `denyRead` list to the file tools. A hook can be
-switched off by `disableAllHooks` and shares the check-then-open race noted under "PreToolUse File
-Guards Cannot Eliminate Path-Swap Races"; that is the accepted trade for a prompt-free auto mode.
-Never reintroduce a `Read(...)` deny of any shape, and never emit a `denyRead` glob whose
-wildcard-free prefix lies above the project or above a small home subdirectory.
+The boundary those rules described is kept by other layers. `sandbox.filesystem.denyRead` is an OS
+list, not a permission rule: it triggers neither check and keeps Bash out of the credential
+directories, both tokens and the completion attestation key (`policy::MANDATORY_DENY_READ` carries
+all five credential paths, so a plan's `deny_read` cannot drop them). `loom-hooks/credential-guard.sh`
+is a PreToolUse guard on Read, Glob, Grep, Edit, MultiEdit, Write and NotebookEdit. Its first rule
+blocks `admin.token`, `user.token` and `completion-attestation.key` under any state root
+unconditionally. Its second rule, which applies a `denyRead` list to the file tools
+(`deny_read_blocks`), reads `$PROJECT_DIR/.claude/settings.local.json`. Loom no longer writes that
+file (every session launches from its capsule, `W/capsules/<session-id>.settings.json`), so the
+rule acts only on an operator-authored file, and a session's own `denyRead` list never reaches the
+file tools through it. A worktree session's file tools stay inside the worktree through
+`worktree-file-guard.sh`; for a checkout-rooted session no loom hook checks the file tools against
+the credential paths. PLAN-sandbox-escape-hardening points the second rule at the session capsule.
+A hook can be switched off by `disableAllHooks` and shares the check-then-open race noted under
+"PreToolUse File Guards Cannot Eliminate Path-Swap Races"; that is the accepted trade for a
+prompt-free auto mode. Never reintroduce a `Read(...)` deny of any shape, and never emit a
+`denyRead` glob whose wildcard-free prefix lies above the project or above a small home
+subdirectory.
 
 ## Locked-Write Symlink Fix Was File-Only, Not Directory-Component (2026-09-22)
 
@@ -185,3 +191,65 @@ the allow-list still reaches beyond the worktree. The harness adds the whole git
 `~/.config/gh/hosts.yml`, `~/.netrc` and `~/.npmrc` are readable. The fix is a separate plan, briefed in
 `security-hardening-worktree-hook.md` at the repository root; operator decisions recorded there: per-session package caches,
 `/tmp/claude-<uid>` stays writable, nothing uid- or machine-specific.
+
+## Credential Reads Are Confined to Five Home Paths
+
+The OS `denyRead` list is `fs/permissions/state_root.rs::CREDENTIAL_DENY_READ_PATHS` (`~/.ssh/**`,
+`~/.aws/**`, `~/.config/gcloud/**`, `~/.gnupg/**`, `~/.claude/.credentials.json`), the plan's own
+`deny_read`, and loom's state tokens and attestation key
+(`sandbox/settings/policy.rs::deny_read_patterns`, `add_resolved_state_root_rules`). From a live
+stage session `~/.config/gh/hosts.yml` (a GitHub token), `~/.netrc` and `~/.npmrc` read fine.
+Unlisted and therefore readable wherever they exist: `~/.git-credentials`,
+`~/.docker/config.json`, `~/.kube/`, `~/.pypirc`, `~/.cargo/credentials.toml`, `~/.claude.json`,
+shell histories, browser profiles, password-manager stores, and any credential location an
+environment variable relocates (`DOCKER_CONFIG`, `KUBECONFIG`, `GH_CONFIG_DIR`, ...). A session the
+codex lane is not licensed for can read `~/.codex/auth.json` too. The network filter narrows
+exfiltration to the plan's allowed domains; it does not remove it (a registry publish to an
+allowed domain is one channel).
+
+How Claude Code applies a `denyRead` entry on Linux: a file is bound from `/dev/null`, a directory
+is covered by a tmpfs (with `allowRead` and `allowWrite` paths re-mounted inside it), an absent
+path mounts nothing, and a glob is expanded into one mount per match (a warning above 256). A plain
+path costs one mount.
+
+PLAN-sandbox-escape-hardening (decision D4) adds 36 literal paths, the locations the daemon's
+environment relocates, `~/.codex/auth.json` for unlicensed sessions, and the main checkout's
+top-level `.env` files.
+
+## Sibling Worktrees and the Main Checkout Are Readable From Bash
+
+Rule 10 forbids a stage from reading outside its worktree, but only the file tools enforce it
+(`loom-hooks/worktree-file-guard.sh`, PreToolUse on Read, Write, Edit, MultiEdit, NotebookEdit,
+Glob and Grep). From Bash a stage reads every sibling worktree under `R/.worktrees/` and the whole
+main checkout, untracked operator files such as `R/.env` included. `R/.git/config` stays readable
+whatever loom does, because in-session git reads it; remote URLs there can carry tokens.
+
+PLAN-sandbox-escape-hardening (decision D5) read-denies `R/.worktrees` to worktree-rooted capsules
+and re-allows the session's own worktree (`sandbox.filesystem.allowRead`), and D4 read-denies the
+top-level `R/.env` and `R/.env.*` files. Reads of the rest of the main checkout stay open: in-session
+loom resolves its retrieval config, context store and knowledge through `main_project_root`
+(`context/retrieve.rs`, `context/store.rs`).
+
+## The Codex Lane Grants All of `~/.codex`
+
+A capsule whose stage licenses codex adds `codex.rs::CODEX_SANDBOX_WRITE_PATHS` (`~/.codex` and
+`~/.claude/plugins/data/codex-openai-codex`) to `allowWrite`; inside it
+`sandbox/control_surfaces.rs::HOME_SURFACES` denies only `~/.codex/hooks/**`, `~/.codex/hooks.json`
+and `~/.codex/config.toml`. Writable to the stage, and trusted later by the operator's own codex
+sessions: `~/.codex/AGENTS.md` (doctrine), `~/.codex/rules/` (command approval rules),
+`~/.codex/skills/`, `~/.codex/plugins/`, `~/.codex/packages/` and `~/.codex/vendor_imports/`.
+`~/.codex/auth.json`, the operator's OpenAI credential, is readable and writable. Codex runs inside
+the stage sandbox (the forwarder's Bash call starts the companion, which spawns `codex app-server`
+itself), so the outer sandbox is the only boundary for its writes.
+
+`loom-hooks/codex-forward.sh` points `CLAUDE_PLUGIN_DATA` at `~/.codex/plugin-data`, where
+host-side code reads job state and forward receipts (`models/forward_receipt/locator.rs`,
+`codex_lifecycle/authorization.rs`, `codex-forward-guard.sh`); every codex-licensed session can
+write it.
+
+PLAN-sandbox-escape-hardening (decision D6) moves `CODEX_HOME` into the session's cache directory,
+seeded with links to the operator's doctrine and copies of `~/.codex/config.toml` and
+`~/.codex/hooks.json`, and shrinks the grants to that directory, `~/.codex/plugin-data` and the
+single file `~/.codex/auth.json` (codex writes it in place on a token refresh:
+`FileAuthStorage::save` in codex-rs `login/src/auth/storage.rs`). Write access to `auth.json` and
+the shared `plugin-data` remain accepted gaps.

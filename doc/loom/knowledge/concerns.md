@@ -72,12 +72,10 @@ until the next recovery pass or an explicit `loom worktree remove`.
 
 ## Sandbox Denial Has No End-to-End CI Canary
 
-The generated sandbox policy is covered by unit and flow tests, but nothing proves denial holds
-against a live Claude runtime end to end — that verification is manual release validation. This
-entry now also covers the wider sandbox/confinement cluster: two diverging stage-env allowlists,
-confined commands still reaching a live credential bus, uncalled path-escape validators,
-sandbox-widening fields needing no author acknowledgement, ReDoS-able plan regexes, the bootstrap
-settings backup risk, and the `Read(...)` deny-rule ban.
+Nothing proves sandbox denial holds against a live Claude Code runtime, and the srt stand-in misses
+the git-dir grant and every read deny. Also: credential reads confined to five home paths, sibling
+worktrees readable from Bash, the codex lane's whole `~/.codex` grant, an inert credential-guard
+rule, two diverging stage-env allowlists, and the `Read(...)` deny-rule ban, among others.
 
 → [Sandbox and Confinement Gaps](concerns/sandbox-and-confinement-gaps.md)
 
@@ -168,14 +166,17 @@ read-receipt runtime uncertainties, the IV fence wording, and two fail-open guar
 
 ## State Confinement Gaps (2026-09-13) [DETAILED]
 
-One accepted residual from the merged `.loom` state-confinement plan: shared package-manager
-caches stay session-writable.
+Shared package-manager caches stay session-writable, so a stage can edit an extracted crate's
+`build.rs` that the operator's next host build runs.
 
 → [State Confinement Gaps](concerns/state-confinement-gaps.md)
 
 ## Agent Rule-Bending Hardening (2026-09-16)
 
-An env-var gate an agent can unset is class 1 of three enforcement classes; only the OS sandbox, the capsule deny layers and the daemon ancestry checks carry authority. Seven gaps follow, led by commits policed by text matching, an undenied worktree `.git` surface, and no CI proof that any denial holds.
+Only the OS sandbox, the capsule denies and the daemon's ancestry checks carry authority. Seven
+gaps, led by text-matched commits, the whole git common directory writable from a stage (Claude
+Code's own grant; host git follows the agent's `.git` pointer; the merge gate fails open), and no
+live proof that any denial holds. PLAN-sandbox-escape-hardening addresses G1-G3 and G7's caches.
 
 → [Agent Rule-Bending Hardening](concerns/agent-rule-bending-hardening.md)
 

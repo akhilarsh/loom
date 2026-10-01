@@ -14,7 +14,7 @@
 | [conventions.md](conventions.md) | Coding conventions discovered in the codebase | 247 |
 | [mistakes.md](mistakes.md) | Mistakes made and lessons learned - what to avoid | 250 |
 | [stack.md](stack.md) | Dependencies, frameworks, and tooling used in the project | 125 |
-| [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 246 |
+| [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 247 |
 
 ## Tier 2 — Topics
 
@@ -35,7 +35,7 @@
 | [contract-phase](architecture/contract-phase.md) | Contract session, freeze, handover | 144 |
 | [core-abstractions](architecture/core-abstractions.md) | ExecutionGraph, Stage, Session, data flow | 136 |
 | [directory-structure](architecture/directory-structure.md) | loom/src module tree, state layout, root assets | 49 |
-| [execution-containment](architecture/execution-containment.md) | Sandboxed command containment, limits | 343 |
+| [execution-containment](architecture/execution-containment.md) | Sandboxed command containment, limits | 385 |
 | [hook-system](architecture/hook-system.md) | Hook embedding, SessionStart contract | 245 |
 | [knowledge-bootstrap](architecture/knowledge-bootstrap.md) | Deterministic phase, digest, receipts | 86 |
 | [knowledge-hierarchy](architecture/knowledge-hierarchy.md) | fs/knowledge, INDEX.md, checks | 261 |
@@ -67,7 +67,7 @@
 | Topic | Blurb | Lines |
 | --- | --- | --- |
 | [cli-and-plan-pipeline](entry-points/cli-and-plan-pipeline.md) | CLI dispatch, plan pipeline | 192 |
-| [context-and-source-graph](entry-points/context-and-source-graph.md) | Context retrieval pipeline, source-graph channel | 81 |
+| [context-and-source-graph](entry-points/context-and-source-graph.md) | Context retrieval pipeline, source-graph channel | 79 |
 | [filesystem-and-integration-modules](entry-points/filesystem-and-integration-modules.md) | Git, fs, handoff, sandbox, remote | 121 |
 | [hooks](entry-points/hooks.md) | Hook scripts, their events, command matching | 146 |
 | [orchestrator-daemon-and-sessions](entry-points/orchestrator-daemon-and-sessions.md) | Orchestrator, daemon, signals, merges | 224 |
@@ -163,7 +163,7 @@
 
 | Topic | Blurb | Lines |
 | --- | --- | --- |
-| [agent-rule-bending-hardening](concerns/agent-rule-bending-hardening.md) | Bendable checks, hardening backlog | 221 |
+| [agent-rule-bending-hardening](concerns/agent-rule-bending-hardening.md) | Bendable checks, hardening backlog | 246 |
 | [automatic-knowledge-source-graph-followups](concerns/automatic-knowledge-source-graph-followups.md) | Knowledge-plan followups | 60 |
 | [code-quality-and-hook-debt](concerns/code-quality-and-hook-debt.md) | Oversized units, duplicated tables, hook debt | 197 |
 | [codex-heartbeat-starvation](concerns/codex-heartbeat-starvation.md) | Heartbeat starvation from long codex runs | 73 |
@@ -171,10 +171,10 @@
 | [knowledge-cli-gaps](concerns/knowledge-cli-gaps.md) | Knowledge CLI gaps and housekeeping | 101 |
 | [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 82 |
 | [runtime-and-session-safety](concerns/runtime-and-session-safety.md) | Runtime edge cases: tmux, orphan adoption | 151 |
-| [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: no E2E canary, env lists | 187 |
+| [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: canary, credential reads, codex home | 255 |
 | [source-graph-known-gaps](concerns/source-graph-known-gaps.md) | Language limits, open decisions | 80 |
 | [source-graph-review-backlog](concerns/source-graph-review-backlog.md) | Unimplemented reviewer suggestions | 242 |
-| [state-confinement-gaps](concerns/state-confinement-gaps.md) | Shared package caches session-writable | 9 |
+| [state-confinement-gaps](concerns/state-confinement-gaps.md) | Shared package caches session-writable | 18 |
 | [token-accounting-and-proof-defects](concerns/token-accounting-and-proof-defects.md) | Token-optimization and efficiency follow-ups | 92 |
 | [typed-config-values](concerns/typed-config-values.md) | Accepted gaps in the config read-path | 27 |
 | [verification-v2-followups](concerns/verification-v2-followups.md) | v2 adapters, parser gaps, known gaps | 72 |

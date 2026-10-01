@@ -4,6 +4,15 @@
 
 ## Open Gap (2026-09-13)
 
-Tracked by `doc/plans/PLAN-loom-state-confinement.md` (branch `state-confinement`, merged 2026-09-14). One accepted risk remains:
+PLAN-loom-state-confinement (merged 2026-09-14) left one accepted risk, which
+PLAN-sandbox-escape-hardening (decision D3) closes:
 
-- **Shared package caches** (cargo registry, npm, bun, pnpm, uv, go and pip caches) stay session-writable and are executed by the operator's own builds. Private per-session caches are a follow-up plan.
+- **Shared package caches** stay session-writable and are executed by the operator's own builds.
+  Every capsule's `allowWrite` carries `sandbox/package_caches.rs::PACKAGE_MANAGER_CACHE_WRITE_PATHS`:
+  cargo's `registry`, `git` and lock files, rustup's `downloads`, `tmp` and `update-hashes`, and the
+  bun, npm, pnpm, yarn, deno, uv, pip and go caches. Cargo does not re-verify extracted sources, so
+  an edited `build.rs` under `~/.cargo/registry/src/<registry>/<crate>-<version>/` runs at the
+  operator's next host build of any project using that crate; the same holds for any cache a host
+  tool reads without re-hashing it (the go build cache, uv's `archive-v0`). A full copy per
+  session is not an option: on the machine where this was measured the cargo registry held
+  1.75 GB, bun 30 GB, npm 7.7 GB and uv 62 GB, and ext4 has no reflinks.

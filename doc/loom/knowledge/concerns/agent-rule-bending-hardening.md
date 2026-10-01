@@ -86,60 +86,69 @@ effort by their own headers, and `--no-verify` walks past the last one.
 
 **Fix direction:** route commits through the relay that already exists (`relay/*`, `fs/inbox/*`,
 `orchestrator/core/inbox_drain/*`). The agent requests "commit these paths, this message"; the
-daemon commits on the host from the worktree diff. Subagent commits become impossible rather than
-discouraged, `git add -A` staging `.loom` becomes impossible, `--no-verify` becomes meaningless, and
-path policy applies where the commit actually happens. This retires a hook family rather than
-growing one.
+daemon commits on the host from the worktree. Subagent commits become impossible rather than
+discouraged, `git add -A` staging `.loom` becomes impossible, `--no-verify` becomes meaningless,
+and path policy applies where the commit actually happens. PLAN-sandbox-escape-hardening adopts
+this for worktree sessions (decision D1, `loom commit`). Its daemon never runs `git add` on
+agent-written paths: git `lstat`s a path and then `open`s it without `O_NOFOLLOW`, so an agent
+swapping a file for a symlink to a host secret between the two would have the daemon, outside the
+sandbox, commit the secret. The daemon opens each file itself with a no-follow walk and hashes it.
 
 ### G2 — The worktree git-directory surface is not denied
 
-- srt denies `.git/hooks` and `.git/config` **only when `.git` is a directory**
-  (`sandbox/linux-sandbox-utils.js:185-205` in `@anthropic-ai/sandbox-runtime` 0.0.76, read from the
-  bun cache; Claude Code bundles its own copy, whose version is unconfirmed). In a stage worktree
-  `.git` is a regular file, so srt contributes no git denies there at all, and `DANGEROUS_FILES`
-  (`sandbox/sandbox-utils.js:10-20`) does not list `.git`.
-- Loom denies `<repo>/.git/hooks` and `<repo>/.git/config`
-  (`sandbox/control_surfaces/session_denies.rs:81-82`) and nothing else under the git directory. The
-  worktree's own `.git` pointer file and `<repo>/.git/worktrees/<id>/{commondir,gitdir}` each
-  redirect where host-side git resolves its config, and the latter directory has to stay writable
-  for commits to work.
-- Host-side git runs inside the worktree from **unsandboxed** shell hooks: `commit-guard.sh:119` and
-  `:136` (bare `git status --porcelain`), plus `stage-terminal-guard.sh`, `poll-guard.sh`,
-  `no-preexisting-failures.sh` and `_progress-classification.sh`. `git/runner.rs`'s `NO_HOOKS_ARGS`
-  (`-c core.hooksPath=/dev/null -c core.fsmonitor=false`) applies to loom's own Rust git calls and
-  covers those two keys only. `diff.external`, `filter.*.clean`, `core.sshCommand`, aliases and
-  `core.pager` stay uncovered. The census's git calls use `run_git_pinned` (`git/runner/pinned.rs`),
-  which also drops `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_COMMON_DIR`.
-- **Unverified:** no working gadget was built. A local check did not get `core.fsmonitor` to fire on
-  git 2.43 through a repointed worktree gitdir. Treat the gadget as unproven and the structural gap
-  as real.
-- **Unverified, and the first thing to answer:** what grants a worktree session write access to
-  `<repo>/.git` at all. `session_writable_roots` (`sandbox/control_surfaces.rs:93-111`) starts its
-  list from `repo_root`, but that list feeds deny-skipping, not the capsule's `allowWrite`. Commits
-  demonstrably work, so something grants it. The same answer decides whether `refs/heads/main` is
-  writable from a stage — if it is, the merge gate
-  (`orchestrator/core/merge_handler/merge_gate.rs:218-226`, screening `.claude/`, `.mcp.json`,
-  `.loom/` and the tracked hooks directory) can be walked around rather than defeated.
+- **The grant.** Claude Code adds the whole git common directory (`R/.git`) to the `allowWrite`
+  of every session whose cwd is a linked worktree, denying only `hooks`, `config*`, `commondir`
+  and the alternates files ([Execution Containment](../architecture/execution-containment.md),
+  "Claude Code Grants a Linked Worktree Its Whole Git Common Directory"). Loom adds only
+  `R/.git/hooks` and `R/.git/config` (`sandbox/control_surfaces/session_denies.rs`).
+- **What a stage can do**, each shown in a scratch repository: move `main` or any branch and
+  rewrite sibling stages' `refs/heads/loom/*`; replace a loose object that `git show` and
+  `git checkout` then serve with exit 0 (only a full `git fsck` notices); plant `MERGE_HEAD` so the
+  operator's next plain `git commit` in `R` becomes a merge with the agent's history; rewrite
+  `R/.git/index`, which that commit then records. The merge gate fails open besides
+  (`merge_handler/merge_gate.rs` and the `commits_ahead_of` probe in `merge_handler.rs` log and
+  proceed when they cannot compute the diff).
+- **No deny-list narrows it:** denies cannot be reopened for the stage's own ref, write globs are
+  skipped on Linux, an absent-path deny shows the host an empty placeholder file, and a commit
+  needs `R/.git` itself writable for `packed-refs.lock`.
+- **Host-side git follows the agent's pointer.** A rewritten `T/.git` naming a directory whose
+  config defines a clean filter makes a host `git status` in `T` run it
+  (`verify/contracts/test_support.rs::plant_foreign_git_dir`); `git/runner.rs` disables hooks and
+  `core.fsmonitor`, not filters, and the shell hooks run bare git. Discovering callers:
+  `monitor/parked.rs`, `handoff/session_content.rs`, `verify/before_after.rs`,
+  `merge_lifecycle/containment.rs`, `git/cleanup/removal.rs`, `git/cleanup/worktree.rs`,
+  `git/merge/in_progress.rs`; on an operator's host `loom stage complete` also
+  `verify/criteria/cache_fingerprint.rs`, `verify/wiring_detection.rs`,
+  `verify/duplicate_detection.rs`, `context/worktree_graph.rs`; hooks `commit-guard.sh`,
+  `stage-terminal-guard.sh`, `codex-forward-guard.sh` (`poll-guard.sh`,
+  `no-preexisting-failures.sh` and `_progress-classification.sh` run no git).
+- **A planted `commondir` in `R/.git`** redirects every discovery-based git call in `R`;
+  `GIT_COMMON_DIR` stops it, `GIT_DIR` alone does not. Checkout-rooted sessions (knowledge stages,
+  merge resolution, an adjudicator in `R`) can plant it.
 
-**Fix direction:** deny the worktree `.git` pointer file and the two redirect files; narrow the
-git-directory grant to what a commit needs (objects, `refs/heads/loom/<id>`,
-`worktrees/<id>/{index,HEAD,logs}`); give every host-side git call in agent territory one shared
-safe-flag wrapper instead of the hooks flag alone. G1 removes most of the need for in-worktree git
-in the first place.
+**Fix direction:** PLAN-sandbox-escape-hardening: deny the whole common directory to stage,
+contract and adjudication sessions and let the daemon commit (D1), pin host-side git (D2), verify
+checkout-rooted sessions' effect on `R/.git` (D7), and fail the merge gate closed.
 
 ### G3 — No end-to-end proof that any denial holds
 
-Everything above describes configuration, not observed behavior.
-[Sandbox and Confinement Gaps](sandbox-and-confinement-gaps.md) records that CI has no credentialed
-runtime and denial verification is manual release validation. The harness exists and passed manually
-on 2026-09-14 (`orchestrator/terminal/native/tests_confinement_srt.rs`, run with
-`LOOM_TEST_REQUIRE_SANDBOX_FREE=1` and a PATH shim for `srt`).
+Everything above describes configuration, not observed behaviour.
+[Sandbox and Confinement Gaps](sandbox-and-confinement-gaps.md) records that CI has no
+credentialed runtime and denial verification is manual release validation. The srt harness
+(`orchestrator/terminal/native/tests_confinement_srt.rs`, run outside any sandbox with
+`LOOM_TEST_REQUIRE_SANDBOX_FREE=1` and a PATH shim for `srt`) passed manually on 2026-09-14, and
+it cannot test the git directory: srt (`@anthropic-ai/sandbox-runtime` 0.0.78) shares Claude
+Code's bind logic but not its linked-worktree grant, so `R/.git` is read-only under srt whatever
+the capsule says. It probes no `denyRead` path either.
 
 **Fix direction:** run it in CI with that shim and add a probe per deny worth keeping — the state
-root, the credentials, the attestation key, `.claude`, and whatever G2 closes. Each probe needs the
-matched positive/negative control pair
+root, the credentials, the attestation key, `.claude`, the git common directory. The srt
+translation must add the common-dir grant Claude Code makes, or a refusal there proves nothing.
+Each probe needs the matched positive/negative control pair
 [Execution Containment](../architecture/execution-containment.md) prescribes, or a green probe
-cannot distinguish "denied" from "the harness never ran".
+cannot distinguish "denied" from "the harness never ran". PLAN-sandbox-escape-hardening also adds
+an in-session canary that reads the session's own capsule and runs inside a live stage sandbox in
+integration-verify.
 
 ## What Hardening Cannot Fix
 
@@ -191,28 +200,44 @@ locations and `CARGO_HOME`.
 
 `spawn_confined` is environment scrubbing and nothing else — no namespace, no seccomp, no network
 restriction ([Execution Containment](../architecture/execution-containment.md) states this with
-three proofs). Plan-authored commands are trusted text, but they compile and run agent-authored code
-(`cargo test` runs the stage's own `build.rs`). That is the shortest path from a stage to the host.
+three proofs). Plan-authored commands are trusted text, but they compile and run agent-authored
+code (`cargo test` runs the stage's own `build.rs`), so where they run decides the exposure:
 
-**Fix direction:** either run acceptance under the stage's own sandbox profile — `srt` is invokable
-from the daemon, and doing so would make "prove this outbound connection is denied" an expressible
-criterion instead of an unsatisfiable one — or state the boundary where an operator reads it rather
-than only in `concerns/`.
+- **In a session.** `loom stage complete` runs as a sandboxed control session
+  (`commands/stage/control_session.rs::sandbox_control_session`), so acceptance, setup, wiring
+  tests, contract runs and impact-selected tests execute inside the session's own sandbox. The
+  daemon's `CompleteStage` (`daemon/server/control_complete.rs`) runs no plan or worktree command:
+  it reads files and runs pinned git.
+- **On the host.** Worktree content executes when an operator runs `loom stage complete`,
+  `loom verify` or `loom check` outside a session (no `LOOM_STAGE_ID` or `LOOM_SESSION_ID`, so
+  `sandbox_control_session` returns no session), and when the daemon runs a stage's
+  `before_stage` truth commands at spawn (`orchestrator/core/stage_executor.rs` →
+  `verify/before_after.rs`). `before_stage` is skipped when `find_prior_stage_work` reports
+  commits or changes in a reused worktree, and that probe discovers git through `T/.git` (G2).
+
+**Fix direction:** run host-side acceptance under the stage's own sandbox profile — `srt` is
+invokable from the daemon, and doing so would make "prove this outbound connection is denied" an
+expressible criterion instead of an unsatisfiable one — or state the boundary where an operator
+reads it rather than only in `concerns/`. PLAN-sandbox-escape-hardening pins
+`find_prior_stage_work` (D2) and leaves the operator's host path as it is.
 
 ### G7 — Standing accepted risks that deserve a decision
 
-- **Shared package caches** (`sandbox/package_caches.rs`) are writable by every session and executed
-  by the operator's own next build. This is the cheapest escape in the system and far easier than
-  defeating any hook. Per-session caches are the stated follow-up; until then it belongs somewhere
-  an operator reads, not only in [State Confinement Gaps](state-confinement-gaps.md).
-- **Three `pub`-but-uncalled path-escape validators** (`sandbox/config.rs:192`, `:276`, `:297`) still
-  read as protection. Wire them in or delete them.
-- **Attestation key confidentiality** appears handled: the array whose tail sits at
-  `fs/permissions/state_root.rs:40-42` lists `user.token` and `crate::handoff::ATTESTATION_KEY_FILE`
-  (note that `CREDENTIAL_DENY_READ_PATHS` at `:51` is the separate home-credential list).
-  [Completion Recovery](../architecture/completion-recovery.md) warns the stage-sandbox read
-  deny-list names only the tokens. Confirm with a probe rather than by reading — that file's
-  confidentiality is what keeps forged completion evidence out.
+- **Shared package caches** (`sandbox/package_caches.rs::PACKAGE_MANAGER_CACHE_WRITE_PATHS`,
+  emitted into every capsule's `allowWrite`) are writable by every session and executed by the
+  operator's own next build: cargo does not re-verify extracted sources, so an edited `build.rs`
+  under `~/.cargo/registry/src` runs on the host. This is the cheapest escape in the system, far
+  easier than defeating any hook. PLAN-sandbox-escape-hardening (decision D3) gives each session
+  its own cache over read-only views of the real ones; detail in
+  [State Confinement Gaps](state-confinement-gaps.md).
+- **Three `pub`-but-uncalled path-escape validators** (`sandbox/config.rs`: `detect_path_escape`,
+  `validate_paths`, `is_legitimate_work_access`) still read as protection. Wire them in or delete
+  them.
+- **Attestation key confidentiality** holds in the capsule: every stage capsule's `denyRead` names
+  `<state root>/completion-attestation.key` beside `admin.token` and `user.token` (seen in a live
+  stage capsule on 2026-10-01), and `loom-hooks/credential-guard.sh` blocks the three for the file
+  tools whatever the settings say. No probe from inside a session has confirmed the OS deny; the
+  key's confidentiality is what keeps forged completion evidence out.
 
 ## Stage Agents Stop and Report Instead of Disputing or Blocking
 

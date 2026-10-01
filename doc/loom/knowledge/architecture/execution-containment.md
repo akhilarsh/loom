@@ -170,15 +170,25 @@ does not depend on the answer either way.
 
 ## A Denied Missing Path Shows Up in the Session's `git status` (2026-09-13)
 
-Inside a Claude Code Bash sandbox, a write-denied path that does not exist is held by a read-only bind mount of `/dev/null`. It exists only in that session's mount namespace. Observed at `<cwd>/.mcp.json`: `stat` reports a character special file (size 0, owner `nobody`, mtime of the device node), `/proc/self/mountinfo` lists it as a `devtmpfs udev` mount, and a tool outside the sandbox finds no file there.
+Inside a Claude Code Bash sandbox, a write-denied path that does not exist is held by a read-only
+bind mount of `/dev/null`. Observed at `<cwd>/.mcp.json`: `stat` reports a character special file
+(size 0, owner `nobody`, mtime of the device node), and `/proc/self/mountinfo` lists it as a
+`devtmpfs udev` mount. On the host the mount point is an empty regular file that exists while a
+sandboxed command runs and is removed afterwards
+([Claude Code Grants a Linked Worktree Its Whole Git Common Directory](#claude-code-grants-a-linked-worktree-its-whole-git-common-directory)).
 
 Consequences for a stage session, which runs git inside its sandbox:
 
-- `git status` lists the mount point as untracked (`?? .mcp.json`), so an agent checking that the tree is clean before `loom stage complete` sees noise.
-- `git add` of a character device fails, which is one more reason the git-add guard forbids `-A` and `.`.
-- The daemon's own git runs outside the sandbox and never sees these entries.
+- `git status` lists the mount point as untracked (`?? .mcp.json`), so an agent checking that the
+  tree is clean before `loom stage complete` sees noise.
+- `git add` of a character device fails, which is one more reason the git-add guard forbids `-A`
+  and `.`.
+- The daemon's own git runs outside the sandbox; between sandboxed commands it sees no entry, and
+  during one it can see an empty file.
 
-Do not commit or delete such an entry; confirm it with `stat -c %F <path>` first. The same mechanism explains the 0-byte placeholders the Claude Code docs describe for missing `.claude` settings files (sandboxing.md, Troubleshooting).
+Do not commit or delete such an entry; confirm it with `stat -c %F <path>` first. The same
+mechanism explains the 0-byte placeholders the Claude Code docs describe for missing `.claude`
+settings files (sandboxing.md, Troubleshooting).
 
 ## Confinement E2E Lives Outside the Sandbox (2026-09-13)
 
@@ -341,3 +351,35 @@ gone, but the stage sandbox's domain allowlist still applies.
 
 See [Codex Lane Rogue Wrapper](../mistakes/codex-lane-rogue-wrapper.md) for the verification gap that
 let this ship.
+
+## Claude Code Grants a Linked Worktree Its Whole Git Common Directory
+
+Measured against Claude Code 2.1.286 (its bundle, and live `claude -p` runs in a scratch
+repository), these sandbox rules decide what loom's capsule can and cannot express on Linux:
+
+- **The git-dir grant.** For a session whose cwd is a linked worktree, Claude Code adds the whole
+  git common directory to `allowWrite` itself. Its detector reads the worktree's `.git` file,
+  requires the `gitdir` to lie in `<common dir>/worktrees/` with a back-pointer naming the
+  worktree, and adds the common directory; it then denies `hooks`, `config`, `config.lock`,
+  `config.worktree`, `commondir`, `objects/info/alternates`, `objects/info/http-alternates` and
+  each `worktrees/*/{config.worktree,commondir}`. No setting turns the grant off. A session whose
+  `.git` is a directory gets `.git/hooks` and `.git/config` denied instead.
+- **Bind order.** Every `allowWrite` entry is bound first and every `denyWrite` entry after, so a
+  deny always wins and an allow nested inside a deny never reopens it. `allowRead` reopens a path
+  inside a `denyRead` directory; nothing reopens a write deny.
+- **Globs.** `allowWrite` and `denyWrite` glob entries are skipped on Linux. `denyRead` globs are
+  expanded into one mount per match, with a warning above 256.
+- **Absent paths.** A `denyWrite` path that does not exist is bound from `/dev/null` (or an empty
+  directory at its first missing ancestor). bwrap creates the mount point on the host filesystem
+  when the parent is a host directory bound into the sandbox, so host processes see an empty
+  regular file there while each sandboxed command runs; Claude Code removes it afterwards (a killed
+  sandbox can leave it). A `denyRead` path that does not exist mounts nothing.
+- **Reads.** A `denyRead` file is bound from `/dev/null`; a directory is covered by a tmpfs with
+  the `allowRead` and `allowWrite` paths inside it re-mounted.
+- **Environment.** A top-level `env` in a `--settings` file reaches Bash commands; Claude Code
+  sets `TMPDIR` per command to `<CLAUDE_CODE_TMPDIR or /tmp>/claude-<uid>`.
+- **srt.** `@anthropic-ai/sandbox-runtime` 0.0.78 shares this bind logic but not the git-dir
+  grant, so an srt test of a linked worktree must add the common directory to `allowWrite` itself.
+
+What this exposes, and why no deny-list can narrow it, is in
+[Agent Rule-Bending Hardening](../concerns/agent-rule-bending-hardening.md), G2.
