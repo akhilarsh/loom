@@ -32,11 +32,11 @@ use std::path::Path;
 
 use super::dispute_store::{escalate_to_human_review, lock_stage_disputes, write_request};
 use crate::daemon::protocol::Response;
-use crate::models::dispute::{CriterionField, DisputeKind, DisputeRequest};
+use crate::models::dispute::{
+    truncate_to_byte_limit, CriterionField, DisputeKind, DisputeRequest, FAILURE_OUTPUT_MAX_BYTES,
+};
 use crate::models::stage::Stage;
 use crate::verify::transitions::{load_stage, update_stage};
-
-const FAILURE_OUTPUT_MAX_BYTES: usize = 4096;
 
 pub fn handle_dispute_criteria(
     work_dir: &Path,
@@ -179,23 +179,6 @@ fn build_record(
         fix_attempts_at_dispute: stage.fix_attempts,
         created_at: Utc::now(),
     }
-}
-
-fn truncate_to_byte_limit(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_string();
-    }
-    let mut acc = String::new();
-    let mut byte_count = 0;
-    for ch in s.chars() {
-        let ch_len = ch.len_utf8();
-        if byte_count + ch_len > max_bytes {
-            break;
-        }
-        byte_count += ch_len;
-        acc.push(ch);
-    }
-    acc
 }
 
 #[cfg(test)]

@@ -14,10 +14,8 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use super::dispute_transport::{send, Dispute};
-use crate::models::dispute::CriterionField;
+use crate::models::dispute::{truncate_to_byte_limit, CriterionField, FAILURE_OUTPUT_MAX_BYTES};
 use crate::relay::emit::{mode, EnvSnapshot, RelayMode, RelaySink, StdSink};
-
-const FAILURE_OUTPUT_MAX_BYTES: usize = 4096;
 
 /// Dispute one entry of a stage's acceptance, wiring or wiring-tests list.
 ///
@@ -85,23 +83,6 @@ fn load_and_truncate_failure_output(path: &Path) -> Result<String> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read failure_output file: {}", path.display()))?;
     Ok(truncate_to_byte_limit(&raw, FAILURE_OUTPUT_MAX_BYTES))
-}
-
-fn truncate_to_byte_limit(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_string();
-    }
-    let mut acc = String::new();
-    let mut byte_count = 0;
-    for ch in s.chars() {
-        let ch_len = ch.len_utf8();
-        if byte_count + ch_len > max_bytes {
-            break;
-        }
-        byte_count += ch_len;
-        acc.push(ch);
-    }
-    acc
 }
 
 #[cfg(test)]
