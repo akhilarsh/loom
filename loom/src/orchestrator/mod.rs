@@ -9,6 +9,7 @@ pub mod merge_lifecycle;
 pub mod monitor;
 pub mod notify;
 pub mod progressive_merge;
+pub mod provision;
 pub mod retry;
 pub mod scheduling_report;
 pub mod session_registry;

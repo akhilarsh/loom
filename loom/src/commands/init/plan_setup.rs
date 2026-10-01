@@ -5,6 +5,7 @@ use crate::fs::work_dir::{self, WorkDir};
 use crate::git::branch::current_branch;
 use crate::models::session::{SessionBackendKind, TerminalConfig};
 use crate::models::stage::{PlanIdentity, Stage};
+use crate::orchestrator::provision::persist_plan_snapshots;
 use crate::plan::graph::levels::compute_all_levels;
 use crate::plan::parser::{parse_plan, ParsedPlan};
 use crate::plan::schema::{
@@ -219,10 +220,10 @@ pub fn initialize_with_plan(
 
     work_dir::write_config(work_dir.root(), &doc).context("Failed to write config.toml")?;
 
-    // Persist plan-level sandbox snapshot so the loader fallback doesn't
-    // silently substitute defaults after the state directory's stages exists.
-    work_dir::write_plan_sandbox(work_dir.root(), &parsed_plan.metadata.loom.sandbox)
-        .context("Failed to persist plan-level sandbox config")?;
+    // Snapshot the plan-level sandbox and provision entries; the daemon reads
+    // these, never the plan file, which a stage can edit.
+    persist_plan_snapshots(work_dir.root(), &parsed_plan.metadata.loom)
+        .context("Failed to persist the plan-level sandbox and provision snapshots")?;
 
     // Persist a default [remote_control] section so the operator has a
     // documented, editable toggle in config.toml from the start.
