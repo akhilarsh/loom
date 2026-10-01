@@ -79,6 +79,7 @@ mod tests {
             completion_blocker: None,
             merge_resolver_session: None,
             merge_resolver_attempts: None,
+            close_reason: None,
         }
     }
 

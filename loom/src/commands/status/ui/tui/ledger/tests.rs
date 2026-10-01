@@ -78,6 +78,7 @@ pub(super) fn make_stage(id: &str, status: StageStatus) -> StageSummary {
         completion_blocker: None,
         merge_resolver_session: None,
         merge_resolver_attempts: None,
+        close_reason: None,
     }
 }
 

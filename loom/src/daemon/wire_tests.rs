@@ -116,6 +116,7 @@ fn stage_summary(id: &str, status: StageStatus) -> StageSummary {
         completion_blocker: None,
         merge_resolver_session: None,
         merge_resolver_attempts: None,
+        close_reason: None,
     }
 }
 
@@ -125,6 +126,7 @@ fn status_data() -> StatusData {
     executing.dispute_count = 3;
     executing.judge_heartbeat_secs = Some(42);
     executing.session_backend = Some(SessionBackendKind::Tmux);
+    executing.close_reason = Some("the agent's reason".to_string());
 
     StatusData {
         stages: vec![
@@ -179,6 +181,26 @@ fn completion_status_fields_use_stable_wire_names_and_values() {
         decoded[1].outgoing_session_exit_reason,
         Some(SessionExitReason::CriteriaBlocked)
     );
+}
+
+#[test]
+fn a_stage_close_reason_round_trips_through_the_wire() {
+    let response = Response::StatusUpdate {
+        data: Box::new(status_data()),
+    };
+    let mut buffer = Vec::new();
+    write_message(&mut buffer, &response).unwrap();
+
+    let decoded: Response = read_message(&mut Cursor::new(buffer)).unwrap();
+
+    let Response::StatusUpdate { data } = decoded else {
+        panic!("expected status update");
+    };
+    assert_eq!(
+        data.stages[0].close_reason.as_deref(),
+        Some("the agent's reason")
+    );
+    assert_eq!(data.stages[1].close_reason, None);
 }
 
 #[test]

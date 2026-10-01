@@ -45,6 +45,7 @@ const EVIDENCE_TRUNCATED_MARKER: &str = "... evidence truncated; see the stage f
 /// fixed prose around the stage's `session` pointer and a session record's
 /// `stage_id`, both read from unvalidated frontmatter. `merge_resolver_session`
 /// is likewise a session record's `id`, and the attention note prints it.
+/// `close_reason` is free text a stage agent writes with `loom stage block`.
 pub(super) fn sanitize_stage_summary(summary: &mut StageSummary) {
     flatten(&mut summary.model);
     summary.execution_models.iter_mut().for_each(flatten);
@@ -56,6 +57,7 @@ pub(super) fn sanitize_stage_summary(summary: &mut StageSummary) {
     summary.cleanup_warning.iter_mut().for_each(flatten);
     summary.incoherence.iter_mut().for_each(flatten);
     summary.merge_resolver_session.iter_mut().for_each(flatten);
+    summary.close_reason.iter_mut().for_each(flatten);
     if let Some(blocker) = summary.completion_blocker.as_mut() {
         flatten(&mut blocker.failure_code);
         blocker.summary.iter_mut().for_each(flatten);
@@ -157,6 +159,7 @@ mod tests {
             completion_blocker: None,
             merge_resolver_session: None,
             merge_resolver_attempts: None,
+            close_reason: None,
         }
     }
 
@@ -228,6 +231,18 @@ mod tests {
         let session = stage.merge_resolver_session.unwrap();
         assert!(!session.contains('\u{1b}'));
         assert!(!session.contains('\u{202E}'));
+    }
+
+    #[test]
+    fn a_control_sequence_in_the_close_reason_is_flattened() {
+        let mut stage = summary();
+        stage.close_reason = Some("blocked\u{1b}[2J\u{202E}now".to_string());
+
+        sanitize_stage_summary(&mut stage);
+
+        let reason = stage.close_reason.unwrap();
+        assert!(!reason.contains('\u{1b}'));
+        assert!(!reason.contains('\u{202E}'));
     }
 
     #[test]
