@@ -22,6 +22,7 @@ pub use types::{
     StageSandboxConfig, StageType, SuccessCriteria, TruthCheck, ValidationError, WiringCheck,
     WiringTest, ALLOWED_REASONING_EFFORTS,
 };
+pub use types_v2::ProvisionEntry;
 pub(crate) use validation::{base_tree, v2_fields::split_lint_findings, v2_lints};
 pub use validation::{
     check_knowledge_recommendations, check_sandbox_recommendations, validate,

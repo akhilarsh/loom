@@ -1,10 +1,23 @@
 //! Plan schema types introduced with plan `version: 2`, and the
-//! `reasoning_effort` deserializer. Everything here is re-exported from
-//! `types.rs`, so importers name it through `crate::plan::schema`.
+//! `reasoning_effort` deserializer. Its items are re-exported through
+//! `crate::plan::schema` (`ProvisionEntry` directly from `mod.rs`), so importers
+//! name them there.
 
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::types::ALLOWED_REASONING_EFFORTS;
+
+/// A command the daemon runs on the host, in `<worktree>/<working_dir>`, each time a
+/// stage leaves the queue for a session (plan `version: 2`). It must be idempotent and
+/// may write only files git ignores.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionEntry {
+    /// Directory to run in, relative to the repository root; no `..`.
+    pub working_dir: String,
+    /// Shell command, run with `sh -c`.
+    pub command: String,
+}
 
 /// A behavioural contract: one named test the stage's contract phase writes
 /// before implementation, and that must fail on a plausible wrong implementation.

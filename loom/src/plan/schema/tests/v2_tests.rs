@@ -7,6 +7,7 @@ use crate::plan::schema::types::{
 };
 use crate::plan::schema::validation::v2_lints::LintFinding;
 use crate::plan::schema::validation::{v2_fields::split_lint_findings, validate};
+use crate::plan::schema::ProvisionEntry;
 
 fn errors_of(metadata: &LoomMetadata) -> Vec<ValidationError> {
     validate(metadata).err().unwrap_or_default()
@@ -230,4 +231,57 @@ fn lint_findings_split_by_plan_version() {
         warnings,
         ["Stage 'stage-1': unknown loom subcommand", "plan-wide"]
     );
+}
+
+fn provision(working_dir: &str, command: &str) -> ProvisionEntry {
+    ProvisionEntry {
+        working_dir: working_dir.to_string(),
+        command: command.to_string(),
+    }
+}
+
+#[test]
+fn v1_plan_with_provision_requires_version_2() {
+    let mut metadata = create_valid_metadata_v2();
+    metadata.loom.version = 1;
+    metadata.loom.stages[0].contracts.clear();
+    metadata.loom.provision = vec![provision("web", "bun install")];
+
+    assert_eq!(
+        messages_of(&metadata),
+        ["`provision` requires `version: 2`"]
+    );
+}
+
+#[test]
+fn v2_provision_entries_with_bad_fields_are_rejected() {
+    let mut metadata = create_valid_metadata_v2();
+    metadata.loom.provision = vec![
+        provision("../outside", "true"),
+        provision("/abs/web", "true"),
+        provision("  ", "true"),
+        provision("web", " "),
+    ];
+
+    assert_eq!(
+        messages_of(&metadata),
+        [
+            "provision entry #1 working_dir '../outside' cannot contain a `..` component",
+            "provision entry #2 working_dir '/abs/web' must be a relative path",
+            "provision entry #3 working_dir must not be empty (use \".\" for the repository root)",
+            "provision entry #4 has an empty command",
+        ]
+    );
+}
+
+#[test]
+fn v2_valid_provision_entries_pass() {
+    let mut metadata = create_valid_metadata_v2();
+    metadata.loom.provision = vec![
+        provision("web", "bun install --frozen-lockfile"),
+        provision(".", "uv sync"),
+    ];
+
+    let errors = errors_of(&metadata);
+    assert!(errors.is_empty(), "{errors:?}");
 }
