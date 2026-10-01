@@ -120,6 +120,12 @@ C/.loom-session naming this session, decision D3): the session was spawned by a 
 predates the sandbox-escape-hardening policy". That check is what makes the canary skip in this
 stage and run in integration-verify; the flag turns it into a failure there.
 
+The detector requires `/proc/1/comm == bwrap`. That has been measured only on the host
+(`systemd`), never inside `loom stage complete`'s confined acceptance (one historical test,
+`fs/permissions/hooks/policy_tests_stage_gate.rs`, saw stage evidence missing there). The plan
+adds a sandbox-canary acceptance line `test "$(cat /proc/1/comm)" = bwrap`; if it fails in the
+stage, the detector premise is wrong: block the stage naming it, never weaken the detector.
+
 `real_package_cache_dirs` lists exactly (home-relative): `.cargo/registry`, `.cargo/git`,
 `.rustup/downloads`, `.rustup/tmp`, `.rustup/toolchains`, `.bun/install/cache`, `.npm`,
 `.local/share/pnpm/store`, `.cache/pnpm`, `.local/state/pnpm`, `Library/pnpm/store`,
@@ -168,7 +174,9 @@ The root holds the module doc (what it proves, why it skips, the flag) and:
         if skip_unless_stage_sandbox("a_live_stage_sandbox_enforces_its_capsule", &evidence) {
             return;
         }
-        // layout, report, checks::run_all, print report.tried, one assert listing every violation
+        // layout (an Err from SessionLayout::discover panics with its error), report,
+        // checks::run_all, print report.tried, one assert listing every violation and
+        // every required proof that is missing (see "Strict live canary")
     }
 
 `layout.rs`: `SessionLayout { capsule: Value, session_id, home, toplevel, git_dir, common_dir,
@@ -207,8 +215,8 @@ each returning `Result<String, String>` (Ok = the outcome proven, Err = the viol
 | --- | --- | --- |
 | (a) session cache, D3 | every D3 path variable set (CARGO_HOME, BUN_INSTALL_CACHE_DIR, npm_config_cache, npm_config_store_dir, YARN_CACHE_FOLDER, GOPATH, GOMODCACHE, GOCACHE, UV_CACHE_DIR, PIP_CACHE_DIR, DENO_DIR, XDG_CACHE_HOME; CODEX_HOME iff codex-licensed) lies under C, else a violation; a missing one is a violation | `create_allowed` in C and in each variable's directory (`create_dir_all` first); `create_allowed` in `env!("CARGO_TARGET_TMPDIR")` (the worktree's target dir); some `allowWrite` entry resolves to C |
 | (b) git common dir, D1 (worktree-rooted only) | `create_refused` in `common_dir`, `common_dir/refs/heads`, `common_dir/objects`, `git_dir` (W); `append_refused` on `common_dir/HEAD`, and on `git_dir/index` when it exists | the `CARGO_TARGET_TMPDIR` control of (a) |
-| (c) real caches, D3 | `create_refused` in every `real_package_cache_dirs(home)` entry that is a directory | C writable, from (a) |
-| (d) credential reads, D4 | every `denyRead` entry that exists: a file or character device is `masked_file`; a directory is `masked_dir`, allowed = the first component below it of each resolved `allowRead`/`allowWrite` entry and `toplevel`, plus `.claude` and `.mcp.json` when the directory is R, `R/.worktrees` or T | `read_dir(home)` yields at least one entry; the first non-empty regular file directly in `home` that no `denyRead` entry covers reads at least one byte (none found is a `tried` note) |
+| (c) real caches, D3 | `create_refused` in every `real_package_cache_dirs(home)` entry that is a directory, and in every capsule `sandbox.filesystem.denyWrite` entry that `capsule_path` maps to an existing directory outside C and T (capsule-policy write-denies the daemon's resolved real caches, so a cache relocated by `CARGO_HOME` or `UV_CACHE_DIR`, which the session's variables no longer name, is probed too) | C writable, from (a) |
+| (d) credential reads, D4 | every `denyRead` entry that exists: a file or character device is `masked_file`; a directory is `masked_dir`, allowed = the first component below it of each resolved `allowRead`/`allowWrite` entry and `toplevel`, plus `.claude` and `.mcp.json` when the directory is R, `R/.worktrees` or T; AND the fixed oracle list below the table | `read_dir(home)` yields at least one entry; the first non-empty regular file directly in `home` that no `denyRead` entry covers reads at least one byte (none found is a `tried` note) |
 | (e) sibling worktrees, D5 (worktree-rooted, T directly in `R/.worktrees`) | `R/.worktrees` lists nothing but T's name, after dropping `.claude` and `.mcp.json` | T's name is listed and `read_dir(toplevel)` is non-empty |
 | (f) codex home, D6 | `create_refused` in `home/.codex` when it exists; when not codex-licensed, `masked_file` on `home/.codex/auth.json` when it exists | the (a) controls; when licensed, CODEX_HOME lies under C |
 | (g) static grants | no resolved `allowWrite` entry equals, lies inside or contains an entry of `real_package_cache_dirs(home)`, or (worktree-rooted) `common_dir`; glob entries are `tried` notes | none: a pure check of the capsule |
@@ -216,12 +224,32 @@ each returning `Result<String, String>` (Ok = the outcome proven, Err = the viol
 A checkout-rooted session (a Knowledge stage running the suite) skips (b), (e) and (g)'s
 common-dir part with a `tried` note: D7 keeps its `.git` writable by design, apart from the
 entries D7 denies, which K2's srt test covers (a probe here would need a positive write inside
-the operator's real `.git`). An absent path is a
-`tried` note, never a violation and never a pass.
+the operator's real `.git`). An absent optional path (`home/.codex`, `git_dir/index`, a
+credential entry, a real cache directory) is a `tried` note, never a violation and never a pass.
+
+Strict live canary. The test runs only in a live stage sandbox, so a required path that is
+missing there is a VIOLATION, never a `tried` note: in a live worktree-rooted session the git
+common dir, the admin dir `W`, the session cache `C`, the worktree `T` and `R/.worktrees` must
+all exist, and `SessionLayout::discover` returning `Err` panics with its error. The final
+assertion also requires that each of these was proven (its probe's `tried` line present and no
+violation for it): `create_refused(common_dir)`, `create_refused(W)`,
+`append_refused(common_dir/HEAD)`, `create_allowed(C)`, `masked_dir(R/.worktrees)` with the
+listing showing only the session's own worktree, and `create_refused(home/.cargo/registry)`
+when that directory exists. A run that records none of them fails, and so does one missing any
+of them.
+
+Check (d) keeps its capsule-driven list AND an independent fixed list, a constant in
+`checks.rs`: `.config/gh/hosts.yml`, `.netrc`, `.npmrc`, `.claude.json`, `.git-credentials`,
+`.docker/config.json`, `.kube/config`, `.aws/credentials`, `.ssh` (each under
+`dirs::home_dir()`). Each that exists must read masked whatever the capsule says (`masked_file`
+for a file, `masked_dir` with nothing allowed for `.ssh`). Like `real_package_cache_dirs`, it is
+an oracle: never derive it from `CREDENTIAL_DENY_READ_PATHS` or the capsule, so an entry dropped
+from both the constant and the capsule cannot go unseen.
 
 ## 4. Probe primitive tests (`probe_tests.rs`, always run)
 
-These run in this stage and give each primitive its matched pair. Build every path in a
+These run in this stage and give each primitive its matched pair; the last one covers
+`checks::run_all`. Build every path in a
 `tempfile::Builder::tempdir_in(env!("CARGO_TARGET_TMPDIR"))`; restore permissions before the
 TempDir drops. Exact names:
 
@@ -236,9 +264,18 @@ TempDir drops. Exact names:
   `/proc/self/mounts` that is a readable directory gives true (none found: a SKIP line through
   `loom::process::sandbox_probe::skip_unless`); `env!("CARGO_TARGET_TMPDIR")` gives false unless
   its longest-prefix mount in that table is a tmpfs.
+- `checks_report_a_writable_git_dir_and_a_real_cache_grant`: `checks::run_all` has no other
+  test in this stage (the live test skips here), so this one drives it over a synthetic
+  `SessionLayout` built from TempDirs (a hand-written `capsule` value; `git_dir` and
+  `common_dir` distinct directories, so `worktree_rooted()` is true). A writable `common_dir`
+  gives a check (b) violation and a 0o555 one gives none; an `allowWrite` entry equal to a
+  `real_package_cache_dirs` path gives a check (g) violation; a writable directory outside C
+  and T listed in the capsule's `denyWrite` gives a check (c) violation and a 0o555 one gives
+  none. The synthetic layout fails other
+  checks, so each assertion looks only at the violations that name the path under test.
 
-The two permission tests skip through `skip_unless` when `nix::unistd::geteuid().is_root()`:
-root ignores permission bits.
+The permission tests (the first two and `checks_report_a_writable_git_dir_and_a_real_cache_grant`)
+skip through `skip_unless` when `nix::unistd::geteuid().is_root()`: root ignores permission bits.
 
 ## Traps
 
@@ -264,8 +301,9 @@ root ignores permission bits.
 
 Once, at the end: `cargo test --test sandbox_canary` from `loom/`. In this stage the live test
 prints its SKIP line ("predates the sandbox-escape-hardening policy") and passes; the four
-primitive tests run for real. It builds only the library and your target, so K2's parallel
-work does not affect it. The stage contracts (`the_stage_sandbox_detector_needs_every_piece_of_evidence`,
+primitive tests and the `run_all` test run for real. It builds only the library and your target,
+so K2's parallel work does not affect it. The stage contracts
+(`the_stage_sandbox_detector_needs_every_piece_of_evidence`,
 `the_require_flag_turns_the_canary_skip_into_a_failure`,
 `srt_translation_grants_a_linked_worktree_its_common_dir`; scenarios in the plan YAML) must pass
 against your code.

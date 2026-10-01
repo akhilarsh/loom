@@ -49,7 +49,13 @@ sandbox, the place the threat lives.
   fails closed.
 - Checkout-rooted agent sessions (knowledge stages, merge resolution) keep write access to
   `R/.git` by design; the daemon detects tampering with anything outside their target branch.
-- An in-session canary fails integration-verify if any of the above does not hold.
+- An in-session canary fails integration-verify if a worktree session's capsule does not
+  enforce D1, D3, D4 (the literal list included), D5 or D6. D7's checkout-session denies are
+  proven live only by the operator's srt run (HAZARD step 3); G6 and G7 rest on the
+  host-git-integrity and capsule-policy tests.
+- Host-side provisioning (PLAN-stage-exits-and-environment's `provision`, which runs on the host
+  in a worktree an agent may already have modified) runs no package script, shares no inode with
+  the real bun cache, and ignores an agent-written `bunfig.toml` (the plan's `provision` entry).
 - Non-goal: `/tmp/claude-<uid>` stays writable (operator decision 2; the harness needs it).
 - Non-goal: reads of the main checkout stay open (decision D5 below explains why).
 - Non-goal: macOS enforcement of the new read rules is not verified here; the canary is
@@ -119,22 +125,57 @@ the YAML is authoritative where the two differ.
   git after re-validating every path and checking that `HEAD` names `refs/heads/loom/<id>`.
   The daemon never runs `git add` on agent-written paths: git's `lstat`-then-`open` would let
   an agent swap a file for a symlink to a credential and have the daemon, outside the sandbox,
-  commit its content. It opens each file itself with a no-follow walk (`O_NOFOLLOW`,
-  `O_NONBLOCK`, size caps), hashes it with `git hash-object --path`, stages the blobs with
-  `update-index`, and refuses FIFOs, devices, directories, nested repositories and gitlinks.
+  commit its content. It resets the index with `git read-tree --reset HEAD` (plain
+  `read-tree HEAD` zeroes every entry's stat data, which nothing can refresh under D1, so every
+  later `git diff-index` would list every tracked file; measured on git 2.53), opens each file
+  itself with a no-follow walk (`O_NOFOLLOW`, `O_NONBLOCK`, size caps), copies the bytes to a
+  temp file in its state directory, hashes it with
+  `git --attr-source=HEAD hash-object -w --path=<p> <temp>` (attributes from HEAD's tree: a
+  pinned `hash-object --path` otherwise reads the worktree's `.gitattributes`, where a FIFO
+  stalls the daemon tick and `* filter=x` runs a filter from the operator's global config;
+  measured), stages entries with `update-index --add --cacheinfo`, and refuses FIFOs, devices,
+  directories, nested repositories and gitlinks. Requires git 2.40 or later.
   Checkout-rooted sessions keep `git add`/`git commit`.
 - **D2 Pinned host git.** Every host-side git call against a worktree runs with `GIT_DIR`,
   `GIT_COMMON_DIR` and `GIT_WORK_TREE` taken from `R/.git/worktrees/*/gitdir`, never from
-  `T/.git`, and never recurses into a submodule; every loom git call sets
-  `GIT_NO_REPLACE_OBJECTS=1`. A test pins the list of files that run git, so a new
-  discovery-based call site fails the build.
-- **D3 Per-session caches.** `C = <user cache dir>/loom/session-caches/<stage-id>-<kind>`, on
-  disk. The path is stable across a stage's sessions, because cargo rebuilds every registry
+  `T/.git`. A path is a stage location when its parent directory is named `.worktrees` and the
+  directory above holds a `.git` entry of any type: a directory, or the gitfile of a
+  `--separate-git-dir` checkout, whose registry lives in the store it names. The OUTERMOST such
+  ancestor decides, because an inner one lies inside an agent-writable worktree. A stage location
+  whose registration cannot be established is an error, never discovered git, and a checkout
+  that lies inside another stage worktree is refused. Every loom git call, pinned or discovered, never recurses into a submodule
+  (`git/runner.rs::NO_HOOKS_ARGS` carries `-c diff.ignoreSubmodules=all -c
+  submodule.recurse=false -c status.submoduleSummary=false`; measured: without them a discovered
+  `git status` in `R`, as `git/merge/probe.rs::require_clean_repository` runs before every
+  merge, runs a filter from a gitlinked `R/sub/.git` a checkout session wrote) and sets
+  `GIT_NO_REPLACE_OBJECTS=1`; the shell helper `loom_pinned_git` carries the same flags. The
+  production `Command::new("git")` sites that bypass the runner are converted or classified
+  `host-direct`. A test pins the list of FILES that run git (one allowlist line per file, with a
+  self-test proving the scanner flags an unlisted file), so a new file that calls a runner
+  function, a `&Path` git helper or `Command::new("git")` fails the build; a new call inside an
+  already-listed file is caught only by review.
+- **D3 Per-session caches.** `C = <user cache dir>/loom/session-caches/<project-key>/<stage-id>-<kind>`,
+  on disk, where `<project-key>` is the first 16 hex characters of the SHA-256 of the canonical
+  main checkout (without it two repositories or clones on one host running the same stage id,
+  `integration-verify` say, would share `C`, and the second spawn would delete the first's live
+  cache). `loom init` and `loom clean` remove the project's namespace, because `sweep_sessions`
+  is the only release path and the last sessions of a run are never retired. A seed never
+  reproduces a tool's control or temp entries (bun `.tmp`, go `trim.txt`: reproduced, a linked
+  one makes `bun install`, `bunx` and `go build` fail with EROFS). The daemon's own environment
+  is stripped to `daemon/server/environment.rs::HOST_ENV_ALLOWLIST`, so capsule-policy adds the
+  location-valued variables D3 and D4 read (`CARGO_HOME`, `XDG_CACHE_HOME`, `DOCKER_CONFIG`,
+  ...) to it; without that every override is invisible in production while the injected-lookup
+  contracts pass. The path is stable across a stage's sessions, because cargo rebuilds every registry
   dependency when `CARGO_HOME` moves (measured: `cfg-if` rebuilt on each change). The content is
   per session: at spawn the daemon empties and re-creates `C`, writes an owner marker naming the
   session, and seeds it; retiring the session removes `C` only while the marker still names it.
-  The real caches get no grant. Every cache variable points into `C`; the ecosystems the worktree
-  uses are seeded from the real caches. `RUSTUP_HOME` stays read-only (no toolchain installs in
+  The real caches get no grant, and no plan can give one back: a spawn fails when its capsule's
+  final `allowWrite` holds an entry equal to, inside or above a resolved real cache path,
+  compared lexically and after resolving symlinks (entries at or inside the session's own `C`
+  excepted). Every resolved real cache that exists at spawn and is neither equal to nor an
+  ancestor of the home directory, `R`, `T` or `C` is write-denied in both layers, so a cache
+  relocated inside a writable checkout stays read-only. Every cache variable points into `C`;
+  the ecosystems the worktree uses are seeded from the real caches. `RUSTUP_HOME` stays read-only (no toolchain installs in
   a stage).
 - **D4 Credential reads.** Plain paths (no globs) for the common credential files (36 more,
   shell histories and `~/.claude.json` among them), plus the locations their tools' environment
@@ -149,17 +190,29 @@ the YAML is authoritative where the two differ.
   doctrine and config; grants shrink to `C`, `~/.codex/plugin-data` and `~/.codex/auth.json`.
   A codex-licensed session can still read and refresh `auth.json` (a credential the lane must
   read), and `~/.codex/plugin-data` stays shared between codex-licensed sessions.
-- **D7 Checkout-session integrity.** Checkout-rooted capsules deny the entries of `R/.git` that
-  exist at spawn and a commit never writes (`info`, `objects/info`, `worktrees`, `modules`,
-  `refs/replace`). The daemon snapshots refs, pack files and git control files when it spawns a
+- **D7 Checkout-session integrity.** `G`, the main checkout's git directory, is `R/.git` when
+  that is a directory and, when `R/.git` is a gitfile (a `--separate-git-dir` checkout), the
+  directory its `gitdir:` line names; the D7 snapshot, the shell helper and the capsule's
+  checkout denies all resolve it that way, and anything else is an error. Checkout-rooted
+  capsules deny the entries of `G` that exist at spawn and a commit never writes (`info`,
+  `objects/info`, `worktrees`, `modules`, `refs/replace`, plus `hooks` and `config`, which
+  `session_denies` names by the literal `R/.git` path). The daemon snapshots refs, pack files and git control files when it spawns a
   checkout-rooted agent session and verifies them before it accepts the session's result: refs
   outside the target branch and `refs/heads/loom/` (the daemon moves those meanwhile) unchanged,
   new packs passing `git verify-pack`, control files such as `commondir` and `shallow` still
   absent, no in-progress operation left behind (`MERGE_HEAD`, `CHERRY_PICK_HEAD`,
   `REVERT_HEAD`, `sequencer/`, `rebase-*`), no staged change in the main checkout's index beyond
-  what was staged at the snapshot, and `git fsck --no-full` clean (every loose object re-hashed). Loom's own git runner
+  what was staged at the snapshot, no gitlink (mode `160000`) added to the target branch since
+  the snapshot, and `git fsck --no-full` clean (every loose object re-hashed). Loom's own git runner
   refuses a main git directory holding a planted `commondir`, which would otherwise redirect
-  every git call in `R`.
+  every git call in `R`. `record` takes the session's target branch explicitly (the merge point
+  for a Merge session; `merge_stage` restores the original branch after a conflict, so HEAD is
+  not evidence); a clean verify marks the record verified, the next spawn of that stage and
+  kind replaces a verified record (and keeps an unverified one, so a crash or handoff successor
+  is still judged against the state before its predecessor), and a difference's review reason
+  names the record path the operator deletes after review (otherwise every later attempt of
+  that stage is judged against the first snapshot). `fsck`, `verify-pack` and `commit-graph verify` run with a
+  300-second timeout, not the runner's 15-second read deadline.
 
 Object integrity at merge (brief item 1c): with D1 no worktree session writes an object or a
 ref; the daemon hashes every stage commit from the worktree's files. No stage-branch re-hash is
@@ -172,16 +225,77 @@ Run `loom init` on this plan only after all of these hold, in order:
 1. PLAN-stage-exits-and-environment has completed and merged to main. It edits the same
    doctrine, signal and skill files this plan rewrites (`CLAUDE.md.template`,
    `skills/loom-orchestration`, `skills/loom-usage`, `loom-hooks/commit-guard.sh`,
-   `orchestrator/signals/format/*`, `skills/loom-plan-writer/references/sandbox.md`).
-   Each root stage's acceptance fails fast when it has not merged (`struct ProvisionEntry`
-   must exist in `loom/src`).
+   `orchestrator/signals/format/*`, `skills/loom-plan-writer/references/sandbox.md`), and
+   also `_subagent-preamble.txt`, `signals/helpers.rs`, `cli/dispatch_stage.rs`,
+   `relay/payload.rs` and `inbox_drain/{apply,test_support}.rs` (the briefs anchor by symbol).
+   Each root stage's `before_stage` checks it before the first spawn, with two sentinels:
+   `pub struct ProvisionEntry` in `loom/src/plan/schema` (its `plan-environment` stage) and the
+   README line `dispute-criteria <stage-id> [--field acceptance|wiring|wiring-tests]` (its
+   knowledge-distill, the last stage; `plan-environment` has no dependencies and can merge long
+   before the `stage-exits` stage that owns the doctrine files). Both exit 1 at `0d852b95`.
 2. A loom built from that main has been installed with `bash dev-install.sh`.
 3. `loom plan verify --strict doc/plans/PLAN-sandbox-escape-hardening.md` passes on that main.
+   It needs the `provision` entry this plan declares: stage-exits' JS-provision lint (its Choice
+   20, brief `p2-environment-lints.md`) makes a v2 plan in this repository without a `web`
+   entry an error, because `web/package.json` runs vitest. A loom built before stage-exits
+   rejects the same entry ("unknown field `provision`"), which is how an operator can tell
+   Precondition 2 has not happened yet.
+4. The main checkout is clean in the paths this plan builds from or merges into:
+   `git status --porcelain -- loom loom-hooks skills CLAUDE.md.template web` prints nothing.
+   `dev-install.sh` builds from the working tree, uncommitted edits included, and a stage merge
+   into a dirty checkout can be refused. (At `0d852b95` the checkout carried uncommitted
+   edits in `merge_handler.rs`, `merge_handler/merge_gate.rs`, `resolver_attempts.rs` and
+   untracked `merge_handler/resolver_spawn.rs`, all in host-git-integrity's territory: commit
+   or discard them first, then re-check the ledger counts this plan pins, `merge_gate.rs`'s
+   size and B's call-site list.)
+5. Cross-plan ordering: neither PLAN-web-host-graft-followthrough (`implement-host-and-context`
+   owns `loom/src/cli/**`, `signals/cache.rs` and `signals/cache/**`; it splits
+   `cli/dispatch.rs` and moves `generate_knowledge_distill_stable_prefix`) nor
+   PLAN-model-router-hooks (`router-core` owns `cli/types.rs` and `cli/dispatch.rs`) runs
+   concurrently with this plan. If either merged first, re-measure the pins in commit-relay
+   (`dispatch 86`, `cache.rs 524`, `generate_knowledge_distill_stable_prefix 74`,
+   `generate_knowledge_stable_prefix 66`) and retarget W2's and W3's files and the wiring entry
+   on `src/cli/dispatch.rs` before `loom init`. If they run after, they re-ground on
+   `Commands::Commit` and the D1 sentence.
 
 The line numbers in the briefs were read at `3fc28031`; workers anchor every edit by symbol.
 
+### Host-side provisioning (a cross-plan seam this plan hardens)
+
+PLAN-stage-exits-and-environment's `provision` runs each entry's command on the host, outside
+the sandbox, in the stage worktree, before every spawn, including retries, handoff successors
+and verdict requeues, so in a worktree an agent may already have modified. Its own gate lists
+`git status` in that worktree by discovery (`orchestrator/core/provision_gate.rs`, an H6 route;
+host-git-integrity converts it as unit X11). Measured on this host for the command this plan
+must declare:
+
+| Channel | Measured | This plan's answer |
+| --- | --- | --- |
+| `web/package.json` lifecycle scripts | `bun install` runs them by default | `--ignore-scripts` (dependency scripts never run) |
+| hardlinks into the real bun cache | default backend `hardlink`; `~/.bun/install/cache` and `.worktrees` share a device, so `T/web/node_modules` files would share inodes with the real cache, and the session can write all of `T` | `--backend=copyfile` |
+| an agent-written `T/web/bunfig.toml` | redirected the registry and the cache directory | `--config=/dev/null` ignores it |
+| an agent-written `T/web/.npmrc` | redirected the registry and the cache directory even with `--config=/dev/null`; a parent directory's `.npmrc` is not read | the command refuses to run while `web/.npmrc` exists (the repository has none) |
+
+The entry is therefore:
+
+```yaml
+provision:
+  - working_dir: web
+    command: "test ! -e .npmrc && test ! -L .npmrc && bun install --frozen-lockfile --ignore-scripts --backend=copyfile --config=/dev/null"
+```
+
+Residual, accepted and recorded in `concerns/` by knowledge-distill: an agent-edited `bun.lock`
+can name tarball URLs on any host, which the host fetches outside the sandbox's network
+allow-list and stores in the real bun cache under the lockfile's integrity. Closing it needs
+provision to run sandboxed or only on a pristine first spawn, a change to stage-exits' executor
+that this plan does not make.
+
 ## Before `loom run`
 
+- `loom run` commits a rename of this plan to
+  `doc/plans/IN_PROGRESS-PLAN-sandbox-escape-hardening.md`; every reference to
+  `doc/plans/PLAN-sandbox-escape-hardening.md` in the stage descriptions and briefs means
+  whichever of the two exists.
 - Commit on main: this plan and `doc/plans/briefs/sandbox-escape-hardening/**`. A worktree is
   cut from `HEAD`, and an untracked brief does not exist in it.
 - `loom init doc/plans/PLAN-sandbox-escape-hardening.md`, then
@@ -195,16 +309,35 @@ effect on its own session. Integration-verify is the stage that proves the plan,
 under a capsule this plan's code built:
 
 1. Wait until `commit-relay`, `host-git-integrity`, `capsule-policy` and `sandbox-canary` have
-   merged.
-2. On main: `bash dev-install.sh`.
+   merged, and confirm Precondition 4 still holds.
+2. On main: `bash dev-install.sh` (it builds from the main working tree and kills a running
+   daemon itself), then `cargo audit` once in `loom/` on the host. That refreshes the RustSec
+   database in the real `~/.cargo/advisory-db`, which the session cache links read-only;
+   integration-verify runs `cargo audit --no-fetch` against it (github.com is not in the
+   network allow-list).
 3. Run the srt confinement suite outside any sandbox (the `sandbox-canary` section below gives
-   the command) and confirm no test printed `SKIP`.
-4. `loom stop`, then `loom run` (the new daemon builds the capsules from now on), then
-   `loom stage release integration-verify`.
+   the command, with `--nocapture`, so a `SKIP` line is visible) and confirm no test printed
+   `SKIP`. Save the full output to `<main checkout>/srt-confinement.log` (untracked; reads of
+   the main checkout stay open to sessions, D5). On a failure, still continue with step 4:
+   integration-verify reads the log, fixes the defect and follows the recovery path below.
+4. `loom stop` (it may report the daemon already stopped), then `loom run` (the new daemon
+   builds the capsules from now on), then `loom stage release integration-verify`.
 
 Integration-verify's first task checks its own capsule for the common-dir deny and blocks the
 stage, naming these steps, when the deny is missing. If integration-verify was released before the reinstall and
 blocked itself, do steps 2-4 and then `loom stage retry integration-verify` instead of the release.
+
+**Recovery when the defect is in the code that runs integration-verify.** Its capsule, its
+session cache and the daemon's commit apply were built from main before the stage started, so a
+fix it makes to `sandbox/**`, `sandbox/session_cache`, `process/environment.rs`,
+`daemon/server/environment.rs`, `orchestrator/terminal/native/launch*` or
+`orchestrator/core/inbox_drain/commit*.rs` cannot reach its own session. The stage commits the
+fix with `loom commit` while that still applies, then runs
+`loom stage block integration-verify "reinstall from the integration-verify worktree: bash .worktrees/integration-verify/dev-install.sh, loom stop, loom run, loom stage retry integration-verify"`
+and stops. When `loom commit` itself is refused by a relay defect, it blocks naming the changed
+files instead, and the operator commits them on the host in `.worktrees/integration-verify`
+(`git add <files> && git commit`) before reinstalling from that worktree. A canary that fails
+because of such a defect is fixed, never routed around.
 `loom stage complete` runs acceptance through a confined environment that withholds
 `LOOM_STAGE_ID`, `LOOM_SESSION_ID` and `LOOM_WORK_DIR`; `capsule-policy` exports copies under
 `LOOM_ACCEPTANCE_*` names so the canary can find its capsule there.
@@ -249,12 +382,14 @@ merges. `integration-verify` is held until the operator releases it.
 **Purpose.** Decision D1 makes the whole git common directory read-only in every worktree-rooted
 session (`capsule-policy` adds the deny). This stage gives those sessions their only way to
 commit: `loom commit -m "<message>" -- <paths>` writes a relay ticket of a new control kind
-`commit`; the relay hook moves it into `W/inbox/<session-id>/`; the daemon's inbox drain applies
+`commit`; the relay hook moves it into `<work_dir>/inbox/<session-id>/` (the state directory
+`.loom/work`; `W` means the git admin directory everywhere in this plan); the daemon's inbox drain applies
 it at most once, with pinned git (`WorktreeGit::pinned`) in the worktree the stage record names,
 on the stage branch, for the named paths only. The session confirms with
 `loom request status <id> --wait 90`, and `loom stage complete` refuses while one of its commit
 requests is unsettled. Every worktree-session surface (signals, `CLAUDE.md.template`, three
-skills, the subagent preamble, three hooks) teaches common.md's D1 sentence; checkout sessions (a
+skills, the subagent preamble, four hooks, and the contract-freeze refusal text, which today
+tells a contract session to `git checkout -- <path>`, a write to the read-only index) teaches common.md's D1 sentence; checkout sessions (a
 knowledge stage in the main checkout, merge and base-conflict resolution) keep `git add` and
 `git commit`. This closes finding H1's commit path and retires concern G1 ("commits are policed by
 text matching rather than by who can commit"): a subagent commit becomes impossible, and path
@@ -291,15 +426,20 @@ eight contracts.
   `rename(file, symlink to ~/.config/gh/hosts.yml)` would make the host daemon read and commit a
   credential the sandbox hides, and a FIFO or a huge sparse file would stall the poll tick; a
   nested repository would become a mode-160000 gitlink that later host-side `git status` recurses
-  into. Instead the daemon resets the index (`read-tree HEAD`), walks each path from a descriptor
+  into. Instead the daemon resets the index (`read-tree --reset HEAD`, which keeps the stat data
+  of untouched entries; plain `read-tree HEAD` would make every later in-session and host
+  `diff-index` list every tracked file, since nothing can refresh `W/index` under D1, and the
+  impact-test selection would select every test), walks each path from a descriptor
   of the canonical worktree root with `openat(..., O_DIRECTORY | O_NOFOLLOW)` per parent (a
   symlinked parent is refused by the kernel, race-free; a parent holding a `.git` entry is refused
   as a nested repository), opens a regular leaf `O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC`
   and re-checks its type and size on the descriptor (64 MiB per file, 256 MiB and 256 paths per
   request), stores a symlink leaf as a blob of its target string (mode 120000, never followed),
   removes an absent path HEAD tracks, and refuses anything else (directory, FIFO, socket, device,
-  absent and untracked). Blobs go in with pinned `hash-object -w --path=<p>` (attribute-driven
-  conversion as `git add` would; filter drivers only from `R/.git/config`), entries with
+  absent and untracked). Blobs go in with pinned `git --attr-source=HEAD hash-object -w
+  --path=<p>` (attribute-driven conversion as `git add` would, with attributes read from HEAD's
+  tree, never from the worktree's `.gitattributes`, which could be a FIFO that stalls the tick or
+  name a filter from the operator's global config; both measured), entries with
   `update-index --add --cacheinfo`; a `160000` entry in `diff --cached --raw
   --ignore-submodules=none` refuses; the commit is `write-tree`, `commit-tree` and a
   compare-and-swap `update-ref` on the stage branch. `WorktreeGit::run` takes no stdin
@@ -325,9 +465,12 @@ eight contracts.
 **Accepted limits.** The daemon's git calls run inside its poll tick under `git/runner.rs`'s
 15-second read deadline (every call's first argument is `-c`). The daemon's own killed git can
 leave `W/index.lock`; agents cannot write `W`, so nothing else leaves one, and the next request
-reports it through git's own message. `.gitattributes` in the worktree can still select a
-filter driver the repository's `R/.git/config` or the operator's global config defines (for
-example git-lfs), as for any host-side git in a worktree (`pinned.rs` module docs). The D1 sentence's
+reports it through git's own message, adding that an operator must delete `<W>/index.lock`.
+A `.gitattributes` COMMITTED on the stage branch can still select a filter driver the
+repository's `R/.git/config` or the operator's global or system config defines (for example
+git-lfs), as for any host-side git in a worktree (`pinned.rs` module docs). The daemon applies no
+attribution check to the message: `commit-filter.sh` inspects the command text, which a message
+built from a shell variable evades, as it does for `git commit` today. The D1 sentence's
 `--wait 90` stays under the Bash tool's default 120-second timeout; the daemon applies within one
 tick (about five seconds), so a real wait ends far sooner.
 
@@ -337,19 +480,29 @@ tick (about five seconds), so a real wait ends far sooner.
 | --- | --- |
 | Untrusted input: paths (`..`, absolute, control roots) | `daemon-refuses-escaping-and-control-paths`; `relay::commit_paths::tests::*`; `commands::commit::tests::a_path_escaping_the_worktree_writes_no_ticket` |
 | Filesystem: a symlinked parent reading outside the worktree | `daemon-refuses-a-symlinked-parent`; `commit_tests_files::a_symlinked_parent_is_refused_and_nothing_is_read_through_it` |
-| TOCTOU: a leaf swapped for a symlink to a credential between check and read | `a-symlink-leaf-is-committed-as-a-link-never-its-target`; `commit_tests_files::the_regular_leaf_open_refuses_a_symlink`; the acceptance check that `"add"` never appears in the daemon's commit code |
+| TOCTOU: a leaf swapped for a symlink to a credential between check and read | `a-symlink-leaf-is-committed-as-a-link-never-its-target`; `commit_tests_files::the_regular_leaf_open_refuses_a_symlink`; `commit_tests::the_daemon_never_hands_git_a_worktree_file` (logged argv: no `add`, `commit`, `status` or `stash`; every `update-index` is `--cacheinfo` or `--force-remove`; every `hash-object` operand is a staging temp file), because the `"add"` grep misses `update-index --add -- <path>` and `commit --only` |
+| Filesystem: an agent-made `.gitattributes` (FIFO, or a filter from global config) read by `hash-object --path` | `commit_tests_files::a_fifo_gitattributes_does_not_stall_the_commit`; the wiring entry on `--attr-source=HEAD` |
+| Index state after a commit (stat data nothing can refresh under D1) | `commit_tests::a_commit_keeps_the_index_stat_data_of_untouched_paths` |
 | Filesystem: FIFO, directory, oversized or sparse file stalling the poll tick | `daemon-refuses-special-files-and-nested-repositories`; `commit_tests_files::an_oversized_file_is_refused_unread`, `a_directory_path_is_refused` |
 | Nested repository: a gitlink and host git running the agent's filter | `daemon-refuses-special-files-and-nested-repositories`; `commit_tests_files::a_path_inside_a_nested_repository_is_refused`; `commands::commit::tests::a_nested_repository_under_a_directory_argument_is_refused` |
 | Trust boundary: who may commit (subagent) | `a-subagent-commit-entry-is-refused`; `commands::hook::relay::tests::a_commit_ticket_from_a_subagent_is_refused`; W4's `commit-filter-quoted-payload.sh` cases |
 | Git state: HEAD off the stage branch | `daemon-refuses-when-head-is-not-the-stage-branch`; `commit_tests::a_detached_head_is_refused` |
 | Idempotency: a replayed request | `a-commit-request-applies-once` |
 | Reachability: the CLI ticket from the binary, the hook's kind derivation | `commit-cli-writes-a-worktree-relative-ticket`; `loom-relay-kinds.sh`; wiring tests on `--help` |
-| Host configuration: hooks, signing, auto-maintenance | `commit_tests::the_daemon_commit_ignores_repository_hooks_and_signing` |
+| Host configuration: hooks, signing, auto-maintenance | `commit_tests::the_daemon_commit_ignores_repository_hooks_and_signing`, rewritten to plant a failing `reference-transaction` and a marker-writing `post-index-change` hook (the hooks plumbing runs; `commit-tree` ignores `commit.gpgsign` and plumbing never runs `pre-commit`, so the signing-only version cannot fail) |
 | Process I/O: git's failure text (a stale `index.lock`), nothing staged | `commit_tests::a_stale_index_lock_is_reported`, `nothing_staged_is_recorded_as_nothing_to_commit` |
 | Lifecycle: completing on an unapplied commit | `commands::commit::tests_pending::stage_complete_refuses_while_a_commit_is_unsettled` |
+| Lifecycle: a ticket the relay never received (never swept; rerunning writes a new one) | `request-status-wait-reports-a-never-relayed-commit`; `commands::commit::tests_pending::a_never_relayed_ticket_names_its_discard_path` |
+| Lifecycle: a block or dispute filed before a commit settles (the drain order is by random id, and a commit applies only while Executing) | `commands::commit::tests_pending::block_and_dispute_refuse_while_a_commit_is_unsettled` |
 | Timeouts: `--wait` | `commands::request::wait::tests::a_wait_times_out_after_its_deadline`, `a_pending_relay_is_not_waited_on` |
 | Doctrine agreement across surfaces | `tests_commit_timing::d1_commit_sentence_agrees_across_every_surface`, `the_knowledge_prefix_keeps_git_commits` |
 | Test harness: a contract spawning the binary | `binary_spawn_guard::only_sanctioned_spawners_spawn_the_loom_binary_directly` by name |
+
+**Shared allowlist.** `src/commands/commit/paths.rs` calls `WorktreeGit::discovered(` in-session.
+host-git-integrity's call-site guard (`tests/host_git_call_sites.rs`) would flag it, but neither
+stage can list it (in host-git-integrity's tree it would be a stale entry); integration-verify
+adds `src/commands/commit/paths.rs | in-session | ...` and
+`src/orchestrator/core/inbox_drain/commit.rs | host-pinned | ...`.
 
 **Expected integrity events: none.** `maintainability-baseline.txt` does not change: `cache.rs`
 (524, and its two ledgered prefixes), `cli/dispatch.rs::dispatch` (86) and `complete.rs` stay
@@ -420,8 +573,11 @@ Facts this stage rests on (git 2.53, TempDir repositories, this session):
   `refs/replace/*` written mid-session changes what the daemon's own merges and ancestry
   checks in `R` read (every runner call now sets `GIT_NO_REPLACE_OBJECTS=1`); a tracked
   gitlink in a worktree makes host `git status`/`git diff` recurse into an agent-written
-  nested `.git` (pinned worktree runs carry `-c diff.ignoreSubmodules=all -c
-  submodule.recurse=false -c status.submoduleSummary=false`); and a planted `MERGE_HEAD`
+  nested `.git`, and a gitlink a checkout session commits to the target does the same to
+  discovered git in `R` (`git/merge/probe.rs::require_clean_repository`, measured), so every
+  runner call (`NO_HOOKS_ARGS`) and the shell helper `loom_pinned_git` carry `-c
+  diff.ignoreSubmodules=all -c submodule.recurse=false -c status.submoduleSummary=false`, and D7
+  reports a gitlink added to the target; and a planted `MERGE_HEAD`
   (grafts history into the next plain `git commit` in that checkout, measured by the plan
   author on git 2.53) or a staged index entry (committed by that same `git commit`) survives acceptance
   unless D7 checks both, which it now does.
@@ -441,15 +597,24 @@ Two deliberate departures from the D7 wording in `common.md`, both forced by wha
 itself does while a checkout session runs:
 
 - Refs under `refs/heads/loom/` are not compared, and a removed pack is no difference: the
-  daemon applies other stages' relayed commits (moving `refs/heads/loom/<id>`, running `gc
-  --auto`, which repacks) and creates and removes stage branches during a merge-resolution
+  daemon applies other stages' relayed commits (moving `refs/heads/loom/<id>`; those run with
+  `gc.auto=0`, but the daemon's own `git merge` in `R` can auto-gc, which repacks) and creates
+  and removes stage branches during a merge-resolution
   session. A new or changed pack is verified with `git verify-pack` instead of being refused.
   A checkout session commits to its target directly, so moving a stage ref gives it no content
   path it lacks.
 - Records are keyed by stage and session kind (`<work_dir>/checkout-integrity/<stage>-<kind>.
   json`) and the first one is kept, so a session that tampers and then crashes or hands off is
   judged against the state before it. `loom init` removes the work directory, so no record
-  outlives the run. A missing record is itself a difference.
+  outlives the run. A missing record is itself a difference. A clean verify marks the record
+  verified (both acceptance paths of a merge session can reach `finalize_merge_resolution`, so
+  a second verify of one session must still find it), the next spawn replaces a verified
+  record, and a review reason names the record path, so an operator who accepts a difference (a
+  `git fetch` that moved `refs/remotes/*`, a stash, a tag) deletes it and `loom stage
+  human-review --approve` judges the next session against a fresh snapshot. `record` takes the
+  target branch from its caller (the merge point for Merge, the base branch for Knowledge); a
+  `record` failure at spawn is a warning and leaves the record missing, which fails closed at
+  verify.
 
 Stage Necessity: Q4. Merged with `commit-relay` or `capsule-policy`, the combined stage runs
 more than seven workers plus ten codex units over roughly sixty-five files and two languages, and
@@ -460,20 +625,28 @@ hold (the ownership map is disjoint), and Q3 does not hold.
 Waves (worker table in YAML):
 
 1. Contract session: writes `tests/host_git_integrity_contracts.rs` from the CONTRACT
-   SURFACE; five contracts name symbols that do not exist yet and freeze as `build_failed`.
+   SURFACE; six contracts name symbols that do not exist yet and freeze as `build_failed`.
 2. Wave 1, three Claude workers in one message: A (opus) pinned `WorktreeGit` constructors,
    the runner's `commondir` guard and `GIT_NO_REPLACE_OBJECTS`, the pinned submodule flags,
    pinned branch helpers, in-progress merges; B (opus) the `checkout_integrity` module (with
    the in-progress-state and index checks), the fail-closed merge gate and their wiring; C
    (sonnet) the shell helper, the three hooks, the D1 commit sentence, and the host-git
    call-site guard test with its allowlist written for the stage's end state. A and B share no
-   file and need nothing from each other to compile.
-3. Wave 2, after A returns: codex units X1-X6 in one message, then X7-X10 (at most six
-   foreground forwards at once), one file each, each over A's API. The main agent runs each
-   unit's command after all return and routes a failure to a fresh Claude worker for that file.
+   file and need nothing from each other to compile. B owns `checkout_integrity::main_git_dir`
+   (the `G` rule of D7, Rust side) and C owns its shell twin `loom_main_git_dir`; A needs
+   neither, because `WorktreeGit::pinned` already asks git for the common directory.
+3. Wave 2, after A returns: codex units X1-X6 in one message, then X7-X12, then X13-X16 (at
+   most six foreground forwards at once), one file each, each over A's API. X11-X16 cover the
+   call sites the first sweep missed (`provision_gate.rs`, `cache_ignore.rs`, the daemon's
+   adjudication `git show`, and three `src/git/**` files that spawn `Command::new("git")`
+   directly and so bypass the `commondir` guard and `GIT_NO_REPLACE_OBJECTS`). The main agent
+   runs each unit's command after all units AND workers B and C have returned, and routes a
+   failure to a fresh Claude worker for that file.
 4. Main agent: `cargo test --test host_git_call_sites`, reconciling the allowlist from its
    output (every missing or stale entry is named); `cargo fmt --all`; the acceptance commands;
    the maintainability test (every ledgered item this stage touches keeps its exact count).
+   A file another stage of this plan adds in parallel is never listed here (it would be stale
+   in this tree); integration-verify lists them.
 
 Risk walk:
 
@@ -487,6 +660,12 @@ Risk walk:
 | Reachability (spawn records, finalize and knowledge completion verify, the gate refuses, no host call site left unpinned) | wiring entries; `merge_gate::tests::a_merge_session_that_moved_another_ref_is_not_finalized`, `control_complete::tests::a_knowledge_completion_after_a_moved_ref_needs_human_review`; `cargo test --test host_git_call_sites` (a new runner or `Command::new("git")` call site outside the classified allowlist fails) |
 | External data (git's fsck, verify-pack, for-each-ref output) | `a-swapped-loose-object-is-reported`; `checkout_integrity::tests::a_forged_pack_index_is_reported` (fixtures built by real git) |
 | The behaviour the stage exists for | `host-status-ignores-a-repointed-git-file`, `merge-gate-refuses-when-changed-paths-cannot-be-listed` |
+| Repository layout (a `--separate-git-dir` main checkout, whose `R/.git` is a gitfile; a stage location nested in another) | `a-separate-git-dir-checkout-is-pinned-and-snapshotted`; `pinned::tests::a_stage_worktree_of_a_separate_git_dir_checkout_is_pinned`, `pinned::tests::a_checkout_inside_a_stage_worktree_is_refused`; `pinned-git.sh` case 1c |
+| Submodule recursion in the main checkout (a gitlink a checkout session committed) | `NO_HOOKS_ARGS` wiring on `runner.rs`; `checkout_integrity::tests::a_committed_gitlink_is_reported`; `pinned-git.sh` case 1b for the shell helper |
+| A conversion that silently stops answering (an always-erroring probe passes negative tests) | behavioural tests with `plant_foreign_git_dir` and a positive control in X1 (`parked.rs`) and X5 (`containment.rs`) |
+| A guard that matches nothing passes with an emptied allowlist | `host_git_call_sites::the_scanner_names_an_unlisted_file_and_skips_test_code`; the acceptance floor line for `src/git/cleanup/removal.rs` |
+| The commits-ahead probe failing open | `merge_gate::tests::an_unanswerable_commits_ahead_probe_routes_to_human_review`; the phrase "proceeding with merge attempt" gone |
+| Record lifecycle (a legitimate later attempt, a merge whose HEAD is not the target) | `checkout_integrity::tests::a_verified_record_is_replaced_at_the_next_spawn`; `record`'s explicit target |
 
 Callers checked:
 
@@ -501,22 +680,39 @@ Callers checked:
   `T`), `verify/criteria/cache_fingerprint.rs`, `verify/wiring_detection.rs`,
   `verify/duplicate_detection.rs`, `context/worktree_graph.rs::build_for_worktree` (the last
   four run under an operator's host `loom stage complete` or `loom verify`).
-- Outside `common.md`'s ownership map and claimed by this stage: `orchestrator/terminal/
-  backend.rs`, `verify/wiring_detection.rs`, `verify/duplicate_detection.rs`,
-  `context/worktree_graph.rs`, `daemon/server/completion_dispatch/tests.rs`,
-  `orchestrator/core/inbox_drain/tests_merge.rs`, `../loom-hooks/codex-forward-guard.sh`,
-  and the new `tests/host_git_call_sites.{rs,txt}`.
+- Missed by the first sweep and converted as X11-X16: `orchestrator/core/provision_gate.rs`
+  (stage-exits' `git status` before and after provisioning, by discovery in the worktree),
+  `verify/criteria/cache_ignore.rs` (`git -C <acceptance dir> check-ignore` on the same host
+  path as X4), `orchestrator/adjudication/prompt/sources.rs` (the daemon's `git show` through
+  `Command::new("git")`; it also passes `--` before the SHA, so git reads the SHA as a pathspec
+  and shows HEAD instead of the evidence commit), `git/cleanup/batch.rs`,
+  `git/branch/cleanup.rs`, `git/worktree/checks.rs` (direct `Command::new("git")`).
+- Classified, not converted: `commands/stage/merge/preflight.rs` (`rev-parse --show-toplevel` in
+  cwd during an operator's `loom stage merge`: an operator path), and the `host-direct` CLI sites
+  `commands/knowledge/annotate.rs`, `commands/pressure/paths.rs`, `commands/handoff/create.rs`.
+- Beyond `src/git/**` this stage claims, all named in `common.md`'s map:
+  `orchestrator/terminal/backend.rs`, `verify/wiring_detection.rs`,
+  `verify/duplicate_detection.rs`, `context/worktree_graph.rs`,
+  `daemon/server/completion_dispatch/tests.rs`, `orchestrator/core/inbox_drain/tests_merge.rs`,
+  `orchestrator/core/provision_gate.rs`, `verify/criteria/cache_ignore.rs`,
+  `orchestrator/adjudication/prompt/sources.rs`, `../loom-hooks/codex-forward-guard.sh`, and the
+  new `tests/host_git_call_sites.{rs,txt}`.
+- Worker A moves `git/runner.rs`'s inline tests to `git/runner/tests.rs` and
+  `git/merge/in_progress.rs`'s to `git/merge/in_progress_tests.rs` before adding anything: the
+  files are 351 and 396 lines, and A's additions would push both past the 400-line limit the
+  maintainability test enforces.
 - Already pinned, untouched: `daemon/server/observer.rs`, `daemon/server/contracts.rs`,
   `orchestrator/adjudication/prompt/{integrity,findings}.rs`, `verify/review/observer.rs`,
   `verify/contracts/changes.rs`.
 - Hooks: `commit-guard.sh`, `stage-terminal-guard.sh`, `codex-forward-guard.sh` run git;
   `poll-guard.sh`, `no-preexisting-failures.sh`, `_progress-classification.sh` only classify
-  the agent's git command lines and run none (the knowledge entry
-  `concerns/agent-rule-bending-hardening.md#G2` says otherwise and is stale).
+  the agent's git command lines and run none (`concerns/agent-rule-bending-hardening.md`
+  already says so). `git-pre-commit-hook.sh` runs in-session.
 - Every Merge and Knowledge spawn goes through
   `orchestrator/terminal/backend.rs::SessionBackend::spawn_main_repo_session`
   (`auto_merge.rs`, `merge_handler.rs::spawn_merge_resolution_session`,
-  `stage_executor.rs::start_knowledge_stage`), so one `record` call covers them.
+  `stage_executor.rs::start_knowledge_stage`, and the no-daemon
+  `commands/stage/merge_resolver.rs::spawn_merge_resolver`), so one `record` call covers them.
   `SessionType::BaseConflict` has no spawn site at `2908339a`; the choke point would record one.
 - Acceptance: merge sessions through `finalize_merge_resolution` (reached from
   `handle_merge_session_completed` and the relayed `merge-resolved`,
@@ -534,12 +730,25 @@ Accepted gaps, named for the plan's gap list:
   operator's git, so the capsule cannot deny them. The runner guard stops loom's own git from
   following a `commondir` meanwhile; the operator's shell git in `R` is not protected until the
   session's result is checked. `capsule-policy` denies the entries that exist at spawn
-  (`info`, `objects/info`, `worktrees`, `modules`, `refs/replace`) to checkout sessions.
+  (`info`, `objects/info`, `worktrees`, `modules`, `refs/replace`, `hooks`, `config`) to
+  checkout sessions.
 - An operator's host `loom stage complete` of a knowledge stage
-  (`commands/stage/complete.rs::complete_knowledge_stage`, which no stage of this plan edits) does not
-  verify; like `loom stage merge`, it stays the operator's path.
+  (`commands/stage/knowledge_complete.rs::complete_knowledge_stage`, which no stage of this plan
+  edits) does not verify; like `loom stage merge` and the legacy `loom stage merge --resolved`
+  (`commands/stage/merge.rs::merge_resolved`), it stays the operator's path.
+- The post-acceptance window: both acceptance paths run while the checkout session is still
+  alive (`control_complete.rs` marks the stage and removes the signal; the relayed
+  `merge-resolved` finalizes while the resolver runs; the kill comes on a later tick), and
+  `stage-terminal-guard.sh` blocks file tools, not Bash. A `MERGE_HEAD`, staged entry,
+  `refs/replace` ref or swapped loose object written after acceptance is never checked and
+  becomes the next checkout session's baseline. Closing it needs a second verify when the
+  session is confirmed gone; recorded for knowledge-distill as a concern.
 - `for_dir` on a subdirectory of a repository that itself lives inside an outer stage
-  worktree pins to the outer worktree (documented on the function); `for_checkout` is exact.
+  worktree pins to the outer worktree, because the outermost stage location decides (documented
+  on the function); `for_checkout` on such a repository is an error.
+- The runner's `commondir` guard checks a `.git` DIRECTORY only. In a `--separate-git-dir`
+  checkout a `commondir` planted in the store is caught by D7 at acceptance (`snapshot` and
+  `differences` resolve `G` through the gitfile), not refused mid-session.
 
 Expected integrity events: none. Every ledgered item this stage touches keeps its exact count
 (`merge_handler.rs` file 1267, `try_auto_merge` 214, `finalize_merge_resolution` 97;
@@ -601,22 +810,37 @@ codex lane to the same bar:
   writes to the whole git common directory, in both layers, whatever the session's cwd (a judge
   never writes git; one in the main checkout would otherwise hold `R/.git`). The checkout
   sessions that commit (Knowledge, Merge, BaseConflict) keep git writes, minus a deny on each of
-  `info`, `objects/info`, `worktrees`, `modules` and `refs/replace` under the common directory
-  that exists at spawn; an absent one is never denied (a deny on an absent path mounts an empty
+  `info`, `objects/info`, `worktrees`, `modules`, `refs/replace`, `hooks` and `config` under the
+  common directory that exists at spawn (so a `--separate-git-dir` store gets the hooks and
+  config denies `session_denies` gives the literal `R/.git`); an absent one is never denied (a deny on an absent path mounts an empty
   placeholder file that host git would then read; host-git-integrity's D7 check covers the
   absent-file cases `commondir`, `shallow`, `info/grafts`). The directory is resolved once per
   spawn with `git rev-parse --path-format=absolute --git-common-dir` in `R`; a spawn whose
   repository does not resolve fails.
-- **D3.** Every session gets a cache directory `C = <user cache dir>/loom/session-caches/<key>`,
-  where the key is `<stage-id>-<session-kind>` (a session without a stage uses its session id):
+- **D3.** Every session gets a cache directory
+  `C = <user cache dir>/loom/session-caches/<project-key>/<key>`, where `<project-key>` is
+  `project_cache_key(<canonical main checkout>)` (16 hex characters of SHA-256; two clones on one
+  host never share `C`) and the key is `<stage-id>-<session-kind>` (a session without a stage uses its session id):
   the PATH is stable per stage and kind, the CONTENT is per session. At spawn the daemon removes
   any existing `C` (never following a symlink), recreates it 0700, writes the owner marker
   `C/.loom-session` holding the session id, and seeds it from the operator's caches for the
   ecosystems the session's directory uses. `C` is granted in `allowWrite` (its marker
   write-denied), pointed at by the session's environment, and removed at retirement only when
   the marker still names the retiring session, so a late retire never deletes a successor's
-  cache. `PACKAGE_MANAGER_CACHE_WRITE_PATHS` and its module are
-  deleted: the real caches have no grant left, so they are read-only in every session.
+  cache. `loom init` and `loom clean` remove the project's namespace (sessions that
+  `sweep_sessions` never retires, `loom sessions kill`, the last sessions of a run, would
+  otherwise leave 80-600 MB each). `PACKAGE_MANAGER_CACHE_WRITE_PATHS` and its module are
+  deleted: the real caches have no grant left, so they are read-only in every session. A plan
+  `allow_write` entry cannot restore one: `session_fs::refuse_real_cache_grants` fails the spawn
+  when the capsule's final `allowWrite` holds an entry equal to, inside or above a resolved real
+  cache (lexically or canonically; `C` excepted), and the session layer write-denies every
+  resolved real cache that exists at spawn and is no ancestor of the home directory, `R`, `T` or
+  `C` (a cache relocated into a writable checkout, a symlinked alias). The
+  daemon's `HOST_ENV_ALLOWLIST` (`daemon/server/environment.rs`) gains the location-valued
+  variables `RealCaches` and `env_credential_paths` read; the daemon strips everything else
+  before its orchestrator thread starts, so without them every override is invisible in
+  production. Seeding runs synchronously on the orchestrator tick in `start_ready_stages` (per
+  spawn on this host: an 84 MB index copy and about 30,000 symlinks).
 - **D4.** `CREDENTIAL_DENY_READ_PATHS` gains 36 literal home paths (shell histories and
   `~/.claude.json` included: the deny binds the sandboxed Bash only, while Claude Code and the
   hooks run outside the sandbox), and each capsule read-denies the credential locations the
@@ -657,8 +881,12 @@ in worktree sessions takes effect only once the merged binary is installed, by w
    sonnet) in ONE message. The crate does not compile after this wave (C2 removes items C3's
    files still name), so C1 and C2 run no check; C4's files are shell and markdown plus one Rust
    note, and C4 runs its hook test.
-2. C3 (launch wiring, sonnet): wires C1 and C2 into the launch, the capsule, the wrapper, the
-   confined-command environment and retirement, updates the test fixtures, runs one check.
+2. C3 (launch wiring, sonnet): wires C1 and C2 into the launch (a new
+   `launch/session_facts.rs` holds `SessionFacts`, so `host.rs`, at 315 lines, stays under
+   400), the capsule, the wrapper, the confined-command environment (the new variables are
+   added on the confined path only, never in `apply_stage_environment_from`, which host-side
+   tmux and native spawners share), the daemon's environment allowlist, retirement and the
+   `loom init`/`loom clean` cleanup, updates the test fixtures, runs one check.
 3. Main agent: `cargo fmt --all` once, routes any compile error to a fresh worker of the owning
    territory, then the acceptance list, the contract mutations, review, one dispute-integrity.
 
@@ -666,25 +894,31 @@ in worktree sessions takes effect only once the merged binary is installed, by w
 
 Seed only the ecosystems the session's directory uses (`Ecosystems::detect`: `Cargo.toml` ->
 cargo, `go.mod` -> go, `bun.lock`/`bun.lockb` -> bun, `package-lock.json`/`npm-shrinkwrap.json`
--> npm, `pnpm-lock.yaml` -> pnpm, `uv.lock` -> uv, found at the checkout root or any detected
-package directory). Every tool is relocated whether seeded or not. Symlinks into the real caches
+-> npm, `pnpm-lock.yaml` -> pnpm, `uv.lock` -> uv, found at the checkout root or any package
+directory `ProjectProfile::discover` finds, skipping any path with a `fixtures` component, so
+this repository's `loom/tests/fixtures/source/labeled/go/go.mod` seeds nothing). Every tool is
+relocated whether seeded or not. Symlinks into the real caches
 are safe only because no grant reaches a real cache; a symlink found inside a real cache is
-never reproduced.
+never reproduced, and neither is a tool's control or temp entry (bun `.tmp`, go `trim.txt`,
+any dot-entry at a linked cache root): reproduced under bwrap with the real caches read-only,
+a linked `.tmp` makes `bun install` and `bun x` exit 1 ("Unexpected accessing temporary
+directory") and a linked `trim.txt` older than a day makes `go build` exit 1 ("failed to trim
+cache").
 
 | Tool | Session variables | Seed | Measured |
 | --- | --- | --- | --- |
 | cargo | `CARGO_HOME=C/cargo`, `RUSTUP_AUTO_INSTALL=0` | copy `registry/index`; one symlink per `registry/cache/<reg>/*.crate` and per `registry/src/<reg>/<crate-ver>` holding `.cargo-ok`; copy `config.toml`/`config`; symlink `advisory-db`, `advisory-dbs`, `bin`; `git/` empty; never `credentials*` | under 1 s, 80-133 MB (index copy 80 MB, 0.12 s this session); `cargo audit --no-fetch` exit 0 with `CARGO_HOME=C` under bwrap with the real `~/.cargo` read-only (this session; it fails on yanked checks without the index copy) |
 | rustup | `RUSTUP_HOME` exported only when the daemon sets it; read-only | none | builds work read-only; an uninstalled toolchain fails cleanly with `RUSTUP_AUTO_INSTALL=0` |
-| bun | `BUN_INSTALL_CACHE_DIR=C/bun` | one symlink per top-level cache entry | 0.8 s, 20,045 entries |
+| bun | `BUN_INSTALL_CACHE_DIR=C/bun` | one symlink per top-level cache entry, never `.tmp` or any dot-entry | 0.8 s, 20,045 entries; `bun install` and `bun x markdownlint-cli2` succeed with `.tmp` a real directory and fail with it linked (reproduced) |
 | npm | `npm_config_cache=C/npm` | copy `_cacache/index-v5`; replicate `_cacache/content-v2` as real directories of symlinked files (a directory symlink fails with EEXIST) | about 1 s, index 116 MB |
 | pnpm | `npm_config_store_dir=C/pnpm-store` | per `v<N>`: copy `index/`, replicate `files/` with symlinked files | not timed (index 21 MB, 64,242 files, 2.0 GB here); pnpm 10.15.0 honors `npm_config_store_dir` (store path `<dir>/v10`) and ignores `pnpm_config_store_dir` (verified this session) |
 | yarn v1 | `YARN_CACHE_FOLDER=C/yarn` | none | no real cache here |
-| go | `GOPATH=C/go`, `GOMODCACHE=C/go/pkg/mod`, `GOCACHE=C/go-build`, `GOFLAGS=-modcacherw`, `GOPROXY=file://<real GOMODCACHE>/cache/download,<daemon GOPROXY or https://proxy.golang.org,direct>` | `GOCACHE`: replicate the real go-build tree with symlinked files; modules come through the file proxy | works; go.sum verification works through the file proxy (`GOPATH` is required: the sumdb cache lives at `$GOPATH/pkg/sumdb`) |
+| go | `GOPATH=C/go`, `GOMODCACHE=C/go/pkg/mod`, `GOCACHE=C/go-build`, `GOFLAGS=-modcacherw`, `GOPROXY=file://<real GOMODCACHE>/cache/download,<daemon GOPROXY or https://proxy.golang.org,direct>` | `GOCACHE`: replicate the real go-build tree with symlinked files, never `trim.txt`; modules come through the file proxy | works; go.sum verification works through the file proxy (`GOPATH` is required: the sumdb cache lives at `$GOPATH/pkg/sumdb`) |
 | uv | `UV_CACHE_DIR=C/uv`, `UV_LINK_MODE=copy` | copy `simple-v*`, `wheels-v*`, `interpreter-v*`; replicate `archive-v0` with symlinked files | 4.6 s, about 590 MB here |
 | pip | `PIP_CACHE_DIR=C/pip` | none | |
 | deno | `DENO_DIR=C/deno` | none | |
 | XDG cache | `XDG_CACHE_HOME=C/xdg-cache` | one symlink per top-level entry of the real XDG cache except `loom` and the relocated tools' own names (`pnpm`, `go-build`, `yarn`, `deno`, `uv`, `pip`) | not timed (a few dozen entries); keeps read-mostly assets that tools find through `XDG_CACHE_HOME` (Playwright browsers, Hugging Face models, pre-commit) reachable |
-| codex | `CODEX_HOME=C/codex-home`, codex lane only | copy `config.toml`, `hooks.json` (write-denied in the capsule); symlink `auth.json`, `AGENTS.md`, `hooks`, `installation_id`, `loom-skill-catalog`, `rules`, `vendor_imports`; real directories of per-entry symlinks for `packages`, `plugins`, `skills`; run state (sqlite, sessions, logs, caches, sockets) starts fresh | not timed |
+| codex | `CODEX_HOME=C/codex-home`, codex lane only | copy `config.toml`, `hooks.json` (write-denied in the capsule) and the root dot-files `.codex-global-state.json`, `.personality_migration`, `.sandbox_migration`; symlink `auth.json`, `AGENTS.md`, `hooks`, `installation_id`, `loom-skill-catalog`, `rules`, `vendor_imports`; real directories of per-entry symlinks for `packages`, `plugins`, `skills`, except the entries codex writes inside (mtimes on this host): `plugins/cache` and `skills/.system` become real trees of symlinked files, `plugins/.remote-plugin-install-staging` and `packages/app-server-daemon` start empty; run state (sqlite, sessions, logs, caches, sockets, `.tmp`, `tmp`) starts fresh | not timed, and no live codex run under this layout was measured: the operator's codex step after the plan checks it |
 | git | `GIT_CONFIG_COUNT=2`, `gc.auto=0`, `maintenance.auto=false` | none | keeps in-session git from trying to maintain the read-only common directory |
 
 Sizes here: cargo registry 1.75 GB, bun 30 GB, npm 7.7 GB, uv 62 GB (58 GB of it `archive-v0`), so
@@ -709,13 +943,15 @@ flips the fingerprints once more.
 | 1 Untrusted input | env values from the daemon (credential locations, `GOPROXY` userinfo), session ids | `env-relocated-credentials-are-read-denied` (empty, relative and home-equal values dropped); session ids go through `validate_id`; the hook validates `LOOM_SESSION_ID` before building a path from it |
 | 2 Filesystem paths and symlinks | seeding writes symlinks to real caches; retirement deletes a tree full of them; a leftover or planted `C` at spawn | `removing-a-session-cache-leaves-the-real-cache-intact`, `session-env-and-seeding-follow-the-daemon-cargo-home` (index copied, never linked); unit tests on a planted symlink at `C` |
 | 3 Process I/O volume and scale | seeding walks caches of 20,000 to millions of entries; one `git rev-parse` per spawn | by design: syscall-level copy and link loops, no subprocess per entry, no pipe; one bounded git call. No contract (a timing contract would be flaky); the measured-cost table and the canary cover it |
-| 4 Configuration propagation | `CARGO_HOME` and every other tool override read from the daemon env; D4 env-relocated credentials | `session-env-and-seeding-follow-the-daemon-cargo-home` (a non-default `CARGO_HOME`), `env-relocated-credentials-are-read-denied` |
-| 5 Lifecycle and concurrency | `C`'s path is shared by every session of one stage and kind: a late retire of a crashed session against its successor's cache; the previous session's files at spawn; retirement retried after a partial removal; a `0555` directory left by go; a git metadata entry absent at spawn (never denied, so no placeholder file appears on the host) | `retiring-a-session-spares-the-cache-its-successor-owns`, `removing-a-session-cache-leaves-the-real-cache-intact` (removal succeeds on a `0555` tree first time); `no-git-kinds-deny-the-resolved-git-common-dir` (absent `modules`, `refs/replace` not listed); unit tests `prepare_replaces_a_leftover_session_directory`, `a_running_session_keeps_its_session_cache` |
-| 6 Reachability | the launch must seed and export, the capsule must merge, retirement must remove | `reachable` for `prepare_session_cache`, `session_cache_env`, `session_filesystem` from `prepare_session_launch` and `remove_session_cache` from `sweep_sessions`; wiring patterns; the launch test `a_stage_launch_grants_its_session_cache_and_exports_it` |
+| 4 Configuration propagation | `CARGO_HOME` and every other tool override read from the daemon env; D4 env-relocated credentials; the daemon's stripped environment (`HOST_ENV_ALLOWLIST`), which the injected-lookup contracts cannot see | `session-env-and-seeding-follow-the-daemon-cargo-home` (a non-default `CARGO_HOME`), `env-relocated-credentials-are-read-denied`; `cargo test --lib daemon::server::environment` with C3's test that the capture keeps `CARGO_HOME` and `DOCKER_CONFIG` and drops `GITHUB_TOKEN`; the acceptance grep for `"CARGO_HOME"` in `daemon/server/environment.rs` |
+| 5 Lifecycle and concurrency | `C`'s path is shared by every session of one stage and kind: a late retire of a crashed session against its successor's cache; the previous session's files at spawn; retirement retried after a partial removal; a `0555` directory left by go; a git metadata entry absent at spawn (never denied, so no placeholder file appears on the host); two projects with the same stage id; sessions never retired (`loom sessions kill`, the last sessions of a run) | `retiring-a-session-spares-the-cache-its-successor-owns`, `removing-a-session-cache-leaves-the-real-cache-intact` (removal succeeds on a `0555` tree first time); `no-git-kinds-deny-the-resolved-git-common-dir` (absent `modules`, `refs/replace` not listed); unit tests `prepare_creates_a_private_directory_and_replaces_a_leftover`, `a_running_session_keeps_its_session_cache`, `two_projects_get_different_cache_namespaces`, `clean_removes_the_project_session_caches` |
+| 5b Tool control entries in a seeded cache | bun `.tmp`, go `trim.txt` linked read-only | `seed_bun_links_every_entry_but_tmp`, `seed_go_build_never_links_trim_txt`; integration-verify's `bunx markdownlint-cli2` acceptance and `bun install --frozen-lockfile` smoke under the new capsule |
+| 6 Reachability | the launch must seed and export, the capsule must merge, retirement must remove, the launch must resolve the real common dir | `reachable` for `prepare_session_cache` and `session_filesystem` from `prepare_session_launch` and `release_session_cache` from `sweep_sessions`; wiring patterns on `launch/session_facts.rs`; the launch test `a_stage_launch_grants_its_session_cache_and_exports_it` (reads the written capsule file); `session_facts::tests::session_facts_resolve_a_separate_git_dir_store` (a `repo_root.join(".git")` resolver fails it) |
 | 7 External data correctness | cargo, npm, pnpm, uv, bun and codex home layouts, owned by those tools | fixture names are taken from the layouts observed on this host (`registry/index/index.crates.io-1949cf8c6b5b557f`, `.cargo-ok`, `_cacache/index-v5`, `v10/index`, the `~/.codex` entry list in C1's brief), never from memory |
+| 8 Authored grants against the real caches | a plan `allow_write` entry equal to, inside or above a real cache (`~/.npm`, `~`), a symlinked alias of one, a cache relocated into the writable worktree, the production `C` lying under the real `~/.cache` | `real-cache-grants-are-refused-and-existing-real-caches-denied`; wiring on `refuse_real_cache_grants(` in `session_settings.rs` |
 
 Every D-decision has a contract: D1 `no-git-kinds-deny-the-resolved-git-common-dir`, D3
-`no-capsule-grant-reaches-a-real-package-cache`, D4 `env-relocated-credentials-are-read-denied`,
+`no-capsule-grant-reaches-a-real-package-cache` and `real-cache-grants-are-refused-and-existing-real-caches-denied`, D4 `env-relocated-credentials-are-read-denied`,
 D5 `sibling-worktrees-are-read-denied-and-the-own-worktree-is-not`, D6
 `codex-capsule-grants-its-session-home-and-not-the-real-codex-home`; the stable cache path's
 ownership rule has `retiring-a-session-spares-the-cache-its-successor-owns`.
@@ -733,7 +969,10 @@ assertions pinned those grants":
   `codex_licensed_allow_write_appends_codex_state_paths`,
   `every_stage_gets_the_package_caches_even_with_no_plan_entries`.
 - `src/sandbox/settings/tests.rs`: helper `allow_write_with_caches` renamed `plan_allow_write`
-  and its four call sites (lines 268, 596, 649, 825 at `3fc28031`).
+  and its four call sites (lines 268, 596, 649, 825 at `3fc28031`). The helper's body is
+  `if prefix.is_empty() { Value::Null } else { json!(prefix) }`: the call at 596 passes `&[]`
+  under a config with no plan write paths, and `policy.rs` emits `allowWrite` only when it is
+  non-empty, so a bare `json!(prefix)` would compare `[]` with an absent key and fail.
 - `src/sandbox/control_surfaces/tests.rs`: `writable_roots_cover_every_input` (the four cache
   and codex entries), `writable_roots_omit_the_codex_paths_unless_the_lane_is_licensed`.
 - `src/sandbox/control_surfaces/tests_session_denies.rs`: three plugin carve-out tests deleted,
@@ -746,9 +985,10 @@ assertions pinned those grants":
 Ledger (`TI-ratchet-loom/maintainability-baseline.txt`, tightening only): remove
 `function src/sandbox/settings/policy.rs filesystem_settings 52` (the function drops under 50)
 and lower `file src/sandbox/settings/tests.rs 1596` to its new exact count. No other ledgered
-file or function is touched (`sandbox/settings.rs`, `sandbox/config.rs`, `signals/format/helpers.rs
-format_structured_handoff` stay as they are). New files stay under 400 lines, new functions
-under 50.
+file or function changes count (`sandbox/settings.rs`, `sandbox/config.rs`, `signals/format/helpers.rs
+format_structured_handoff` stay as they are; `models/stage/types.rs` is ledgered at exactly
+1015 lines, so C2's doc-comment rewrite at its line 258 keeps the same number of lines). New
+files stay under 400 lines, new functions under 50.
 
 #### Ownership beyond the stage row
 
@@ -758,16 +998,30 @@ under 50.
 
       session: SessionFacts::resolve(&repo, base.join("session-caches"), &home, &|_| None).unwrap(),
 
+  with the import `use super::session_facts::SessionFacts;` (adjusted to the module path C3
+  gives `launch/session_facts.rs`).
+
 - `src/orchestrator/core/inbox_drain/tests_sweep_cache.rs` (new) is carved out of
-  `commit-relay`'s `inbox_drain` territory for this stage.
+  `commit-relay`'s `inbox_drain` territory for this stage. It imports
+  `inbox_drain/test_support.rs`'s `fixture` and `payload_for`, which commit-relay's W1 edits in
+  parallel; W1 keeps their signatures (additive changes only).
+- `src/daemon/server/environment.rs`, `src/commands/init/cleanup.rs` and
+  `src/commands/clean/relay_dirs.rs` (C3): the daemon's environment allowlist and the
+  project-namespace cleanup.
+- `src/sandbox/session_fs.rs` calls `run_git_checked(` on the host; host-git-integrity's
+  call-site allowlist cannot list it in parallel, so integration-verify adds
+  `src/sandbox/session_fs.rs | host-on-R | ...`.
 - `src/models/stage/types.rs`: the doc comment at line 258 only (C2).
 
 The canary has to invert three probes this stage makes wrong: `tests_confinement_e2e.rs:263` and
 `:287` expect `~/.cargo/registry/x` writable and `:305` expects `~/.codex/x` writable. They
 self-skip inside a stage, so this stage's acceptance does not catch them.
 `loom::sandbox::PACKAGE_MANAGER_CACHE_WRITE_PATHS` is deleted. The canary keeps its own
-independent list of real cache locations as an oracle: a path dropped from both lists would go
-unseen.
+independent list of default real cache locations as an oracle (a path dropped from both lists
+would go unseen) and also refuses a fresh file in every directory the capsule write-denies, so
+the daemon's resolved real caches, relocated ones included, are probed live. A relocated cache
+the capsule drops is caught by `real-cache-grants-are-refused-and-existing-real-caches-denied`,
+not by the canary: inside the session every cache variable already names `C`.
 
 #### Accepted gaps this stage leaves
 
@@ -796,16 +1050,24 @@ unseen.
 - A spawn that fails after `C` is created leaves `C` behind when no session record exists to
   retire, as the scratch directory already does; the next spawn of the same stage and kind
   replaces it.
-- Two live sessions of one stage and kind would share `C`, and the second spawn replaces the
-  first's content; the tracking key allows one such session at a time.
-- Codex run state (sessions, history, memories) lives and dies with the session.
+- Two live sessions of one stage and kind in one project would share `C`, and the second spawn
+  replaces the first's content; the tracking key allows one such session at a time within one
+  work directory (the project key separates repositories).
+- Codex run state (sessions, history, memories) lives and dies with the session, so
+  `loom usage`, which reads `~/.codex/sessions` (`commands/usage/codex_discovery.rs`), no longer
+  sees a stage's codex usage.
+- `~/.local/state/pnpm` and `~/.yarn/berry` lose their grants and are not relocated: pnpm's
+  state file write and yarn berry's global cache fail with EROFS in a session.
+- Seeding costs land on the daemon's orchestrator tick (synchronous in `start_ready_stages`).
 - Another stage's cache directory is readable (a sibling codex session's run state included),
   as every session could read `~/.codex` before. A read deny on the session-cache
   root with the session's own `C` re-allowed would close it the way D5 closes `.worktrees`.
-- Pre-existing, not introduced here: `session_denies` denies `R/.git/hooks` and `R/.git/config`
-  by the literal `repo_root.join(".git")`. When `R/.git` is a gitfile (`--separate-git-dir`), a
-  checkout session's real hooks directory is not denied. Stage, contract and adjudication
-  sessions are covered by the whole-directory deny.
+- A real cache relocated into a writable root (the worktree, `C`) but ABSENT at spawn is not
+  denied (a deny on an absent path mounts a host-visible placeholder); the session could create
+  it. The session's own cache variables point into `C`, so nothing in the session creates it by
+  accident.
+- `~/.cache` itself (`XDG_CACHE_HOME`'s real value) is an ancestor of the production `C`, so it is
+  never denied; its per-tool children that `RealCaches` names (uv, pip, go-build, ...) are.
 - The stage session's first build after its contract session recompiles Rust registry
   dependencies once, and so does the first session build after a host-side cargo run in the
   worktree (see "Why `C`'s path is stable per stage and kind").
@@ -814,7 +1076,9 @@ unseen.
 #### Knowledge this stage makes stale (for knowledge-distill)
 
 `architecture/execution-containment.md#Package-Manager Caches Are Granted To Every Stage`,
-`architecture/codex-plugin.md#The sandbox must grant codex its state dirs (2026-08-10)`,
+`architecture/codex-plugin.md#The sandbox must grant codex its state dirs (2026-08-10)` (also
+corrected before this plan: the grants are emitted by `sandbox/settings/policy.rs` and
+`sandbox/control_surfaces.rs`, not `fs/permissions/settings.rs::ensure_loom_hooks_local`),
 `architecture/security-and-isolation.md#Where a Session's Write Grants Come From` (the `~/.codex`
 sentence), `concerns/sandbox-and-confinement-gaps.md#No Read(...) Deny Rule May Exist in Any
 Settings File (2026-09-04)` (credential-guard rule (b) now reads the session capsule and honors
@@ -855,7 +1119,8 @@ plan must settle" item 6). Two instruments:
 1. **An in-session canary** (`loom/tests/sandbox_canary.rs`). It runs inside a live loom stage
    session and reads the session's own capsule (`$LOOM_WORK_DIR/capsules/$LOOM_SESSION_ID.settings.json`).
    It then proves, with a matched positive control beside each denial, that the git common
-   directory, the admin directory `W`, every real package cache and the codex home refuse a
+   directory, the admin directory `W`, every real package cache (its own default list plus every
+   directory the capsule write-denies, which carries the daemon's resolved caches) and the codex home refuse a
    fresh file, that every `denyRead` path reads masked, that `R/.worktrees` shows only the
    session's own worktree, and that no `allowWrite` entry reaches a real cache or the common
    dir. Outside a live stage sandbox it prints `SKIP` and passes.
@@ -894,7 +1159,12 @@ Waves (worker table in YAML):
    - K1 (sonnet): the library surface in `sandbox_probe.rs` (`StageSandboxEvidence`,
      `stage_sandbox_live`, `skip_unless_stage_sandbox`, `capsule_path`,
      `real_package_cache_dirs`) and `sandbox_probe/srt.rs` (the translation, moved and
-     extended). Then the canary target and its four probe-primitive tests. Runs
+     extended). Then the canary target, its four probe-primitive tests and the `run_all` test
+     `checks_report_a_writable_git_dir_and_a_real_cache_grant`. In a live worktree session an
+     absent common dir, `W`, `C`, `T` or `R/.worktrees` is a violation, `SessionLayout::discover`
+     failing panics, and the final assertion requires the six named proofs (K1's brief), so a
+     canary that records nothing cannot pass. Check (d) also probes a fixed credential list of
+     its own, independent of the capsule and `CREDENTIAL_DENY_READ_PATHS`. Runs
      `cargo test --test sandbox_canary` once. That builds only the library and the canary, so
      K2's parallel edits cannot break it.
    - K2 (sonnet): the fixture's real linked worktree, the translation moved to K1's module,
@@ -914,6 +1184,8 @@ Risk walk:
 | Filesystem paths (no literal; git, `dirs::home_dir`, the environment, the capsule) | brief rules; canary check (g); srt fixture under `target/confinement-e2e-tmp`, never outside `f.base` |
 | External processes (git, a nested cargo, srt) | `srt-translation-grants-a-linked-worktree-its-common-dir`; the `ALIVE` and RC sentinel on every srt probe; the nested cargo's output must name the test |
 | Platform (bwrap evidence is Linux only) | the detector contract (`pid1_comm`); macOS sessions skip, an accepted gap |
+| The detector's premise (`/proc/1/comm` reads `bwrap` where `loom stage complete` runs acceptance; measured only on the host so far, and `policy_tests_stage_gate.rs` once saw stage evidence missing under `loom stage complete`) | acceptance `test "$(cat /proc/1/comm)" = bwrap`, run through the same confined acceptance path the canary uses; a failure blocks this stage naming the premise, never a weaker detector |
+| A canary that proves nothing (absent paths noted, an empty `run_all`) | K1's required-proof assertion; `checks_report_a_writable_git_dir_and_a_real_cache_grant` |
 | Reachability (the canary gates on the detector; the harness uses the library translation) | wiring entries |
 | The behaviour the stage exists for | the canary in integration-verify with the flag; the operator's srt run below |
 
@@ -939,6 +1211,10 @@ Ownership map amendments this stage needs in `common.md`:
   when it adds fields to `LaunchHost`, `HostFacts` or `WritableRootInputs`. That file is
   `cfg(test)` library code, so `cargo test --lib` in capsule-policy's own stage fails to
   compile without them. The stages run in sequence, so no two sessions write the file at once.
+- `src/process/sandbox_probe/srt.rs` calls `run_git_checked(`; this stage does not edit
+  `loom/tests/host_git_call_sites.txt` (host-git-integrity owns it and may run concurrently),
+  and its acceptance runs no unfiltered suite, so integration-verify adds
+  `src/process/sandbox_probe/srt.rs | in-session | ...`.
 
 Expected integrity events: none. K2 changes three grant-argument lines and one comment in
 `tests_confinement_e2e.rs`. None matches the Rust assertion pattern
@@ -971,16 +1247,22 @@ socket inside one (`architecture/execution-containment.md`, "Confinement E2E Liv
 Sandbox"). `bwrap` and `socat` must be on PATH:
 
 ```bash
+set -o pipefail
 shim="$(mktemp -d)"
-printf '#!/bin/sh\nexec bunx @anthropic-ai/sandbox-runtime "$@"\n' > "$shim/srt"
+printf '#!/bin/sh\nexec bunx @anthropic-ai/sandbox-runtime@0.0.78 "$@"\n' > "$shim/srt"
 chmod +x "$shim/srt"
 cd loom && env -u LOOM_WORK_DIR PATH="$shim:$PATH" LOOM_TEST_REQUIRE_SANDBOX_FREE=1 \
-  cargo test confinement
+  cargo test confinement -- --nocapture 2>&1 | tee ../srt-confinement.log
 ```
+
+`--nocapture` is required: cargo captures a passing test's stderr, so a `SKIP` line would never
+show. The version is pinned to the one the bind behaviour and srt's missing git-dir grant were
+measured on (`architecture/execution-containment.md`).
 
 Expected: the ten srt tests under `tests_confinement_e2e::` (four existing, six in
 `escape::`) and `confinement_status::` pass, and none prints `SKIP`. Until this run, both suites
-have only taken their skip path; the stage report says so.
+have only taken their skip path; the stage report says so. On a failure, follow HAZARD step 3:
+the log stays at `<main checkout>/srt-confinement.log` for integration-verify to read.
 
 Knowledge follow-up for knowledge-distill:
 
@@ -1024,17 +1306,38 @@ installs land in its session cache, and the in-session canary runs for real.
   (`git rev-parse --path-format=absolute --git-common-dir`) under `sandbox.filesystem.denyWrite`,
   and `$CARGO_HOME` must lie under a `loom/session-caches/` directory. If either fails, block the
   stage (`loom stage block integration-verify "<reason>"`, a positional reason) naming the HAZARD
-  steps, and stop.
-- The full gate from `loom/`: build, clippy with warnings denied, fmt, rustdoc with warnings
-  denied, `cargo test --all-targets`, `LOOM_TEST_REQUIRE_STAGE_SANDBOX=1 cargo test --test
-  sandbox_canary` (a skip is a failure here), the hook suite and the hook syntax check, the
-  read-only markdown lint.
+  steps, and stop. Record `cat /proc/1/comm` with `loom memory note`, and read
+  `<main checkout>/srt-confinement.log` when it exists (the operator's srt run, HAZARD step 3):
+  every failure in it is a finding of this stage.
+- The host-git call-site allowlist: the stages ran in parallel, so `tests/host_git_call_sites.txt`
+  cannot yet list the git call sites the other stages added. Run
+  `cargo test --test host_git_call_sites` and add, reading each call site:
+  `src/commands/commit/paths.rs | in-session`, `src/sandbox/session_fs.rs | host-on-R`,
+  `src/process/sandbox_probe/srt.rs | in-session`,
+  `src/orchestrator/core/inbox_drain/commit.rs | host-pinned` (each with a one-line reason),
+  plus any other entry it names; never list a discovery call against a stage worktree, convert
+  it.
+- Recovery: a defect in the capsule, the session cache, the daemon environment or the commit
+  apply follows the HAZARD section's recovery path (commit the fix, block naming the reinstall
+  from this worktree); it never loops on the canary.
+- The full gate from `loom/`, the checks of `loom/.githooks/pre-push` (which `CONTRIBUTING.md`
+  makes authoritative) plus this plan's own: build, clippy with warnings denied, fmt, rustdoc
+  with warnings denied, `cargo audit --no-fetch` (against the database the operator refreshed in
+  HAZARD step 2), the suite as the hook runs it (`env -u GIT_INDEX_FILE -u GIT_DIR -u
+  GIT_WORK_TREE cargo test --all-targets --no-fail-fast`), `scripts/flake-check.sh` with each of
+  its four default filters as its own entry, `LOOM_TEST_REQUIRE_STAGE_SANDBOX=1 cargo test
+  --test sandbox_canary` (a skip is a failure here), the hook suite and the hook syntax check,
+  the read-only markdown lint. Scoped tests stay in the ordinary stages: the plan lint
+  (`plan/schema/validation_suite.rs`) reserves the unfiltered suite for this stage.
 - Functional smokes, each recorded with `loom memory note`: `git add` of any file fails with
   `Read-only file system`, and every commit this stage makes goes through `loom commit` and
   `loom request status --wait 90`; in a scratch crate under `$TMPDIR`, `cargo add` of a crate
   absent from `~/.cargo/registry/cache` downloads into `$CARGO_HOME` and builds, while creating a
-  file under `~/.cargo/registry` fails; `bun install --frozen-lockfile` in `web/` succeeds;
-  `ls <R>/.worktrees` lists only this worktree.
+  file under `~/.cargo/registry` fails; `bun install --frozen-lockfile` in `web/` succeeds (a smoke,
+  not an acceptance line: the plan lint rejects a networked install in acceptance; the
+  `bunx markdownlint-cli2` acceptance line already runs bun through the seeded cache); `stat -f -c %T <R>/.worktrees` prints `tmpfs` and `ls <R>/.worktrees`
+  lists only this worktree (a listing alone proves nothing once the merged stages' worktrees
+  are gone).
 - Review subagents: security (the daemon commit apply's path and symlink checks and its HEAD
   guard, relay authority and subagent refusal, seeding and removal never following a symlink,
   the owner marker, the credential and read rules, the codex home, D7's checks, and a sweep for
@@ -1068,16 +1371,21 @@ truth, besides the curated memories:
   `## Accepted Gaps From the State-Confinement Work` (shared caches closed), plus this plan's
   accepted gaps: main-checkout reads, `auth.json` readable to codex-licensed sessions,
   `~/.codex/plugin-data` shared, cargo git dependencies not seeded, macOS read rules unverified,
-  the mid-session exposure of checkout sessions to a planted `commondir`.
-- `concerns/agent-rule-bending-hardening.md`: G1 (closed for worktree sessions), G2 (closed; its
-  hook list was stale), G3 (the canary), G7 (shared caches closed).
+  the mid-session exposure of checkout sessions to a planted `commondir`, the post-acceptance
+  window of checkout sessions, host-side provisioning fetching tarball URLs an agent-edited
+  `bun.lock` names, stage codex usage lost to `loom usage`, pnpm state and yarn berry not
+  relocated, and the pre-commit lint (`v2_lints/repo_hooks.rs`) still assuming every stage
+  commit runs the repository hook (worktree commits now run hooks-disabled in the daemon).
+- `concerns/agent-rule-bending-hardening.md`: G1 (closed for worktree sessions), G2 (the hooks
+  that run git now run it pinned), G3 (the canary), G7 (shared caches closed).
 - A new mistakes topic: Claude Code grants a linked-worktree session the whole git common dir,
   and why a deny-list cannot narrow it (deny wins, write globs skipped, host-visible
   placeholders, packed refs); and a session-keyed `CARGO_HOME` rebuilds every dependency.
 - `conventions/git-and-build-workflow.md`: the worktree commit route.
 - README and CONTRIBUTING: `loom commit`, `loom request status --wait`, per-session caches (a
   stage cannot install a toolchain; git dependencies need network), and the operator steps
-  around integration-verify.
+  around integration-verify. The stage's acceptance runs the read-only markdown lint over the
+  files it edits.
 
 ## After the plan (operator)
 
@@ -1085,6 +1393,10 @@ truth, besides the curated memories:
   credentials and network). Run a one-stage scratch plan whose stage lists `implementers:
   ["codex", "claude"]` and forwards one small unit, and confirm the unit's file lands and the
   run writes nothing under `~/.codex` except `auth.json` and `plugin-data`.
+  This is the first live codex run under the seeded `C/codex-home`, whose layout no stage
+  measured: an EROFS or `Read-only file system` in the forward's log names an entry the seed
+  must create fresh instead of linking (capsule-policy's table lists the entries codex was seen
+  writing); fix `sandbox/session_cache/codex_home.rs` before any plan uses the codex lane.
 - `dev-install.sh` also refreshes `~/.claude/CLAUDE.md` from `CLAUDE.md.template`, so interactive
   sessions see the new commit rule for stage worktrees.
 
@@ -1098,6 +1410,9 @@ loom:
   ratchet_files:
     - loom/maintainability-baseline.txt
     - doc/loom/knowledge/check-baseline.txt
+  provision:
+    - working_dir: web
+      command: "test ! -e .npmrc && test ! -L .npmrc && bun install --frozen-lockfile --ignore-scripts --backend=copyfile --config=/dev/null"
   sandbox:
     enabled: true
     auto_allow: true
@@ -1141,7 +1456,7 @@ loom:
         | ------ | ---- | ---- | ----------- | -------------- | ---------- |
         | W1 | Commit kind, shared path validator, daemon apply with descriptor-walk staging | opus | src/relay/kind.rs; src/relay/matrix.rs; src/relay/tests_matrix.rs; src/relay/payload.rs; src/relay/mod.rs; src/relay/commit_paths.rs; src/orchestrator/core/inbox_drain.rs; src/orchestrator/core/inbox_drain/apply.rs; src/orchestrator/core/inbox_drain/commit.rs; src/orchestrator/core/inbox_drain/commit_read.rs; src/orchestrator/core/inbox_drain/commit_tests.rs; src/orchestrator/core/inbox_drain/commit_tests_files.rs; src/orchestrator/core/inbox_drain/test_support.rs; src/orchestrator/core/inbox_drain/tests_matrix.rs; src/commands/hook/relay/tests.rs; src/commands/hook/relay/tests_sweep.rs | common.md | doc/plans/briefs/sandbox-escape-hardening/commit-relay/w1-relay-commit-apply.md |
         | W2 | loom commit with in-session directory expansion, request status --wait, completion gate | sonnet | src/commands/mod.rs; src/commands/commit/mod.rs; src/commands/commit/paths.rs; src/commands/commit/pending.rs; src/commands/commit/tests.rs; src/commands/commit/tests_pending.rs; src/commands/request/mod.rs; src/commands/request/status.rs; src/commands/request/wait.rs; src/cli/types.rs; src/cli/types_ops.rs; src/cli/dispatch.rs; src/cli/dispatch_stage.rs | common.md; W1's CommitRequest and check_commit_request | doc/plans/briefs/sandbox-escape-hardening/commit-relay/w2-commit-cli.md |
-        | W3 | D1 doctrine on signals, template, skills, preamble | sonnet | src/orchestrator/signals/helpers.rs; src/orchestrator/signals/cache.rs; src/orchestrator/signals/tests_commit_timing.rs; ../CLAUDE.md.template; ../skills/loom-orchestration/SKILL.md; ../skills/loom-usage/SKILL.md; ../skills/loom-git-workflow/SKILL.md; ../loom-hooks/_subagent-preamble.txt | common.md | doc/plans/briefs/sandbox-escape-hardening/commit-relay/w3-commit-doctrine.md |
+        | W3 | D1 doctrine on signals, template, skills, preamble, the contract-freeze refusal text | sonnet | src/orchestrator/signals/helpers.rs; src/orchestrator/signals/cache.rs; src/orchestrator/signals/tests_commit_timing.rs; src/commands/stage/contracts/freeze.rs (one string); ../CLAUDE.md.template; ../skills/loom-orchestration/SKILL.md; ../skills/loom-usage/SKILL.md; ../skills/loom-git-workflow/SKILL.md; ../loom-hooks/_subagent-preamble.txt | common.md | doc/plans/briefs/sandbox-escape-hardening/commit-relay/w3-commit-doctrine.md |
         | W4 | Relay, commit-filter, reminder and git-add hooks | sonnet | ../loom-hooks/loom-relay.sh; ../loom-hooks/commit-filter.sh; ../loom-hooks/post-tool-use.sh; ../loom-hooks/git-add-guard.sh; ../loom-hooks/tests/loom-relay-kinds.sh; ../loom-hooks/tests/commit-filter-quoted-payload.sh; ../loom-hooks/tests/post-tool-use-commit-reminder-tokenized.sh; ../loom-hooks/tests/git-add-guard-quoting.sh | common.md | doc/plans/briefs/sandbox-escape-hardening/commit-relay/w4-commit-hooks.md |
 
         CONTRACT SURFACE (the contract session writes tests/commit_relay_contracts.rs from this, before any code; top-level #[test] fns, so each contract's test value is its fn name; tests that set process environment variables are #[serial] from serial_test):
@@ -1152,13 +1467,20 @@ loom:
         - Git fixture: a TempDir R; git init -q -b main; user.name and user.email in R's own config (the daemon's git reads it); README.md committed; git worktree add -q -b loom/<stage> .worktrees/<stage>; work_dir = R/.loom/work (create_dir_all). The fixture's own git commands run with GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM pointed at missing files and GIT_CONFIG_NOSYSTEM=1. Every path comes from the TempDir.
         - Outcomes: an applied commit's latest ledger row is LedgerOutcome::Applied with reason "committed <sha>", sha the full hash of refs/heads/loom/<stage>; a refused request's is LedgerOutcome::Refused with a reason, the stage branch does not move, and nothing from the request is committed. A path refusal's reason names the refused path (so do refusals of a directory, a FIFO, a socket or a device path); a symlinked-parent refusal's reason contains "through a symlink"; a refusal of a path whose parent directory holds a .git entry contains "nested repository"; a HEAD refusal's reason contains "refs/heads/loom/<stage>"; a subagent refusal's reason contains "subagent". A symlink named as a path is committed as a link: mode 120000, its blob the link's target string; the target is never read.
         - The daemon stages without git add: it reads each file itself through a descriptor walk (openat with O_NOFOLLOW per component) and never runs a git command that reads the worktree. A request is refused whole when any path is a directory, a FIFO, a socket, a device, a file over 64 MiB, absent and untracked, behind a symlinked parent, or inside a nested repository. drain_session_inboxes returns within 5 s when a path is a FIFO.
-        - The CLI: loom commit -m <MESSAGE> [--] <PATH>..., spawned ONLY through helpers::loom_cmd(), declared as #[path = "integration/helpers.rs"] #[allow(dead_code)] mod helpers; exactly as tests/map_cli.rs does (tests/integration/binary_spawn_guard.rs fails any other file that writes Command::new(env!("CARGO_BIN_EXE_loom")), and loom_cmd scrubs every inherited LOOM_* variable). Environment: LOOM_SESSION_ID=<sid>, LOOM_STAGE_ID=<stage>, LOOM_SESSION_TYPE=stage, LOOM_SCRATCH_DIR=<a TempDir>/<sid> (a directory named exactly the session id, mode 0700), LOOM_WORKTREE_PATH=<wt>, current_dir <wt>/loom, plus GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM at missing files and GIT_CONFIG_NOSYSTEM=1 (the CLI runs git ls-files to expand a directory argument). A directory argument becomes the files under it that differ from the index or are untracked and not ignored, sorted; the ticket never names a directory. On success it exits 0, its last stdout line parses with RelayLine::parse and has kind RequestKind::Commit, and <scratch>/<id>.req decodes with Ticket::decode to a payload that deserializes into CommitRequest with the paths resolved against the worktree root, in argument order. A refused path exits non-zero and leaves no .req file. Without LOOM_SESSION_ID it exits non-zero and its stderr contains "git commit".
+        - The CLI: loom commit -m <MESSAGE> [--] <PATH>..., spawned ONLY through helpers::loom_cmd(), declared as #[path = "integration/helpers.rs"] #[allow(dead_code)] mod helpers; exactly as tests/map_cli.rs does (tests/integration/binary_spawn_guard.rs fails any other file that writes Command::new(env!("CARGO_BIN_EXE_loom")), and loom_cmd scrubs every inherited LOOM_* variable). Environment: LOOM_SESSION_ID=<sid>, LOOM_STAGE_ID=<stage>, LOOM_SESSION_TYPE=stage, LOOM_SCRATCH_DIR=<a TempDir>/<sid> (a directory named exactly the session id, mode 0700), LOOM_WORKTREE_PATH=<wt>, current_dir <wt>/loom, plus GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM at missing files and GIT_CONFIG_NOSYSTEM=1 (the CLI runs git ls-files to expand a directory argument). A directory argument becomes the files under it that differ from the index or are untracked and not ignored, sorted; the ticket never names a directory. On success it exits 0, its last stdout line parses with RelayLine::parse and has kind RequestKind::Commit, and <scratch>/<id>.req decodes with Ticket::decode to a payload that deserializes into CommitRequest with the paths resolved against the worktree root, in argument order. A refused path exits non-zero and leaves no .req file. Without LOOM_SESSION_ID it exits non-zero and its stderr contains "git commit". loom request status <ID> [--wait <SECS>] runs with the same environment and helper: when <scratch>/<ID>.req still exists (the relay hook never moved it), --wait exits 1 at once and prints the line "<ID>: pending relay: the relay hook never received this ticket; delete <scratch>/<ID>.req, then run the same loom commit again as its own foreground Bash call" (with the real scratch path); without --wait it exits 0.
 
         HAZARD (installed binary): this stage runs on the loom binary installed before this plan. Its sandbox still lets git write the shared git directory and it has no loom commit command, so this stage's own session commits with git add <specific-files> && git commit, never with the loom commit it builds; nothing built here changes this session. PLAN-stage-exits-and-environment edited CLAUDE.md.template, the skills, the preamble and signals before this plan: locate every edit by heading or symbol.
+        PRESSURE-TEST AMENDMENTS (binding; the briefs carry the detail): the daemon resets the index with read-tree --reset HEAD (plain read-tree HEAD zeroes every entry's stat data, which nothing can refresh under D1); every hash-object --path call carries the global option --attr-source=HEAD (a worktree .gitattributes FIFO stalls the tick; a filter from global config runs; both measured; git 2.40 or later); the hooks test plants a failing reference-transaction and a marker-writing post-index-change hook; the_daemon_never_hands_git_a_worktree_file checks the logged git argv; a ticket the relay never received is named with its discard path, never "rerun"; loom stage block and every dispute filing also refuse while a commit is unsettled, except a block whose reason starts "commit request " (the timeout line's own instruction); the --wait timeout line ends in a loom stage block instruction (BLOCK-F). W3's freeze.rs string: "restore a tracked file with git show HEAD:<path> > <path>" replaces "git checkout -- <path>", which writes the read-only index. src/commands/commit/paths.rs is not added to tests/host_git_call_sites.txt here (integration-verify does it).
         EXPECTED INTEGRITY EVENTS: none. cache.rs (524 lines, generate_knowledge_distill_stable_prefix 74, generate_knowledge_stable_prefix 66) and cli/dispatch.rs::dispatch (86) stay net-zero; commands/stage/complete.rs is not edited; relay/tests_matrix.rs keeps EXPECTED and its 54; no existing assertion line in a test file changes.
         CONTRACTS: before the final review round, prove each contract red by mutation (Gate conventions) and record loom memory note "mutation: <id> red under <mutation>".
         MEMORY: record mistakes, decisions and surprises via loom memory immediately (subagents too); never loom knowledge in this stage; never Claude Code auto-memory.
       before_stage:
+        - command: "rg -q 'pub struct ProvisionEntry' src/plan/schema"
+          exit_code: 0
+          description: "PRECONDITION: PLAN-stage-exits-and-environment's plan-environment stage has merged"
+        - command: "rg -q -F 'dispute-criteria <stage-id> [--field acceptance|wiring|wiring-tests]' ../README.md"
+          exit_code: 0
+          description: "PRECONDITION: PLAN-stage-exits-and-environment's knowledge-distill, its last stage, has merged"
         - command: "rg -q 'Commit,' src/relay/kind.rs"
           exit_code: 1
           description: "BEFORE: the relay has no commit kind"
@@ -1168,7 +1490,6 @@ loom:
           stdout_contains: ["1 passed"]
           description: "AFTER: a relayed commit lands once on the stage branch"
       acceptance:
-        - 'rg -q "pub struct ProvisionEntry" src/plan/schema'
         - "cargo build --all-targets"
         - "cargo clippy --all-targets -- -D warnings"
         - "cargo fmt --all -- --check"
@@ -1190,7 +1511,24 @@ loom:
         - "cargo test --lib orchestrator::core::inbox_drain::commit_tests_files::a_path_inside_a_nested_repository_is_refused -- --exact"
         - "cargo test --lib orchestrator::core::inbox_drain::commit_tests_files::the_regular_leaf_open_refuses_a_symlink -- --exact"
         - "cargo test --lib commands::commit::tests::a_directory_argument_becomes_its_changed_files -- --exact"
+        - "cargo test --lib relay::commit_paths::"
+        - "cargo test --lib orchestrator::core::inbox_drain::commit_tests::a_detached_head_is_refused -- --exact"
+        - "cargo test --lib orchestrator::core::inbox_drain::commit_tests::a_stale_index_lock_is_reported -- --exact"
+        - "cargo test --lib orchestrator::core::inbox_drain::commit_tests::nothing_staged_is_recorded_as_nothing_to_commit -- --exact"
+        - "cargo test --lib orchestrator::core::inbox_drain::commit_tests::a_commit_keeps_the_index_stat_data_of_untouched_paths -- --exact"
+        - "cargo test --lib orchestrator::core::inbox_drain::commit_tests::the_daemon_never_hands_git_a_worktree_file -- --exact"
+        - "cargo test --lib orchestrator::core::inbox_drain::commit_tests_files::an_oversized_file_is_refused_unread -- --exact"
+        - "cargo test --lib orchestrator::core::inbox_drain::commit_tests_files::a_directory_path_is_refused -- --exact"
+        - "cargo test --lib orchestrator::core::inbox_drain::commit_tests_files::a_fifo_gitattributes_does_not_stall_the_commit -- --exact"
+        - "cargo test --lib commands::commit::tests::a_path_escaping_the_worktree_writes_no_ticket -- --exact"
+        - "cargo test --lib commands::commit::tests::a_nested_repository_under_a_directory_argument_is_refused -- --exact"
+        - "cargo test --lib commands::commit::tests_pending::a_never_relayed_ticket_names_its_discard_path -- --exact"
+        - "cargo test --lib commands::commit::tests_pending::block_and_dispute_refuse_while_a_commit_is_unsettled -- --exact"
+        - "cargo test --lib commands::request::wait::tests::a_pending_relay_is_not_waited_on -- --exact"
+        - "cargo test --lib orchestrator::signals::tests::tests_commit_timing::the_knowledge_prefix_keeps_git_commits -- --exact"
         - command: "rg -q -F '\"add\"' src/orchestrator/core/inbox_drain/commit.rs src/orchestrator/core/inbox_drain/commit_read.rs"
+          exit_code: 1
+        - command: "rg -q -F 'git checkout -- <path>' src/commands/stage/contracts/freeze.rs"
           exit_code: 1
         - "cargo test --lib commands::hook::relay::tests::a_commit_ticket_from_a_subagent_is_refused -- --exact"
         - "cargo test --lib commands::commit::tests_pending::stage_complete_refuses_while_a_commit_is_unsettled -- --exact"
@@ -1200,6 +1538,7 @@ loom:
         - "cargo test --test integration binary_spawn_guard::only_sanctioned_spawners_spawn_the_loom_binary_directly -- --exact"
         - "cargo test --test commit_relay_contracts"
         - "cargo test --test maintainability"
+        - "bash ../loom-hooks/tests/run-all.sh"
         - "bash ../scripts/check-hook-syntax.sh"
         - "bash ../loom-hooks/tests/loom-relay-kinds.sh"
         - "bash ../loom-hooks/tests/loom-relay-gates.sh"
@@ -1231,6 +1570,7 @@ loom:
         - "src/orchestrator/signals/helpers.rs"
         - "src/orchestrator/signals/cache.rs"
         - "src/orchestrator/signals/tests_commit_timing.rs"
+        - "src/commands/stage/contracts/freeze.rs"
         - "tests/commit_relay_contracts.rs"
         - "../CLAUDE.md.template"
         - "../skills/loom-orchestration/SKILL.md"
@@ -1277,6 +1617,14 @@ loom:
           pattern: "cacheinfo"
           literal: true
           description: "the daemon stages index entries itself instead of running git add"
+        - source: "src/orchestrator/core/inbox_drain/commit.rs"
+          pattern: "--attr-source=HEAD"
+          literal: true
+          description: "the daemon reads attributes from HEAD's tree, never the worktree's .gitattributes"
+        - source: "src/orchestrator/core/inbox_drain/commit.rs"
+          pattern: "--reset"
+          literal: true
+          description: "the daemon resets the index with read-tree --reset, keeping untouched entries' stat data"
         - source: "src/orchestrator/core/inbox_drain/commit.rs"
           pattern: "ignore-submodules=none"
           literal: true
@@ -1356,6 +1704,11 @@ loom:
           test: a_symlink_leaf_is_committed_as_a_link_never_its_target
           scenario: "with the git fixture, writes <TempDir>/outside/secret.txt holding a unique string and a symlink <worktree>/link whose target is the absolute path of secret.txt, writes a commit entry with paths [link], and runs drain_session_inboxes"
           rejects: "a daemon that reads the named path with an open that follows symlinks, which commits the secret's content (the leaf swap an agent can race against a check-then-open); expected: Applied, git ls-tree loom/st -- link shows mode 120000, git cat-file -p of that blob equals the absolute target path string exactly, and git cat-file -e <sha of the secret's content from git hash-object without -w> fails in R"
+        - id: request-status-wait-reports-a-never-relayed-commit
+          file: tests/commit_relay_contracts.rs
+          test: request_status_wait_reports_a_never_relayed_commit
+          scenario: "with the git fixture and a 0700 scratch directory named for session s1, writes <wt>/a.txt and runs loom commit -m \"feat(x): add a\" -- a.txt from <wt> with the stage-session environment of commit-cli-writes-a-worktree-relative-ticket (no relay hook runs, so the ticket stays in scratch); takes the request id from the last stdout line with RelayLine::parse; then, with the same environment, runs loom request status <id> --wait 2 and loom request status <id>, reading each run's stdout and stderr together"
+          rejects: "a --wait that ignores the flag (exits 0 at once), waits out its deadline on a ticket that can never settle (exit 2), or tells the agent to rerun the command, which writes a second ticket and leaves the first one blocking loom stage complete; expected: the waited run exits 1 and its output contains \"pending relay: the relay hook never received this ticket\" and <scratch>/<id>.req; the plain run exits 0; <scratch>/<id>.req still exists"
 
     - id: host-git-integrity
       name: "Host git integrity: pinned host-side git, commondir guard, fail-closed merge gate, checkout-session integrity"
@@ -1372,38 +1725,45 @@ loom:
         Every worker first reads doc/plans/briefs/sandbox-escape-hardening/common.md, then its own brief.
         Spawn every Claude worker BY AGENT TYPE with the fixed prompt plus "Your brief: <path>. Read it in full before anything else."
         Territories are DISJOINT. Workers NEVER spawn subagents.
-        Waves: A, B and C in ONE message (A and B share no file and need nothing from each other to compile; each runs its one check and reports errors in files it does not own). After A returns, codex units X1-X6 in ONE message, then X7-X10 in ONE message once those return (at most six foreground forwards run at once): one loom-codex-forwarder per unit, an explicit Bash timeout of 600000 ms, --model gpt-5.6-terra --effort xhigh, prompt "Read doc/plans/briefs/sandbox-escape-hardening/host-git-integrity/x-codex-units.md: the section Shared rules, then unit X<n> only. Change only the file that unit names." After all units return, run each unit's command from its brief; a unit that fails goes to a fresh loom-software-engineer for that one file with the unit text and the failure. Then run cargo test --test host_git_call_sites and reconcile tests/host_git_call_sites.txt from the entries it names (a new entry gets its class and reason from reading the call site; never add an entry to silence a discovery call against a stage worktree, convert the call instead). Then cargo fmt --all once, then every acceptance command.
+        Waves: A, B and C in ONE message (A and B share no file and need nothing from each other to compile; each runs its one check and reports errors in files it does not own). After A returns, codex units X1-X6 in ONE message, then X7-X12 in ONE message once those return, then X13-X16 (at most six foreground forwards run at once): one loom-codex-forwarder per unit, an explicit Bash timeout of 600000 ms, --model gpt-5.6-terra --effort xhigh, prompt "Read doc/plans/briefs/sandbox-escape-hardening/host-git-integrity/x-codex-units.md: the section Shared rules, then unit X<n> only. Change only the file that unit names." After all units AND workers B and C return, run each unit's command from its brief; a unit that fails goes to a fresh loom-software-engineer for that one file with the unit text and the failure. Then run cargo test --test host_git_call_sites and reconcile tests/host_git_call_sites.txt from the entries it names (a new entry gets its class and reason from reading the call site; never add an entry to silence a discovery call against a stage worktree, convert the call instead). Then cargo fmt --all once, then every acceptance command.
 
         | Worker | Role | Tier | Files owned | Shared context | Brief path |
         | ------ | ---- | ---- | ----------- | -------------- | ---------- |
-        | A | Pinned host git core | opus | src/git/worktree/pinned.rs; src/git/worktree/pinned_tests.rs; src/git/runner.rs; src/git/runner/pinned.rs; src/git/runner/pinned/tests.rs; src/git/branch/status.rs; src/git/branch/status_tests.rs; src/git/branch/ancestry.rs; src/git/branch/mod.rs; src/git/merge/in_progress.rs | common.md | doc/plans/briefs/sandbox-escape-hardening/host-git-integrity/a-pinned-host-git.md |
+        | A | Pinned host git core | opus | src/git/worktree/pinned.rs; src/git/worktree/pinned_tests.rs; src/git/runner.rs; src/git/runner/tests.rs (new: runner.rs's inline tests moved first); src/git/runner/pinned.rs; src/git/runner/pinned/tests.rs; src/git/branch/status.rs; src/git/branch/status_tests.rs; src/git/branch/ancestry.rs; src/git/branch/mod.rs; src/git/merge/in_progress.rs; src/git/merge/in_progress_tests.rs (new: in_progress.rs's inline tests moved first) | common.md | doc/plans/briefs/sandbox-escape-hardening/host-git-integrity/a-pinned-host-git.md |
         | B | Checkout integrity and fail-closed merge gate | opus | src/git/checkout_integrity.rs; src/git/checkout_integrity/verify.rs; src/git/checkout_integrity/state.rs; src/git/checkout_integrity/store.rs; src/git/checkout_integrity/tests.rs; src/git/mod.rs; src/git/merge/control_paths.rs; src/git/merge/mod.rs; src/orchestrator/core/merge_handler.rs; src/orchestrator/core/merge_handler/merge_gate.rs; src/orchestrator/core/merge_handler/merge_gate_tests.rs; src/daemon/server/control_complete.rs; src/daemon/server/control_complete_tests.rs; src/daemon/server/completion_dispatch/tests.rs; src/orchestrator/core/inbox_drain/tests_merge.rs; src/orchestrator/terminal/backend.rs | common.md | doc/plans/briefs/sandbox-escape-hardening/host-git-integrity/b-checkout-integrity.md |
         | C | Pinned git in the shell hooks, the D1 commit sentence, the host-git call-site guard | sonnet | ../loom-hooks/_common.sh; ../loom-hooks/commit-guard.sh; ../loom-hooks/stage-terminal-guard.sh; ../loom-hooks/codex-forward-guard.sh; ../loom-hooks/tests/pinned-git.sh; ../loom-hooks/tests/commit-guard-pinned-status.sh; ../loom-hooks/tests/commit-guard-sigpipe-many-dirty-files.sh; ../loom-hooks/tests/run-all.sh; tests/host_git_call_sites.rs; tests/host_git_call_sites.txt | common.md | doc/plans/briefs/sandbox-escape-hardening/host-git-integrity/c-hook-pinning.md |
-        | X | codex units X1-X10: one loom-codex-forwarder per file, one file each | codex gpt-5.6-terra | src/orchestrator/monitor/parked.rs; src/handoff/session_content.rs; src/verify/before_after.rs; src/verify/criteria/cache_fingerprint.rs; src/orchestrator/merge_lifecycle/containment.rs; src/verify/wiring_detection.rs; src/verify/duplicate_detection.rs; src/git/cleanup/worktree.rs; src/git/cleanup/removal.rs; src/context/worktree_graph.rs | common.md; A's API | doc/plans/briefs/sandbox-escape-hardening/host-git-integrity/x-codex-units.md |
+        | X | codex units X1-X16: one loom-codex-forwarder per file, one file each | codex gpt-5.6-terra | src/orchestrator/monitor/parked.rs; src/handoff/session_content.rs; src/verify/before_after.rs; src/verify/criteria/cache_fingerprint.rs; src/orchestrator/merge_lifecycle/containment.rs; src/verify/wiring_detection.rs; src/verify/duplicate_detection.rs; src/git/cleanup/worktree.rs; src/git/cleanup/removal.rs; src/context/worktree_graph.rs; src/orchestrator/core/provision_gate.rs; src/orchestrator/core/provision_gate_tests.rs; src/verify/criteria/cache_ignore.rs; src/orchestrator/adjudication/prompt/sources.rs; src/git/cleanup/batch.rs; src/git/branch/cleanup.rs; src/git/worktree/checks.rs | common.md; A's API | doc/plans/briefs/sandbox-escape-hardening/host-git-integrity/x-codex-units.md |
 
         CONTRACT SURFACE (the contract session writes tests/host_git_integrity_contracts.rs from this, before any code; top-level #[test] fns, so each contract's test value is its fn name):
         - loom::verify::before_after::find_prior_stage_work(stage_branch: &str, base_branch: &str, repo_root: &Path, worktree_path: &Path) -> Option<String> (exists at HEAD).
         - loom::handoff::session_content::{build_session_content, SessionHandoff, CEILING_TRIGGER}: build_session_content(work_dir: &Path, handoff: &SessionHandoff<'_>) -> loom::handoff::generator::HandoffContent (pub fields current_branch: Option<String>, files_modified: Vec<String>); SessionHandoff { session: &loom::models::session::Session, stage: &loom::models::stage::Stage, checkout: &Path, trigger: &str, message: Option<&str>, ends_turn: bool }; Session::new() and Stage::default() suffice (exists at HEAD).
         - loom::git::merge::control_paths::merge_refusal(repo_root: &Path, target_branch: &str, stage_branch: &str) -> Option<String>: Some(reason naming stage_branch) when the branch's diff since its merge base with target_branch touches .claude/, .mcp.json, .loom/ or the tracked hooks directory, or when that diff cannot be computed; None otherwise.
-        - loom::git::checkout_integrity::{snapshot, differences, GitDirSnapshot}: snapshot(repo_root: &Path) -> anyhow::Result<GitDirSnapshot> (Err when repo_root/.git holds commondir or gitdir); differences(repo_root: &Path, before: &GitDirSnapshot) -> anyhow::Result<Vec<String>>, one human-readable entry per difference: control files (commondir, gitdir, config.worktree, shallow, info/grafts, info/attributes, objects/info/alternates, objects/info/http-alternates) named by their path relative to .git; each of MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD, BISECT_LOG, sequencer/, rebase-merge/, rebase-apply/ present in .git at verify, named by that name; every path staged in the index (git diff --cached --name-only) that the snapshot did not stage with an identical git ls-files -s row, named by the path; HEAD naming another ref; any ref other than the branch HEAD named at the snapshot and refs under refs/heads/loom/ created, deleted or moved, named by its full ref name; packs failing git verify-pack; git fsck --no-full error lines verbatim (a swapped loose object gives "missing blob <oid>" and a hash-path mismatch line naming its path). Empty when nothing changed.
+        - loom::git::checkout_integrity::{main_git_dir, snapshot, differences, GitDirSnapshot}: main_git_dir(repo_root: &Path) -> anyhow::Result<PathBuf>: the canonical repo_root/.git when it is a directory (not a symlink), the canonical directory named by the gitdir: line of a regular-file repo_root/.git (relative to repo_root) when that is a directory, Err otherwise; snapshot(repo_root: &Path) -> anyhow::Result<GitDirSnapshot> (Err when main_git_dir(repo_root) holds commondir or gitdir; every git call pinned to GIT_DIR=GIT_COMMON_DIR=main_git_dir); differences(repo_root: &Path, before: &GitDirSnapshot) -> anyhow::Result<Vec<String>>, one human-readable entry per difference: control files (commondir, gitdir, config.worktree, shallow, info/grafts, info/attributes, objects/info/alternates, objects/info/http-alternates) named by their path relative to main_git_dir; each of MERGE_HEAD, CHERRY_PICK_HEAD, REVERT_HEAD, BISECT_LOG, sequencer/, rebase-merge/, rebase-apply/ present in main_git_dir at verify, named by that name; every path staged in the index (git diff --cached --name-only) that the snapshot did not stage with an identical git ls-files -s row, named by the path; HEAD naming another ref; any ref other than the branch HEAD named at the snapshot and refs under refs/heads/loom/ created, deleted or moved, named by its full ref name; packs failing git verify-pack; git fsck --no-full error lines verbatim (a swapped loose object gives "missing blob <oid>" and a hash-path mismatch line naming its path). Empty when nothing changed.
         - loom::git::run_git(args: &[&str], repo_root: &Path) -> anyhow::Result<std::process::Output> (exists at HEAD): after this stage it returns Err, with "commondir" in the message, when the nearest .git at or above repo_root is a directory holding a commondir file.
         - Git in contracts runs with GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM pointed at missing files and GIT_CONFIG_NOSYSTEM=1, identity, commit.gpgsign=false and core.hooksPath=/dev/null through -c, as src/verify/contracts/test_support.rs::git does. The foreign-git-directory fixture mirrors test_support.rs::plant_foreign_git_dir (pub(crate), so the contract file writes its own copy). Every marker-based contract ends with a positive control (plain git creating the marker) placed LAST.
 
         HAZARD (installed binary and hooks): this stage runs under the old capsule and the loom binary and hooks installed before the plan. Your own session still commits with git add and git commit; the commit-guard sentence C writes (loom commit, loom request status) describes commit-relay's command, not yours. Hook edits land in the repository's loom-hooks/, never in the installed copies your session runs. Never test a change by observing your own session: the hook tests and TempDir repositories are the test.
         EXPECTED INTEGRITY EVENTS: none. merge_handler.rs stays at 1267 lines with try_auto_merge at 214 and finalize_merge_resolution at 97; wiring_detection.rs::collect_added_source_files stays at 56; duplicate_detection.rs stays at 436. Existing test files change in setup lines only. If formatting moves a ledgered count, restore it; never raise a ledger line.
         CONTRACTS: before the final review round, prove each contract red by mutation and record loom memory note "mutation: <id> red under <mutation>".
-        MEMORY: record mistakes, decisions and surprises via loom memory immediately (subagents too); never loom knowledge in this stage; never Claude Code auto-memory. Record the stale knowledge entry concerns/agent-rule-bending-hardening.md#G2 (poll-guard.sh, no-preexisting-failures.sh and _progress-classification.sh run no git; the runner now also passes core.fsmonitor=false) as a stale-knowledge memory.
+        PRESSURE-TEST AMENDMENTS (binding; the briefs carry the detail): NO_HOOKS_ARGS carries -c diff.ignoreSubmodules=all -c submodule.recurse=false -c status.submoduleSummary=false for EVERY runner call (a gitlink a checkout session commits makes discovered git status in R run a nested repository's filter; measured), and loom_pinned_git carries the same plus GIT_NO_REPLACE_OBJECTS=1; X11-X16 convert provision_gate.rs (stage-exits), cache_ignore.rs, the adjudication git show (whose `--` before the SHA shows HEAD instead of the evidence commit) and three src/git files that spawn Command::new("git") directly; A moves runner.rs's and in_progress.rs's inline tests into their own files first (351 and 396 lines today); for_dir refuses a directory whose canonical path leaves the matched worktree, and a discovered handle's work_tree() is the top level; D7 reports a gitlink added to the target, marks its record verified on a clean verify (the next spawn replaces a verified record), names the record in a review reason, takes the target branch from its caller, and runs fsck/verify-pack/commit-graph with a 300 s timeout; the commits-ahead probe fails closed; the call-site guard gains the &Path helper patterns, a self-test, the tests_*/ and #[cfg(test)]-item skips and the host-direct class; X1 and X5 gain behavioural tests with a positive control. Files the other stages add in parallel (commands/commit/paths.rs, sandbox/session_fs.rs, process/sandbox_probe/srt.rs, inbox_drain/commit.rs) are never listed here; integration-verify lists them.
+        REVIEW AMENDMENTS (binding; the briefs carry the detail): one layout rule for the main checkout's git directory G across A, B and C: R/.git when it is a directory, otherwise the directory the gitfile R/.git names (a --separate-git-dir checkout), else an error. A's stage_worktree_repo no longer requires R/.git to be a directory (any .git entry counts); the OUTERMOST stage-shaped ancestor decides for for_checkout and for_dir; a stage location whose registration WorktreeGit::pinned cannot establish is Err, never discovered git; for_checkout on a checkout that lies inside another stage worktree is Err. B adds pub fn main_git_dir(repo_root: &Path) -> anyhow::Result<PathBuf> in src/git/checkout_integrity.rs, and snapshot, differences, record and verify_recorded pin GIT_DIR and GIT_COMMON_DIR to it, so knowledge and merge sessions of a --separate-git-dir checkout are snapshotted, not refused. C's loom_git_repo_root accepts that gitfile layout and a new loom_main_git_dir echoes G for loom_git_admin_dir and loom_pinned_git; pinned-git.sh gains case 1c (a --separate-git-dir checkout: pinned status in its stage worktree ignores a repointed T/.git).
+        MEMORY: record mistakes, decisions and surprises via loom memory immediately (subagents too); never loom knowledge in this stage; never Claude Code auto-memory.
       before_stage:
+        - command: "rg -q 'pub struct ProvisionEntry' src/plan/schema"
+          exit_code: 0
+          description: "PRECONDITION: PLAN-stage-exits-and-environment's plan-environment stage has merged"
+        - command: "rg -q -F 'dispute-criteria <stage-id> [--field acceptance|wiring|wiring-tests]' ../README.md"
+          exit_code: 0
+          description: "PRECONDITION: PLAN-stage-exits-and-environment's knowledge-distill, its last stage, has merged"
         - command: "rg -q 'fn for_checkout' src/git/worktree/pinned.rs"
           exit_code: 1
           description: "BEFORE: host-side git has no checkout-level pin"
       after_stage:
         - command: "cargo test --test host_git_integrity_contracts"
           exit_code: 0
-          stdout_contains: ["7 passed"]
-          description: "AFTER: pinned host git, the commondir guard, the fail-closed gate and checkout integrity hold"
+          stdout_contains: ["8 passed"]
+          description: "AFTER: pinned host git, the commondir guard, the fail-closed gate and checkout integrity hold, in both main-checkout layouts"
       acceptance:
-        - 'rg -q "pub struct ProvisionEntry" src/plan/schema'
         - "cargo build --all-targets"
         - "cargo clippy --all-targets -- -D warnings"
         - "cargo fmt --all -- --check"
@@ -1443,12 +1803,34 @@ loom:
         - "cargo test --lib orchestrator::core::merge_handler::merge_gate::tests::an_unreadable_branch_diff_routes_to_human_review -- --exact"
         - "cargo test --lib orchestrator::core::merge_handler::merge_gate::tests::a_merge_session_that_moved_another_ref_is_not_finalized -- --exact"
         - "cargo test --lib daemon::server::control_complete::tests::a_knowledge_completion_after_a_moved_ref_needs_human_review -- --exact"
+        - "cargo test --lib git::checkout_integrity::tests::a_committed_gitlink_is_reported -- --exact"
+        - "cargo test --lib git::checkout_integrity::tests::a_verified_record_is_replaced_at_the_next_spawn -- --exact"
+        - "cargo test --lib git::checkout_integrity::tests::a_recorded_target_other_than_head_may_move -- --exact"
+        - "cargo test --lib git::runner::tests::a_gitlink_in_the_main_checkout_is_not_recursed_into -- --exact"
+        - "cargo test --lib git::checkout_integrity::tests::fsck_output_is_capped_at_twenty_entries -- --exact"
+        - "cargo test --lib orchestrator::core::merge_handler::merge_gate::tests::an_unanswerable_commits_ahead_probe_routes_to_human_review -- --exact"
+        - "cargo test --lib git::worktree::pinned::tests::a_symlinked_directory_inside_a_stage_worktree_is_refused -- --exact"
+        - "cargo test --lib git::worktree::pinned::tests::for_dir_in_a_plain_subdirectory_reports_the_top_level -- --exact"
+        - "cargo test --lib git::worktree::pinned::tests::a_stage_worktree_of_a_separate_git_dir_checkout_is_pinned -- --exact"
+        - "cargo test --lib git::worktree::pinned::tests::a_checkout_inside_a_stage_worktree_is_refused -- --exact"
+        - "cargo test --lib git::checkout_integrity::tests::main_git_dir_follows_a_separate_git_dir_gitfile -- --exact"
+        - 'rg -q -F "loom_main_git_dir" ../loom-hooks/_common.sh'
+        - "cargo test --lib orchestrator::core::provision_gate"
+        - "cargo test --lib orchestrator::adjudication::"
         - "cargo test --test integration merge_conflict_recovery"
         - "cargo test --test host_git_integrity_contracts"
         - "cargo test --test host_git_call_sites"
+        - "cargo test --test host_git_call_sites the_scanner_names_an_unlisted_file_and_skips_test_code -- --exact"
         - "cargo test --test maintainability"
         - "bash ../loom-hooks/tests/run-all.sh"
         - 'test -f ../loom-hooks/tests/pinned-git.sh'
+        - 'rg -q -F "src/git/cleanup/removal.rs | host-on-R" tests/host_git_call_sites.txt'
+        - 'rg -q -F "diff.ignoreSubmodules=all" ../loom-hooks/_common.sh'
+        - 'rg -q "WorktreeGit::for_checkout\(" src/orchestrator/core/provision_gate.rs'
+        - command: "rg -q -F 'proceeding with merge attempt' src/orchestrator/core/merge_handler.rs src/orchestrator/core/merge_handler/merge_gate.rs"
+          exit_code: 1
+        - command: 'rg -q -F "Command::new(\"git\")" src/git/cleanup/batch.rs src/git/branch/cleanup.rs src/git/worktree/checks.rs src/orchestrator/adjudication/prompt/sources.rs'
+          exit_code: 1
         - 'rg -q -F ''loom_pinned_git '' ../loom-hooks/commit-guard.sh'
         - 'rg -q -F ''loom commit -m "<type(scope): description>" -- <files>'' ../loom-hooks/commit-guard.sh'
         - 'rg -q -F ''loom_pinned_git '' ../loom-hooks/stage-terminal-guard.sh'
@@ -1463,6 +1845,7 @@ loom:
         - "src/git/branch/ancestry.rs"
         - "src/git/branch/mod.rs"
         - "src/git/merge/in_progress.rs"
+        - "src/git/merge/in_progress_tests.rs"
         - "src/git/merge/control_paths.rs"
         - "src/git/merge/mod.rs"
         - "src/git/mod.rs"
@@ -1470,6 +1853,13 @@ loom:
         - "src/git/checkout_integrity/**"
         - "src/git/cleanup/worktree.rs"
         - "src/git/cleanup/removal.rs"
+        - "src/git/cleanup/batch.rs"
+        - "src/git/branch/cleanup.rs"
+        - "src/git/worktree/checks.rs"
+        - "src/orchestrator/core/provision_gate.rs"
+        - "src/orchestrator/core/provision_gate_tests.rs"
+        - "src/verify/criteria/cache_ignore.rs"
+        - "src/orchestrator/adjudication/prompt/sources.rs"
         - "src/orchestrator/core/merge_handler.rs"
         - "src/orchestrator/core/merge_handler/merge_gate.rs"
         - "src/orchestrator/core/merge_handler/merge_gate_tests.rs"
@@ -1526,10 +1916,16 @@ loom:
           pattern: "GIT_NO_REPLACE_OBJECTS"
           literal: true
           description: "every loom git call ignores replace refs"
-        - source: "src/git/worktree/pinned.rs"
+        - source: "src/git/runner.rs"
           pattern: "diff.ignoreSubmodules=all"
           literal: true
-          description: "pinned worktree runs never recurse into a submodule's git directory"
+          description: "every loom git call, pinned or discovered, never recurses into a submodule's git directory"
+        - source: "src/orchestrator/core/provision_gate.rs"
+          pattern: "WorktreeGit::for_checkout\\("
+          description: "the provision gate lists the worktree's status pinned"
+        - source: "src/verify/criteria/cache_ignore.rs"
+          pattern: "WorktreeGit::for_dir\\("
+          description: "the acceptance cache's check-ignore runs pinned"
         - source: "src/context/worktree_graph.rs"
           pattern: "WorktreeGit::for_dir\\("
           description: "the worktree graph discovers its worktree and base through pinned git"
@@ -1599,6 +1995,11 @@ loom:
           test: a_planted_merge_head_or_staged_change_is_reported
           scenario: "in a TempDir repository on main with committed README.md and a.txt (\"a\\n\"), calls snapshot(root); then writes root/.git/MERGE_HEAD holding HEAD's object name, rewrites a.txt to \"planted\\n\" and runs git add a.txt; calls differences(root, &before)"
           rejects: "a check that compares refs, packs, objects and control files only: MERGE_HEAD is a pseudo-ref git for-each-ref never lists and the index is no ref, so no entry names MERGE_HEAD or a.txt, and the operator's next plain git commit in the main checkout commits the staged a.txt as a merge commit"
+        - id: a-separate-git-dir-checkout-is-pinned-and-snapshotted
+          file: tests/host_git_integrity_contracts.rs
+          test: a_separate_git_dir_checkout_is_pinned_and_snapshotted
+          scenario: "in a TempDir t, git init --separate-git-dir t/store.git t/repo on main with committed README.md (\"one\\n\"), an empty t/repo/.loom/work, and worktree t/repo/.worktrees/s1 on loom/s1 (git worktree add in t/repo); a bare clone t/foreign.git with core.bare=false, HEAD symbolic-ref refs/heads/loom/s1 and filter.evil.clean = \"touch <t>/filter-ran; cat\"; s1/.git rewritten to gitdir: <t/foreign.git>, git read-tree HEAD run in s1, s1/.gitattributes \"* filter=evil\", s1/README.md rewritten to \"two\\n\"; calls build_session_content(t/repo/.loom/work, &SessionHandoff { checkout: s1, trigger: CEILING_TRIGGER, message: None, ends_turn: false, .. }); then main_git_dir(t/repo); then before = snapshot(t/repo), a commit C2 on main in t/repo, differences(t/repo, &before); then writes t/store.git/MERGE_HEAD holding C2's object name and calls differences(t/repo, &before) again; then, last, plain git status --porcelain in s1"
+          rejects: "a stage classifier that requires t/repo/.git to be a directory (a gitfile here) and so runs discovered git in s1, following the repointed s1/.git to t/foreign.git and running its clean filter on the host (<t>/filter-ran exists before the positive control); a snapshot that refuses a gitfile main checkout (Err for a legitimate knowledge or merge session of this layout) or reads the literal t/repo/.git (no MERGE_HEAD entry); expected main_git_dir == canonical t/store.git, snapshot Ok, the first differences empty (main is the target HEAD names), the second naming MERGE_HEAD, and the marker created only by the positive control"
 
     - id: capsule-policy
       name: "Capsule policy: git directory, per-session caches, credential and sibling reads, codex home"
@@ -1620,14 +2021,15 @@ loom:
         | ------ | ---- | ---- | ----------- | -------------- | ---------- |
         | C1 | Session caches: real-cache resolver, seeding, codex home, environment, removal | opus | src/sandbox/session_cache/mod.rs; src/sandbox/session_cache/real.rs; src/sandbox/session_cache/ecosystems.rs; src/sandbox/session_cache/tree.rs; src/sandbox/session_cache/seed.rs; src/sandbox/session_cache/codex_home.rs; src/sandbox/session_cache/env.rs; src/sandbox/session_cache/tests_real.rs; src/sandbox/session_cache/tests_seed.rs; src/sandbox/session_cache/tests_codex_home.rs; src/sandbox/session_cache/tests_env.rs | common.md | doc/plans/briefs/sandbox-escape-hardening/capsule-policy/c1-session-caches.md |
         | C2 | Capsule policy: session filesystem layer, grant removal, credential list, codex grants | sonnet | src/sandbox/mod.rs; src/sandbox/package_caches.rs (deleted); src/sandbox/session_fs.rs; src/sandbox/session_fs/tests.rs; src/sandbox/settings/policy.rs; src/sandbox/settings/policy/tests.rs; src/sandbox/settings/tests.rs; src/sandbox/grant_paths.rs; src/sandbox/control_surfaces.rs; src/sandbox/control_surfaces/session_denies.rs; src/sandbox/control_surfaces/tests.rs; src/sandbox/control_surfaces/tests_session_denies.rs; src/fs/permissions/state_root.rs; src/codex.rs; src/models/stage/types.rs (the doc comment at :258 only); maintainability-baseline.txt | common.md; C1's CODEX_HOME_DIR, CODEX_PROTECTED_FILES, SESSION_OWNER_MARKER | doc/plans/briefs/sandbox-escape-hardening/capsule-policy/c2-capsule-policy.md |
-        | C3 | Launch wiring: host facts, capsule merge, wrapper env, confined env, retirement | sonnet | src/orchestrator/terminal/native/launch.rs; src/orchestrator/terminal/native/launch/host.rs; src/orchestrator/terminal/native/session_settings.rs; src/orchestrator/terminal/native/session_settings/contents.rs; src/orchestrator/terminal/native/wrapper/host_env.rs; src/orchestrator/terminal/native/tests_wrapper_env.rs; src/orchestrator/terminal/native/tests_launch_capsule.rs; src/orchestrator/terminal/native/tests_session_settings.rs; src/orchestrator/terminal/native/tests_capsule.rs; src/orchestrator/terminal/native/tests_capsule_contents.rs; src/orchestrator/terminal/native/tests_capsule_interpreters.rs; src/orchestrator/terminal/native/tests_confinement_e2e.rs (granted compile-only edit: the LaunchHost literal's one new field and its import); src/process/environment.rs; src/orchestrator/core/inbox_drain/sweep.rs; src/orchestrator/core/inbox_drain/tests_sweep_cache.rs | common.md; C1 and C2 signatures | doc/plans/briefs/sandbox-escape-hardening/capsule-policy/c3-launch-wiring.md |
+        | C3 | Launch wiring: host facts, capsule merge, wrapper env, confined env, retirement, daemon environment allowlist, project-namespace cleanup | sonnet | src/orchestrator/terminal/native/launch.rs; src/orchestrator/terminal/native/launch/host.rs; src/orchestrator/terminal/native/launch/session_facts.rs (new); src/daemon/server/environment.rs; src/commands/init/cleanup.rs; src/commands/clean/relay_dirs.rs; src/process/mod.rs (the apply_confined_environment re-export line only); src/verify/criteria/confine.rs (the Confined arm of prepare_confined only); src/orchestrator/terminal/native/session_settings.rs; src/orchestrator/terminal/native/session_settings/contents.rs; src/orchestrator/terminal/native/wrapper/host_env.rs; src/orchestrator/terminal/native/tests_wrapper_env.rs; src/orchestrator/terminal/native/tests_launch_capsule.rs; src/orchestrator/terminal/native/tests_session_settings.rs; src/orchestrator/terminal/native/tests_capsule.rs; src/orchestrator/terminal/native/tests_capsule_contents.rs; src/orchestrator/terminal/native/tests_capsule_interpreters.rs; src/orchestrator/terminal/native/tests_confinement_e2e.rs (granted compile-only edit: the LaunchHost literal's one new field and its import); src/process/environment.rs; src/orchestrator/core/inbox_drain/sweep.rs; src/orchestrator/core/inbox_drain/tests_sweep_cache.rs | common.md; C1 and C2 signatures | doc/plans/briefs/sandbox-escape-hardening/capsule-policy/c3-launch-wiring.md |
         | C4 | File-tool credential guard, signal note, plan-writer guidance | sonnet | ../loom-hooks/credential-guard.sh; ../loom-hooks/tests/credential-guard-deny-read.sh; ../loom-hooks/tests/credential-guard-tokens.sh; ../loom-hooks/tests/credential-guard-dotdot.sh; src/orchestrator/signals/format/helpers.rs; ../skills/loom-plan-writer/references/sandbox.md | common.md | doc/plans/briefs/sandbox-escape-hardening/capsule-policy/c4-guard-and-guidance.md |
 
         CONTRACT SURFACE (the contract session writes tests/capsule_policy_contracts.rs from this, before any code; top-level #[test] fns, so each contract's test value is its fn name):
         - loom::sandbox::session_fs::resolve_git_common_dir(repo_root: &Path) -> anyhow::Result<PathBuf>: runs git rev-parse --path-format=absolute --git-common-dir in repo_root and returns the canonicalized directory; Err when git fails or the answer is not an existing directory.
-        - loom::sandbox::session_fs::SessionFsInputs<'a> { kind: loom::models::session::SessionType, repo_root: &'a Path, worktree: Option<&'a Path>, git_common_dir: &'a Path, cache_dir: &'a Path, home: Option<&'a Path>, codex_home: &'a Path, codex_licensed: bool, credential_paths: &'a [PathBuf] } (all fields pub; worktree is Some when the session's cwd is a stage worktree).
+        - loom::sandbox::session_fs::SessionFsInputs<'a> { kind: loom::models::session::SessionType, repo_root: &'a Path, worktree: Option<&'a Path>, git_common_dir: &'a Path, cache_dir: &'a Path, home: Option<&'a Path>, codex_home: &'a Path, codex_licensed: bool, credential_paths: &'a [PathBuf], real_caches: &'a [PathBuf] } (all fields pub; worktree is Some when the session's cwd is a stage worktree; a contract that names no real caches passes &[]).
         - loom::sandbox::session_fs::SessionFs { allow_write, deny_write, deny_read, allow_read, edit_deny: Vec<String> } (pub fields, Default, PartialEq). Paths are spelled as plain absolute strings (path.to_str()); an Edit rule is "Edit(/" + absolute path + ")" with "/**" appended for a directory, so the directory /x/y becomes Edit(//x/y/**).
-        - loom::sandbox::session_fs::session_filesystem(inputs: &SessionFsInputs) -> anyhow::Result<SessionFs>: allow_write holds cache_dir, plus codex_home/auth.json when codex_licensed; deny_write and edit_deny hold cache_dir/.loom-session when it is a regular file. deny_write and edit_deny hold: for kind Stage, Contract or Adjudication (whatever the cwd) git_common_dir itself; for kind Knowledge, Merge or BaseConflict each of git_common_dir/info, objects/info, worktrees, modules and refs/replace that exists at the call (an absent one is never listed); and when codex_licensed each of cache_dir/codex-home/config.toml and cache_dir/codex-home/hooks.json that exists as a regular file. deny_read holds every credential_paths entry except one that is empty, relative, holds a glob character, or equals or is an ancestor of home, repo_root, worktree or cache_dir; plus, for every kind, each regular file directly in repo_root named .env or starting with .env. that exists at the call (never a glob, never a directory, never an absent path; a repo_root that does not exist lists none); plus codex_home/auth.json when not codex_licensed; plus repo_root/.worktrees when worktree is Some. allow_read holds the worktree when it is Some. Err when git_common_dir or cache_dir is not UTF-8 or holds a glob character.
+        - loom::sandbox::session_fs::session_filesystem(inputs: &SessionFsInputs) -> anyhow::Result<SessionFs>: allow_write holds cache_dir, plus codex_home/auth.json when codex_licensed; deny_write and edit_deny hold cache_dir/.loom-session when it is a regular file. deny_write and edit_deny hold: for kind Stage, Contract or Adjudication (whatever the cwd) git_common_dir itself; for kind Knowledge, Merge or BaseConflict each of git_common_dir/info, objects/info, worktrees, modules, refs/replace, hooks and config that exists at the call (an absent one is never listed); for every kind each real_caches entry that exists at the call and is neither equal to nor an ancestor of home, repo_root, worktree or cache_dir, plus its canonical path when that differs; and when codex_licensed each of cache_dir/codex-home/config.toml and cache_dir/codex-home/hooks.json that exists as a regular file. deny_read holds every credential_paths entry except one that is empty, relative, holds a glob character, or equals or is an ancestor of home, repo_root, worktree or cache_dir; plus, for every kind, each regular file directly in repo_root named .env or starting with .env. that exists at the call (never a glob, never a directory, never an absent path; a repo_root that does not exist lists none); plus codex_home/auth.json when not codex_licensed; plus repo_root/.worktrees when worktree is Some. allow_read holds the worktree when it is Some. Err when git_common_dir or cache_dir is not UTF-8 or holds a glob character.
+        - loom::sandbox::session_fs::refuse_real_cache_grants(allow_write: &[String], home: Option<&Path>, base: &Path, cache_dir: &Path, real_caches: &[PathBuf]) -> anyhow::Result<()>: each entry is resolved (~/x under home, //x and /x absolute, anything else under base) and cut at its first glob component; an entry equal to or inside cache_dir is skipped; Err, naming the entry and the cache, when an entry equals, lies inside or lies above a real_caches path, compared lexically and, where both paths exist, after canonicalizing both; Ok otherwise.
         - loom::sandbox::session_fs::env_credential_paths(lookup: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf>: GH_CONFIG_DIR/hosts.yml, DOCKER_CONFIG/config.json, each ':'-separated KUBECONFIG entry, NPM_CONFIG_USERCONFIG and npm_config_userconfig, CARGO_HOME/credentials.toml and CARGO_HOME/credentials, GNUPGHOME, PASSWORD_STORE_DIR, AWS_SHARED_CREDENTIALS_FILE, AWS_CONFIG_FILE, CLOUDSDK_CONFIG, AZURE_CONFIG_DIR; empty or relative values are skipped; duplicates dropped.
         - loom::sandbox::session_cache::RealCaches { cargo_home, bun_cache, npm_cache, pnpm_store, yarn_cache, go_mod_cache, go_build_cache, uv_cache, pip_cache, deno_dir, xdg_cache, codex_home: PathBuf, rustup_home: Option<PathBuf>, go_proxy: Option<String> } (pub fields). RealCaches::from_lookup(home: &Path, lookup: &dyn Fn(&str) -> Option<OsString>) -> RealCaches reads each tool's override variable (CARGO_HOME, CODEX_HOME, ...) and otherwise takes the tool's default under home (cargo home/.cargo, codex home/.codex, npm home/.npm, ...). RealCaches::from_env() -> anyhow::Result<RealCaches>. cache_paths(&self) -> Vec<PathBuf>: cargo_home/registry, cargo_home/git and every other cache field, never cargo_home itself or codex_home.
         - loom::sandbox::session_cache::Ecosystems { cargo, bun, npm, pnpm, go, uv: bool } (pub fields, Default, Copy).
@@ -1644,10 +2046,18 @@ loom:
         - Git in tests runs with GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM pointed at missing files and GIT_CONFIG_NOSYSTEM=1, user.name/user.email set locally. The uid for prepare_session_cache is std::os::unix::fs::MetadataExt::uid of the test's own TempDir. Every path comes from a TempDir; no literal home, uid or repository path.
 
         HAZARD (installed binary): this stage runs on the loom binary installed before this plan, so its own session still has the old capsule: the real package caches and ~/.codex are writable and git commit works. Never verify the new policy by probing this session's sandbox; verify through session_filesystem, generate_settings_json, the capsule writer, the wrapper script text and the contracts. The confinement e2e tests self-skip inside the stage.
+        PRESSURE-TEST AMENDMENTS (binding; the briefs carry the detail): seed_bun never links .tmp or any dot-entry and seed_go_build never links trim.txt (both reproduced: a linked one fails bun install, bunx and go build with EROFS); the cache root is namespaced per project (<cache dir>/loom/session-caches/<project_cache_key(R)>/), and loom init and loom clean remove the namespace; the daemon's HOST_ENV_ALLOWLIST gains the location-valued variables RealCaches and env_credential_paths read (the daemon strips its environment, so without them every override is dead in production); SessionFacts lives in launch/session_facts.rs (host.rs is 315 lines) and the wiring looks there; the new environment variables are forwarded on the confined-command path only; C2's plan_allow_write helper returns Value::Null for an empty prefix (settings/tests.rs passes &[] where no allowWrite key exists); models/stage/types.rs keeps its exact 1015 lines; the codex home creates fresh, or replicates as trees of linked files, the entries codex writes inside (plugins/cache, skills/.system, plugins/.remote-plugin-install-staging, packages/app-server-daemon); C4's note text says block the stage with loom stage block (stage-exits retired "report it as a blocker") and adds its tests to the existing mod tests in format/helpers.rs; Ecosystems::detect skips fixtures directories. src/sandbox/session_fs.rs is not added to tests/host_git_call_sites.txt here (integration-verify does it).
+        REVIEW AMENDMENTS (binding; the briefs carry the detail): SessionFsInputs gains real_caches: &'a [PathBuf] (RealCaches::cache_paths() of the daemon's environment; C3 threads it through SessionPaths), and session_filesystem write-denies, in both layers, every real_caches entry whose symlink_metadata succeeds and that is neither equal to nor an ancestor of home, repo_root, worktree or cache_dir, plus its canonical form when that differs (a symlinked alias). New pub fn refuse_real_cache_grants in session_fs.rs; C3 calls it in session_settings.rs::write_session_capsule over the capsule's final sandbox.filesystem.allowWrite and fails the spawn on Err. Checkout kinds also deny git_common_dir/hooks and git_common_dir/config when they exist (session_denies names only the literal R/.git ones, which a --separate-git-dir store does not have). C1 adds the test preparing_one_project_spares_another_projects_cache: two namespaces from namespace_under(cache, a) and namespace_under(cache, b), the same key prepared in each (b's with a planted file), then a prepare and a release_session_cache in a's namespace leave b's marker and planted file intact.
         EXPECTED INTEGRITY EVENTS: TI-edit in src/sandbox/package_caches.rs (deleted), src/sandbox/settings/policy/tests.rs, src/sandbox/settings/tests.rs, src/sandbox/control_surfaces/tests.rs, src/sandbox/control_surfaces/tests_session_denies.rs and src/orchestrator/terminal/native/tests_capsule.rs, as the briefs enumerate: each changed assertion pinned a grant this plan removes. TI-ratchet-loom/maintainability-baseline.txt: the filesystem_settings entry is removed and the src/sandbox/settings/tests.rs count lowered, tightening only. File ONE dispute-integrity after the final review round, reason "the plan removes the package-cache grants, the ~/.codex grant and the ~/.claude/plugins carve-out; the listed assertions pinned those grants; the ledger change is tightening only". No other existing assertion line changes.
         CONTRACTS: before the final review round, prove each contract red by mutation (Gate conventions) and record loom memory note "mutation: <id> red under <mutation>".
         MEMORY: record mistakes, decisions and surprises via loom memory immediately (subagents too). Record a stale-knowledge note for each of: architecture/execution-containment.md#Package-Manager Caches Are Granted To Every Stage; architecture/codex-plugin.md#The sandbox must grant codex its state dirs (2026-08-10); architecture/security-and-isolation.md#Where a Session's Write Grants Come From (the ~/.codex sentence); concerns/sandbox-and-confinement-gaps.md#No `Read(...)` Deny Rule May Exist in Any Settings File (2026-09-04) (rule (b) now reads the capsule); concerns/sandbox-and-confinement-gaps.md#Two Diverging Copies of the Stage Environment Allowlist (2026-08-17). Never loom knowledge in this stage; never Claude Code auto-memory.
       before_stage:
+        - command: "rg -q 'pub struct ProvisionEntry' src/plan/schema"
+          exit_code: 0
+          description: "PRECONDITION: PLAN-stage-exits-and-environment's plan-environment stage has merged"
+        - command: "rg -q -F 'dispute-criteria <stage-id> [--field acceptance|wiring|wiring-tests]' ../README.md"
+          exit_code: 0
+          description: "PRECONDITION: PLAN-stage-exits-and-environment's knowledge-distill, its last stage, has merged"
         - command: "rg -q -F 'session_cache_env' src"
           exit_code: 1
           description: "BEFORE: no session has a cache environment of its own"
@@ -1660,12 +2070,30 @@ loom:
           exit_code: 1
           description: "AFTER: no code grants the real package caches"
       acceptance:
-        - 'rg -q "pub struct ProvisionEntry" src/plan/schema'
         - "cargo build --all-targets"
         - "cargo clippy --all-targets -- -D warnings"
         - "cargo fmt --all -- --check"
         - "RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps"
         - "cargo test --lib sandbox::"
+        - "cargo test --lib daemon::server::environment"
+        - "cargo test --lib commands::clean::"
+        - "cargo test --lib commands::init::"
+        - "cargo test --lib sandbox::session_cache::tests_seed::seed_bun_links_every_entry_but_tmp -- --exact"
+        - "cargo test --lib sandbox::session_cache::tests_seed::seed_go_build_never_links_trim_txt -- --exact"
+        - "cargo test --lib sandbox::session_cache::tests_seed::two_projects_get_different_cache_namespaces -- --exact"
+        - "cargo test --lib sandbox::session_cache::tests_seed::preparing_one_project_spares_another_projects_cache -- --exact"
+        - "cargo test --lib sandbox::session_fs::tests::checkout_kinds_deny_the_hooks_and_config_of_a_separate_store -- --exact"
+        - "cargo test --lib orchestrator::terminal::native::tests_launch_capsule::a_launch_whose_plan_grants_a_real_cache_fails -- --exact"
+        - "cargo test --lib orchestrator::terminal::native::launch::session_facts::tests::session_facts_resolve_a_separate_git_dir_store -- --exact"
+        - "cargo test --lib daemon::server::environment::tests::location_variables_survive_the_daemons_environment_strip -- --exact"
+        - "cargo test --lib commands::clean::relay_dirs::tests::clean_removes_the_project_session_caches -- --exact"
+        - "cargo test --lib verify::criteria::"
+        - 'rg -q -F "\"CARGO_HOME\"" src/daemon/server/environment.rs'
+        - 'rg -q -F "\"DOCKER_CONFIG\"" src/daemon/server/environment.rs'
+        - 'rg -q -F "\"~/.netrc\"," src/fs/permissions/state_root.rs'
+        - 'rg -q -F "\"~/.config/gh/hosts.yml\"," src/fs/permissions/state_root.rs'
+        - 'rg -q -F "\"~/.npmrc\"," src/fs/permissions/state_root.rs'
+        - 'rg -q -F "\"~/.claude.json\"," src/fs/permissions/state_root.rs'
         - "cargo test --lib fs::permissions::"
         - "cargo test --lib codex::"
         - "cargo test --lib models::stage"
@@ -1689,6 +2117,7 @@ loom:
         - "cargo test --test integration capsule"
         - "cargo test --test capsule_policy_contracts"
         - "cargo test --test maintainability"
+        - "bash ../loom-hooks/tests/run-all.sh"
         - "bash ../loom-hooks/tests/credential-guard-deny-read.sh"
         - "bash ../loom-hooks/tests/credential-guard-tokens.sh"
         - "bash ../loom-hooks/tests/credential-guard-dotdot.sh"
@@ -1716,6 +2145,11 @@ loom:
         - "src/orchestrator/core/inbox_drain/sweep.rs"
         - "src/orchestrator/core/inbox_drain/tests_sweep_cache.rs"
         - "src/orchestrator/signals/format/helpers.rs"
+        - "src/daemon/server/environment.rs"
+        - "src/commands/init/cleanup.rs"
+        - "src/commands/clean/relay_dirs.rs"
+        - "src/process/mod.rs"
+        - "src/verify/criteria/confine.rs"
         - "tests/capsule_policy_contracts.rs"
         - "maintainability-baseline.txt"
         - "../loom-hooks/credential-guard.sh"
@@ -1733,25 +2167,34 @@ loom:
         - source: "src/orchestrator/terminal/native/session_settings.rs"
           pattern: "session_filesystem\\("
           description: "every capsule builds its session filesystem layer"
+        - source: "src/orchestrator/terminal/native/session_settings.rs"
+          pattern: "refuse_real_cache_grants\\("
+          description: "a spawn whose capsule grants a real cache fails"
         - source: "src/orchestrator/terminal/native/session_settings/contents.rs"
           pattern: "\"allowRead\""
           literal: true
           description: "the capsule emits sandbox.filesystem.allowRead"
-        - source: "src/orchestrator/terminal/native/launch/host.rs"
+        - source: "src/orchestrator/terminal/native/launch/session_facts.rs"
           pattern: "resolve_git_common_dir\\("
           description: "the launch resolves the git common directory once per spawn"
-        - source: "src/orchestrator/terminal/native/launch/host.rs"
+        - source: "src/orchestrator/terminal/native/launch/session_facts.rs"
           pattern: "prepare_session_cache\\("
           description: "the launch creates and seeds the session cache"
-        - source: "src/orchestrator/terminal/native/launch/host.rs"
+        - source: "src/orchestrator/terminal/native/launch/session_facts.rs"
           pattern: "session_cache_env\\("
           description: "the wrapper exports the session cache environment"
-        - source: "src/orchestrator/terminal/native/launch/host.rs"
+        - source: "src/orchestrator/terminal/native/launch/session_facts.rs"
           pattern: "Ecosystems::detect\\("
           description: "seeding covers only the ecosystems the session's directory uses"
         - source: "src/orchestrator/core/inbox_drain/sweep.rs"
           pattern: "release_session_cache\\("
           description: "retirement removes the session cache with the scratch directory, only while the session still owns it"
+        - source: "src/commands/clean/relay_dirs.rs"
+          pattern: "project_session_cache_root\\("
+          description: "loom clean removes the project's session caches"
+        - source: "src/commands/init/cleanup.rs"
+          pattern: "project_session_cache_root\\("
+          description: "loom init removes the project's session caches"
         - source: "src/process/environment.rs"
           pattern: "SESSION_CACHE_VARIABLES"
           literal: true
@@ -1783,7 +2226,7 @@ loom:
           file: tests/capsule_policy_contracts.rs
           test: no_git_kinds_deny_the_resolved_git_common_dir
           scenario: "in a TempDir t runs git init --separate-git-dir t/store.git t/repo (isolated git config), commits README.md, runs git worktree add t/repo/.worktrees/s1 -b loom/s1 in t/repo and creates t/store.git/info if git did not; resolves common = resolve_git_common_dir(t/repo); builds session_filesystem (cache_dir t/c, home Some(t/home), codex_home t/codex, not licensed, no credential paths) for kind Stage with worktree Some(t/repo/.worktrees/s1), for kind Adjudication with worktree None (a judge in the checkout), and for kind Knowledge with worktree None; calls resolve_git_common_dir on a plain directory t/plain"
-          rejects: "a deny of the literal t/repo/.git (a gitfile here, so t/store.git stays writable through Claude Code's linked-worktree grant), a deny keyed on the cwd instead of the kind (the checkout judge keeps the common directory writable), a checkout capsule that denies the whole directory (knowledge and merge sessions commit there), or one that lists absent entries (a deny on an absent path puts an empty placeholder file where host git reads); expected common == canonical t/store.git; the Stage and Adjudication layers holding common in deny_write and Edit(/<common>/**) in edit_deny; the Knowledge layer holding neither but holding common/info, common/objects/info and common/worktrees, and no common/modules or common/refs/replace entry; Err for t/plain"
+          rejects: "a deny of the literal t/repo/.git (a gitfile here, so t/store.git stays writable through Claude Code's linked-worktree grant), a deny keyed on the cwd instead of the kind (the checkout judge keeps the common directory writable), a checkout capsule that denies the whole directory (knowledge and merge sessions commit there), or one that lists absent entries (a deny on an absent path puts an empty placeholder file where host git reads); expected common == canonical t/store.git; the Stage and Adjudication layers holding common in deny_write and Edit(/<common>/**) in edit_deny; the Knowledge layer holding neither but holding common/info, common/objects/info, common/worktrees, common/hooks and common/config, and no common/modules or common/refs/replace entry; Err for t/plain"
         - id: no-capsule-grant-reaches-a-real-package-cache
           file: tests/capsule_policy_contracts.rs
           test: no_capsule_grant_reaches_a_real_package_cache
@@ -1804,6 +2247,11 @@ loom:
           test: retiring_a_session_spares_the_cache_its_successor_owns
           scenario: "in a TempDir t with real = RealCaches::from_lookup(t/home, lookup answering None): k1 = session_cache_key(Some(\"stage-1\"), SessionType::Stage, \"s1\") and k2 = session_cache_key(Some(\"stage-1\"), SessionType::Stage, \"s2\"); c1 = prepare_session_cache(t/root, &k1, \"s1\", uid, &real, Ecosystems::default(), false); writes c1/cargo/planted.txt as session s1 would; c2 = prepare_session_cache(t/root, &k2, \"s2\", ...); then release_session_cache(&c2, \"s1\") (the late retire of s1), then release_session_cache(&c2, \"s2\"); also session_cache_key(Some(\"stage-1\"), SessionType::Contract, \"s3\") and session_cache_key(None, SessionType::Knowledge, \"s4\")"
           rejects: "a key that includes the session id (the path changes every session and cargo recompiles every registry dependency), a prepare that keeps the previous session's files (planted.txt reaches s2), or a retire that removes the cache by path alone (s1's late retire deletes s2's live cache); expected k1 == k2 == \"stage-1-stage\", c1 == c2, planted.txt absent after the second prepare, session_cache_owner(&c2) == Some(\"s2\"), Ok(false) with c2 still present for s1, Ok(true) with c2 gone for s2, \"stage-1-contract\" for the contract key and \"s4\" for the stage-less key"
+        - id: real-cache-grants-are-refused-and-existing-real-caches-denied
+          file: tests/capsule_policy_contracts.rs
+          test: real_cache_grants_are_refused_and_existing_real_caches_denied
+          scenario: "in a canonicalized TempDir t with home t/home, repo t/repo, worktree w = t/repo/.worktrees/s1 and cache_dir c = t/home/.cache/loom/session-caches/k/stage-1-stage, all created; t/uv-real created and t/uvlink a symlink to it; real = RealCaches::from_lookup(t/home, lookup answering CARGO_HOME=w/.cargo and UV_CACHE_DIR=t/uvlink); every real.cache_paths() entry created with create_dir_all; caches = real.cache_paths(); calls refuse_real_cache_grants(list, Some(t/home), w, c, &caches) for each of the lists [\"~/.npm\"], [\"~\"], [\"~/.npm/_cacache/**\"], [\"<t/uv-real>/**\"], [\".cargo/registry/**\"] and [\"src/**\", \"<c>\", \"~/.cache/loom/session-caches/k/stage-1-stage/**\"]; then session_filesystem for kind Stage, worktree Some(w), git_common_dir t/repo/.git, cache_dir c, home Some(t/home), codex_home t/home/.codex, not licensed, no credential paths, real_caches &caches"
+          rejects: "a policy that still lets a plan's ~/.npm, ~ or ~/.npm/_cacache grant reach allowWrite (Ok for those lists), one that compares grants lexically only (t/uv-real/** passes because the cache was named through t/uvlink), one that leaves a cache relocated into the writable worktree undenied, or one that denies or refuses an ancestor of the session's own cache (t/home/.cache is the real XDG cache and holds c: the session could not write C); expected Err for each of the first five lists, its message naming that list's entry, Ok for the last; deny_write holding w/.cargo/registry, t/uvlink, t/uv-real and t/home/.npm, and no entry equal to t/home, t/home/.cache, t/repo or w; Edit(/<p>/**) in edit_deny for each of those four; c in allow_write"
         - id: env-relocated-credentials-are-read-denied
           file: tests/capsule_policy_contracts.rs
           test: env_relocated_credentials_are_read_denied
@@ -1852,6 +2300,8 @@ loom:
         - The canary: tests/sandbox_canary.rs holds #[test] fn a_live_stage_sandbox_enforces_its_capsule, which builds StageSandboxEvidence::from_env() and returns on skip_unless_stage_sandbox("a_live_stage_sandbox_enforces_its_capsule", &evidence) before anything else.
         - Git in tests runs with GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM pointed at missing files and GIT_CONFIG_NOSYSTEM=1, user.name/user.email set locally, as src/verify/impact_tests_tests.rs does.
 
+        PRESSURE-TEST AMENDMENTS (binding; the briefs carry the detail): in a live worktree session an absent common dir, W, C, T or R/.worktrees is a violation, SessionLayout::discover failing panics, and the final assertion requires the six proofs K1 names, so a canary that records nothing fails; checks_report_a_writable_git_dir_and_a_real_cache_grant tests run_all on a synthetic layout; check (d) also probes a fixed credential list of its own; K2 asserts the launch created C before confine touches it. The acceptance line test "$(cat /proc/1/comm)" = bwrap checks the detector's premise on the same confined path the canary runs through; if it fails, block the stage naming the premise, never weaken the detector. tests/host_git_call_sites.txt is not this stage's file; integration-verify lists src/process/sandbox_probe/srt.rs.
+        REVIEW AMENDMENTS (binding; the briefs carry the detail): check (c) also runs create_refused in every capsule sandbox.filesystem.denyWrite entry that capsule_path maps to an existing directory outside C and T: capsule-policy write-denies the daemon's resolved real caches, so a cache the operator relocated (CARGO_HOME, UV_CACHE_DIR, ...), which the session's own variables no longer name, is probed live too; checks_report_a_writable_git_dir_and_a_real_cache_grant adds a synthetic writable directory listed in denyWrite and expects a check (c) violation.
         HAZARD (pre-plan capsule): this session was spawned by the loom installed before this plan, so its capsule has every hole the plan closes and its environment has no per-session CARGO_HOME. The live canary therefore prints SKIP here ("predates the sandbox-escape-hardening policy"), and the srt tests skip (srt cannot bind its socket inside the sandbox). Never set LOOM_TEST_REQUIRE_STAGE_SANDBOX=1 or LOOM_TEST_REQUIRE_SANDBOX_FREE=1 in this stage, and never report a skip as a pass: both suites are unverified until integration-verify and the operator's srt run.
         EXPECTED INTEGRITY EVENTS: none. K2 changes three grant-argument lines and one comment in tests_confinement_e2e.rs, none an assert line; every touched or new file stays under 400 lines (tests_confinement_e2e.rs is 381 at 3fc28031) and every new function under 50, so no ledger line changes.
         CONTRACTS: before the final review round, prove each contract red by mutation (Gate conventions) and record loom memory note "mutation: <id> red under <mutation>". Mutations: drop the cargo_home check; make skip_unless_stage_sandbox ignore the flag; drop the linked_worktree_common_dir entry.
@@ -1860,6 +2310,9 @@ loom:
         - command: "rg -q -F 'skip_unless_stage_sandbox' src/process/sandbox_probe.rs"
           exit_code: 1
           description: "BEFORE: no test can tell whether it runs inside a live loom stage sandbox"
+        - command: "rg -q -F 'session_cache_env' src"
+          exit_code: 0
+          description: "PRECONDITION: capsule-policy has merged (its per-session cache environment exists)"
       after_stage:
         - command: "cargo test --test sandbox_canary_contracts the_stage_sandbox_detector_needs_every_piece_of_evidence -- --exact"
           exit_code: 0
@@ -1874,8 +2327,10 @@ loom:
         - "cargo test --lib orchestrator::terminal::native::launch::tests_confinement_e2e::"
         - "cargo test --test integration confinement_status::"
         - "cargo test --test sandbox_canary"
+        - "cargo test --test sandbox_canary checks_report_a_writable_git_dir_and_a_real_cache_grant"
         - "cargo test --test sandbox_canary_contracts"
         - "cargo test --test maintainability"
+        - 'test "$(cat /proc/1/comm)" = bwrap'
       files:
         - "src/process/sandbox_probe.rs"
         - "src/process/sandbox_probe/**"
@@ -1943,9 +2398,12 @@ loom:
         Final verification of doc/plans/PLAN-sandbox-escape-hardening.md. Decisions: doc/plans/briefs/sandbox-escape-hardening/common.md.
         Use parallel subagents and skills to maximize performance.
         FIRST: confirm your capsule is this plan's. Read "$LOOM_WORK_DIR/capsules/$LOOM_SESSION_ID.settings.json"; sandbox.filesystem.denyWrite must hold the output of git rev-parse --path-format=absolute --git-common-dir, and $CARGO_HOME must lie under a loom/session-caches/ directory. If either fails, run loom stage block integration-verify "capsule predates the plan: reinstall with dev-install.sh, loom stop, loom run, then loom stage retry integration-verify" (the reason is positional) and stop.
+        THEN: record cat /proc/1/comm with loom memory note; read <main checkout>/srt-confinement.log when it exists (the operator's srt run): every failure in it is a finding of this stage.
         COMMITS: your git directory is read-only. Commit with loom commit -m "<type(scope): description>" -- <files> in one Bash call, then loom request status <id> --wait 90 in the next. Every commit you make is part of the end-to-end proof.
-        BUILD AND TEST (zero tolerance, fix every warning and failure): the acceptance list, from loom/. LOOM_TEST_REQUIRE_STAGE_SANDBOX=1 makes a canary skip a failure: a skip here means the capsule or the session cache is wrong, never a harness problem to route around. loom stage complete runs acceptance in a confined environment that withholds the LOOM_* names; the canary reads the LOOM_ACCEPTANCE_* copies capsule-policy exports.
-        FUNCTIONAL SMOKES (record each result with loom memory note): git add of any file fails with Read-only file system; in a scratch crate under $TMPDIR, cargo add of a crate absent from ~/.cargo/registry/cache downloads into $CARGO_HOME and cargo build succeeds, while touch ~/.cargo/registry/x fails; cd ../web && bun install --frozen-lockfile succeeds; ls of the main checkout's .worktrees directory lists only this worktree.
+        RECOVERY: your capsule, session cache and the daemon's commit apply were built before you started, so a fix to src/sandbox/**, src/process/environment.rs, src/daemon/server/environment.rs, src/orchestrator/terminal/native/launch* or src/orchestrator/core/inbox_drain/commit*.rs cannot change your own session. Commit it with loom commit while that still applies, then run loom stage block integration-verify "reinstall from the integration-verify worktree: bash .worktrees/integration-verify/dev-install.sh, loom stop, loom run, loom stage retry integration-verify" and stop. If loom commit itself is refused by a relay defect, block naming the changed files so the operator commits them on the host first. Never loop on a canary failure the running capsule cannot pass.
+        CALL-SITE ALLOWLIST: the stages ran in parallel, so tests/host_git_call_sites.txt does not list the git call sites the others added. Run cargo test --test host_git_call_sites and add, reading each call site: src/commands/commit/paths.rs | in-session, src/sandbox/session_fs.rs | host-on-R, src/process/sandbox_probe/srt.rs | in-session, src/orchestrator/core/inbox_drain/commit.rs | host-pinned (each with a one-line reason), plus any other entry it names; a discovery call against a stage worktree is converted, never listed.
+        BUILD AND TEST (zero tolerance, fix every warning and failure): the acceptance list, from loom/: the checks of loom/.githooks/pre-push (cargo audit --no-fetch against the advisory database the operator refreshed on the host before the release, the environment-scrubbed --no-fail-fast suite, scripts/flake-check.sh with its four default filters) plus this plan's own. A cargo audit that cannot find its database means HAZARD step 2 was skipped: block naming it, never drop the line. LOOM_TEST_REQUIRE_STAGE_SANDBOX=1 makes a canary skip a failure: a skip here means the capsule or the session cache is wrong, never a harness problem to route around. loom stage complete runs acceptance in a confined environment that withholds the LOOM_* names; the canary reads the LOOM_ACCEPTANCE_* copies capsule-policy exports.
+        FUNCTIONAL SMOKES (record each result with loom memory note): git add of any file fails with Read-only file system; in a scratch crate under $TMPDIR, cargo add of a crate absent from ~/.cargo/registry/cache downloads into $CARGO_HOME and cargo build succeeds, while touch ~/.cargo/registry/x fails; cd ../web && bun install --frozen-lockfile succeeds; stat -f -c %T on the main checkout's .worktrees directory prints tmpfs and ls of it lists only this worktree.
         CODE REVIEW: spawn parallel loom-code-reviewer subagents: security (load loom-security-audit; the daemon commit apply's path, symlink and HEAD checks; relay authority and the subagent refusal; session-cache seeding and removal never following a symlink and the owner marker; the credential and sibling-worktree read rules; the codex home and grants; the checkout-integrity checks; rg for any host-side git against a worktree that still discovers its git dir), architecture (the git-common-dir resolvers in src/git/worktree/pinned.rs and src/sandbox/session_fs.rs: consolidate when cheap; the canary's independent real-cache list agreeing with RealCaches for every tool D3 relocates), test coverage (spot-check each contract's mutation memory). Fix every finding with an engineer agent or dispute it; never defer one.
         SUGGESTIONS: weigh every pending reviewer suggestion the signal lists; resolve each one you implement with loom memory resolve <id> --outcome implemented --reason "<what changed>".
         MEMORY: record discoveries for knowledge-distill, including loom memory note "stale-knowledge: <file>#<heading> claims X; the tree does Y" for every knowledge section the plan made wrong. Never loom knowledge here; never Claude Code auto-memory.
@@ -1954,7 +2412,13 @@ loom:
         - "cargo clippy --all-targets -- -D warnings"
         - "cargo fmt --all -- --check"
         - "RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps"
-        - "cargo test --all-targets"
+        - "cargo audit --no-fetch"
+        - "env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE cargo test --all-targets --no-fail-fast"
+        - "../scripts/flake-check.sh quota::"
+        - "../scripts/flake-check.sh process::"
+        - "../scripts/flake-check.sh verdict_apply_tests::"
+        - "../scripts/flake-check.sh stalled_judge_tests::"
+        - "cargo test --test host_git_call_sites"
         - "LOOM_TEST_REQUIRE_STAGE_SANDBOX=1 cargo test --test sandbox_canary"
         - "bash ../loom-hooks/tests/run-all.sh"
         - "bash ../scripts/check-hook-syntax.sh"
@@ -1984,13 +2448,20 @@ loom:
         START with loom memory pending --group; read the plan's "Knowledge distillation" section, which lists the sections to rewrite to current truth.
         CORRECTIONS FIRST: apply every stale-knowledge memory in place with loom knowledge replace-section <file> "<heading>" "<body>", never with loom knowledge update.
         Then curate mistakes (prevention rules), patterns, decisions and conventions via loom knowledge update. TIER ROUTING: findings of about 40 lines or fewer go inline in the tier-1 file; larger ones go to loom knowledge update <category>/<slug> with a 2-4 line tier-1 summary and link. INDEX.md regenerates on every knowledge write; then loom review prunes stale entries.
-        Update README.md and CONTRIBUTING.md for the changed behaviour (loom commit, loom request status --wait, per-session caches, the operator steps around integration-verify); relevant sections only.
+        Update README.md and CONTRIBUTING.md for the changed behaviour (loom commit, loom request status --wait, per-session caches, the operator steps around integration-verify); relevant sections only. The acceptance runs the markdown lint over every tracked markdown file outside doc/plans/ and the fixtures; fix what it reports (bunx markdownlint-cli2 --fix repairs most of it).
         SUGGESTIONS: record every unimplemented reviewer suggestion (loom memory pending --group lists them under suggestions) in concerns or the topic it belongs to, then resolve it promoted, merged or discarded.
         RECEIPTS: every Note/Decision/Question taken into knowledge gets loom memory resolve <id> --outcome promoted|merged|discarded|deferred right after the write that used it; finish with loom memory pending --strict and resolve whatever it lists.
         LAST, if this stage removed structural issues: loom knowledge check --write-baseline doc/loom/knowledge/check-baseline.txt
       acceptance:
         - "loom knowledge check --strict --baseline doc/loom/knowledge/check-baseline.txt"
         - "loom memory pending --strict"
+        - command: "rg -q -F 'Package-Manager Caches Are Granted To Every Stage' doc/loom/knowledge"
+          exit_code: 1
+        - "rg -q -F 'session-caches' doc/loom/knowledge/architecture/execution-containment.md"
+        - "rg -q -F 'loom commit' doc/loom/knowledge/architecture/security-and-isolation.md"
+        - "rg -q -F 'loom commit' README.md"
+        - "rg -q -F 'loom request status' CONTRIBUTING.md"
+        - "git ls-files '*.md' | rg -v '^(doc/plans/|loom/tests/fixtures/)' | xargs bunx markdownlint-cli2"
       files: ["doc/loom/knowledge/**", "README.md", "CONTRIBUTING.md"]
 ```
 

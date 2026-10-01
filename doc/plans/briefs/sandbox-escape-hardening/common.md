@@ -1,11 +1,12 @@
 # Common rules for every worker of PLAN-sandbox-escape-hardening
 
 Read this file and your own brief in full before anything else. The plan is
-`doc/plans/PLAN-sandbox-escape-hardening.md`; its YAML is authoritative where a
-brief and the plan differ. `R` below is the main checkout (the parent of the git
-common directory), `T` a stage worktree `R/.worktrees/<stage-id>`, `W` its git
-administrative directory `R/.git/worktrees/<admin>`, and `C` a session's cache
-directory (decision D3).
+`doc/plans/PLAN-sandbox-escape-hardening.md` (`loom run` commits its rename to
+`doc/plans/IN_PROGRESS-PLAN-sandbox-escape-hardening.md`; read whichever exists);
+its YAML is authoritative where a brief and the plan differ. `R` below is the
+main checkout (the parent of the git common directory), `T` a stage worktree
+`R/.worktrees/<stage-id>`, `W` its git administrative directory
+`R/.git/worktrees/<admin>`, and `C` a session's cache directory (decision D3).
 
 ## What you own
 
@@ -58,14 +59,22 @@ after the first call returns):
 
 The daemon applies the request with pinned git (`WorktreeGit::pinned`) in the
 stage's own worktree, and never runs `git add` on agent-written paths: it resets
-the index to `HEAD`, opens every path with a no-follow walk from the worktree
-root (a regular file with `O_NOFOLLOW|O_NONBLOCK`, size-capped, hashed with
-`git hash-object -w --stdin --path=<path>`; a symlink leaf stored as a link;
-a FIFO, device, directory or nested repository refuses the request), stages
-the blobs with `git update-index --index-info`, refuses any gitlink, and
-commits. The CLI expands a directory argument into files in-session. Checkout-rooted sessions (Knowledge stages, Merge and
-BaseConflict resolution, Adjudication in `R`) keep `git add` and `git commit`.
-Subagents never run `git commit` or `loom commit`.
+the index with `git read-tree --reset HEAD` (that keeps the stat data of untouched
+entries; a plain `read-tree HEAD` would zero every entry's stat data, which no one
+can refresh under D1), opens every path with a no-follow walk from the worktree
+root (a regular file with `O_NOFOLLOW|O_NONBLOCK`, size-capped; a symlink leaf
+stored as a link; a FIFO, device, directory or nested repository refuses the
+request), copies each regular file's bytes through the descriptor into a temp
+file in its own state directory, hashes it with
+`git --attr-source=HEAD hash-object -w --path=<path> <temp file>` (attributes
+come from HEAD's tree, never from the worktree's `.gitattributes`, which could be
+a FIFO), and stages entries with
+`git update-index --add --cacheinfo <mode>,<sha>,<path>` (`WorktreeGit::run`
+takes no stdin). It refuses any gitlink, then commits. The CLI expands a
+directory argument into files in-session. Checkout-rooted sessions (Knowledge
+stages, Merge and BaseConflict resolution) keep `git add` and `git commit`; an
+Adjudication session never writes git, whatever its cwd. Subagents never run
+`git commit` or `loom commit`.
 
 The exact doctrine sentence every worktree-session surface uses (signals,
 CLAUDE.md.template, skills, hook messages):
@@ -81,22 +90,39 @@ session sandbox against a stage worktree runs pinned: `GIT_DIR=W`,
 `R/.git/worktrees/*/gitdir`, never from `T/.git` (a file inside the
 agent-writable worktree). Rust uses `WorktreeGit::pinned` /
 `pinned_in_project_of` (`loom/src/git/worktree/pinned.rs`); shell hooks derive
-`R` from `LOOM_WORK_DIR`. Pinned worktree runs never recurse into submodules
-(`diff.ignoreSubmodules=all`, `submodule.recurse=false`), and every loom git call
-sets `GIT_NO_REPLACE_OBJECTS=1`.
+`R` from `LOOM_WORK_DIR`. A path is a stage location when its parent directory
+is named `.worktrees` and the directory above holds a `.git` entry of any type
+(a directory, or the gitfile of a `--separate-git-dir` checkout); the OUTERMOST
+such ancestor decides, a stage location that cannot be pinned is an error (never
+discovered git), and a checkout inside another stage worktree is refused. Every
+loom git call never recurses into submodules
+(`git/runner.rs::NO_HOOKS_ARGS` carries `-c diff.ignoreSubmodules=all
+-c submodule.recurse=false -c status.submoduleSummary=false`, and the shell helper
+`loom_pinned_git` carries the same) and sets `GIT_NO_REPLACE_OBJECTS=1`; a
+production `Command::new("git")` outside the runner is converted or classified
+`host-direct`.
 
 D3 **Per-session caches.** Every session gets `C =
-<user cache dir>/loom/session-caches/<stage-id>-<session-kind>` (a session
-without a stage uses its session id; `dirs::cache_dir()`: `$XDG_CACHE_HOME` or
-`~/.cache` on Linux, `~/Library/Caches` on macOS; under `cfg(test)` a directory
-under the work dir, like the scratch root). The PATH is stable across the
-sessions of one stage, so cargo does not rebuild registry dependencies after a
-handoff or retry; the CONTENT is per session: at spawn the daemon removes any
-existing `C` (never following a symlink), recreates it 0700, writes the owner
-marker `C/.loom-session` holding the session id, seeds it, and grants it in the
-capsule's `allowWrite`. Retiring a session removes `C` only when the marker
-names that session. The operator's real caches get no grant at all, so they are
-read-only in every session. Each session's
+<user cache dir>/loom/session-caches/<project-key>/<stage-id>-<session-kind>`,
+where `<project-key>` is the first 16 hex characters of the SHA-256 of the
+canonical main checkout (two repositories on one host never share a cache
+directory). A session without a stage uses its session id; `dirs::cache_dir()`
+is `$XDG_CACHE_HOME` or `~/.cache` on Linux, `~/Library/Caches` on macOS; under
+`cfg(test)` it is a directory under the work dir, like the scratch root. The PATH
+is stable across the sessions of one stage, so cargo does not rebuild registry
+dependencies after a handoff or retry; the CONTENT is per session: at spawn the
+daemon removes any existing `C` (never following a symlink), recreates it 0700,
+writes the owner marker `C/.loom-session` holding the session id, seeds it, and
+grants it in the capsule's `allowWrite`. A seed never reproduces a tool's control
+or temp entries (bun `.tmp`, go `trim.txt`). Retiring a session removes `C` only
+when the marker names that session; `loom init` and `loom clean` remove the
+project's namespace. The operator's real caches get no grant at all, so they are
+read-only in every session: a spawn whose capsule's final `allowWrite` holds an
+entry equal to, inside or above a resolved real cache (lexically or after
+resolving symlinks; entries at or inside `C` excepted) fails
+(`session_fs::refuse_real_cache_grants`), and every resolved real cache that
+exists at spawn and is no ancestor of the home directory, `R`, `T` or `C` is
+write-denied in both layers. Each session's
 environment (wrapper `exec env -i` list AND `STAGE_HOST_ENV_ALLOWLIST`):
 
     CARGO_HOME=C/cargo            RUSTUP_AUTO_INSTALL=0
@@ -137,10 +163,15 @@ D6 **Codex lane.** A codex-licensed capsule no longer grants `~/.codex` or
 host-side receipt code), and the single file `~/.codex/auth.json` (codex writes
 it in place: `FileAuthStorage::save` opens it with truncate+write).
 
-D7 **Checkout-session integrity.** Checkout-rooted agent sessions (Knowledge,
-Merge, BaseConflict) keep write access to `R/.git` by design. The capsule denies
-the entries of the common dir that exist at spawn and a commit in `R` never
-writes (`info`, `objects/info`, `worktrees`, `modules`, `refs/replace`); a deny
+D7 **Checkout-session integrity.** `G`, the main checkout's git directory, is
+`R/.git` when that is a directory and, when `R/.git` is a gitfile (a
+`--separate-git-dir` checkout), the directory its `gitdir:` line names; anything
+else is an error. B's `checkout_integrity::main_git_dir`, C's shell
+`loom_main_git_dir` and the capsule's `resolve_git_common_dir` agree on it.
+Checkout-rooted agent sessions (Knowledge, Merge, BaseConflict) keep write access
+to `G` by design. The capsule denies the entries of the common dir that exist at
+spawn and a commit in `R` never writes (`info`, `objects/info`, `worktrees`,
+`modules`, `refs/replace`, `hooks`, `config`); a deny
 on an absent path would put an empty placeholder file on the host, so absent
 redirect files (`commondir`, `gitdir`, `shallow`, `info/grafts`) are detected
 instead. The daemon snapshots the repository's refs, pack files and control files
@@ -171,11 +202,16 @@ this to its own rows.
   `skills/loom-git-workflow/SKILL.md`, `loom-hooks/_subagent-preamble.txt`,
   `loom-hooks/commit-filter.sh`, `loom-hooks/post-tool-use.sh`,
   `loom-hooks/git-add-guard.sh`,
-  `loom-hooks/loom-relay.sh`, their tests, `loom/tests/commit_relay_contracts.rs`.
+  `loom-hooks/loom-relay.sh`, `loom/src/commands/stage/contracts/freeze.rs` (one
+  refusal string), their tests, `loom/tests/commit_relay_contracts.rs`.
 - `host-git-integrity`: `loom/src/git/**` (incl. `worktree/pinned.rs`),
   `loom/src/handoff/session_content.rs`, `loom/src/verify/before_after.rs`,
   `loom/src/verify/criteria/cache_fingerprint.rs`,
+  `loom/src/verify/criteria/cache_ignore.rs`,
   `loom/src/verify/wiring_detection.rs`, `loom/src/verify/duplicate_detection.rs`,
+  `loom/src/orchestrator/adjudication/prompt/sources.rs`,
+  `loom/src/orchestrator/core/provision_gate.rs` (created by
+  PLAN-stage-exits-and-environment),
   `loom/src/orchestrator/monitor/parked.rs`,
   `loom/src/orchestrator/merge_lifecycle/**`,
   `loom/src/orchestrator/core/merge_handler*`,
@@ -200,6 +236,9 @@ this to its own rows.
   `loom/src/orchestrator/signals/format/helpers.rs`,
   `skills/loom-plan-writer/references/sandbox.md`,
   `loom-hooks/credential-guard.sh` and its tests,
+  `loom/src/daemon/server/environment.rs`, `loom/src/commands/init/cleanup.rs`,
+  `loom/src/commands/clean/relay_dirs.rs`, `loom/src/process/mod.rs` (one re-export line),
+  `loom/src/verify/criteria/confine.rs` (the `Confined` arm of `prepare_confined` only),
   `loom/tests/capsule_policy_contracts.rs`.
 - `sandbox-canary`: `loom/tests/sandbox_canary.rs` and `loom/tests/sandbox_canary/**`,
   `loom/src/orchestrator/terminal/native/tests_confinement_e2e.rs`,
@@ -207,6 +246,9 @@ this to its own rows.
   `loom/src/orchestrator/terminal/native/tests_confinement_escape.rs` (new),
   `loom/src/process/sandbox_probe.rs`, `loom/src/process/sandbox_probe/**` (new),
   `loom/tests/sandbox_canary_contracts.rs`.
+- `loom/tests/host_git_call_sites.txt` belongs to host-git-integrity;
+  integration-verify adds the entries for the files the other stages create in
+  parallel.
 
 ## The maintainability ledger
 

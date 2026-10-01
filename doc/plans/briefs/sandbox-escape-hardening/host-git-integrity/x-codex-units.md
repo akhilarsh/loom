@@ -1,16 +1,19 @@
 # X: single-file pinning conversions (codex lane)
 
 Stage `host-git-integrity`, wave 2 (after worker A returns), lane codex via
-`loom-codex-forwarder`, `--model gpt-5.6-terra --effort xhigh`. One unit is one file. Batches:
-X1-X6 in one message, then X7-X10 once those return. The main agent forwards each unit as its
-own forwarder with the prompt "Read
+`loom-codex-forwarder`, `--model gpt-5.6-terra --effort xhigh`. One unit is one file. Waves:
+X1-X6, then X7-X12, then X13-X16, each once the previous wave returns, with at most six
+foreground forwards at once. The main agent forwards each unit as its own forwarder with the
+prompt "Read
 doc/plans/briefs/sandbox-escape-hardening/host-git-integrity/x-codex-units.md: the section
-Shared rules, then unit X<n> only. Change only the file that unit names."
+Shared rules, then unit X<n> only. Change only the file that unit names." The main agent runs
+every unit's command only after ALL units AND workers B and C have returned.
 
 ## Shared rules
 
 - Edit only your unit's file. Run no git, touch no `.loom` path, write no test that builds a
-  repository. Do not run cargo: the main agent runs the unit's command after you return.
+  repository unless your unit asks for one (X1, X5, X13). Do not run cargo: the main agent runs
+  the unit's command after you return.
 - Worker A added these to `loom::git` (read their doc comments in
   `loom/src/git/worktree/pinned.rs` and `loom/src/git/branch/{status,ancestry}.rs` first):
   - `WorktreeGit::pinned(repo_root: &Path, worktree: &Path) -> Result<WorktreeGit>`: use it
@@ -40,6 +43,17 @@ branch, base)` and `has_uncommitted_changes_in(&git)` in place of the path forms
 module doc's link `[`has_uncommitted_changes`]` to the `_in` name. Existing tests must pass
 unchanged (`a_failed_git_probe_answers_no` passes `/nonexistent/worktree`: `for_checkout` fails
 on it, which answers no).
+
+Add one behavioural test in the file's `tests` module, because every existing test there is
+negative and a conversion that always errors would pass them. Build the repository and stage
+worktree with `crate::verify::contracts::test_support::contract_worktree(<repo>, "s1")`
+(`#[cfg(test)] pub(crate)`, reachable from lib tests), then commit in the worktree with a small
+local `git` helper (`-c user.name=t -c user.email=t@t -c commit.gpgsign=false -c
+core.hooksPath=/dev/null`; add and commit the contract file `contract_worktree` leaves
+untracked), so the branch holds one commit beyond `main` and nothing is uncommitted. First `finished_in_worktree` answers `true`: that proves the converted call runs.
+Then `crate::verify::contracts::test_support::plant_foreign_git_dir(&worktree)` (call it, do
+not re-implement it) and call again: the marker file it returns stays absent. Positive control
+last: plain `git status` in the worktree creates the marker.
 Command: `cargo test --lib orchestrator::monitor::`
 
 ## X2: `loom/src/handoff/session_content.rs`
@@ -78,6 +92,16 @@ Command: `cargo test --lib verify::criteria::`
 target_branch, &worktree)` becomes `WorktreeGit::pinned(repo_root, &worktree).and_then(|git|
 is_ancestor_of_in(&git, "HEAD", target_branch))`, keeping the three match arms; a pin failure
 lands in the existing "cannot verify the worktree HEAD" refusal.
+
+Add an inline `#[cfg(test)] mod tests` to the file with one behavioural test, because a
+conversion that always errors would otherwise pass: build a repository with its stage worktree
+via `crate::verify::contracts::test_support::contract_worktree(<repo>, "s1")`
+(`#[cfg(test)] pub(crate)`, reachable from lib tests), then
+`crate::verify::contracts::test_support::plant_foreign_git_dir(&worktree)` (call it, do not
+re-implement it). `uncontained_worktree_head("s1", <repo>, "main")` is `None` (the worktree HEAD
+is main's commit, read through the registered git directory, not the planted one), and the
+marker file `plant_foreign_git_dir` returned stays absent. Positive control last: plain `git
+status` in the worktree creates the marker.
 Command: `cargo test --lib orchestrator::merge_lifecycle::`
 
 ## X6: `loom/src/verify/wiring_detection.rs`
@@ -92,7 +116,8 @@ Command: `cargo test --lib orchestrator::merge_lifecycle::`
         .with_context(|| format!("Failed to run git diff in {}", worktree_path.display()))?;
 
 Swap the `use crate::git::runner::run_git;` line for `use crate::git::worktree::WorktreeGit;`.
-Command: `cargo test --lib verify::wiring_detection::`
+Command: `cargo test --lib verify::wiring_detection:: && cargo test --test maintainability`
+(`collect_added_source_files` is ledgered at 56)
 
 ## X7: `loom/src/verify/duplicate_detection.rs`
 
@@ -148,7 +173,84 @@ verify`): `rev-parse --show-toplevel`, `rev-parse --path-format=absolute --git-c
   `working_dir`, which limits the listing to that subtree. A pinned handle runs in the work tree
   instead, so pass the subtree as a pathspec: append `--` and `working_dir`'s path relative to
   the work tree (nothing when they are equal). Build the handle there with `for_dir(working_dir)`.
+  `work_tree()` is canonical, so take the relative path from `working_dir.canonicalize()`.
 - Keep the doc comment on `build_for_worktree` true: it discovers the worktree and base through
   git pinned to the worktree's registered git directory.
 - The file is not in the maintainability ledger; keep every function under 50 lines.
 Command: `cargo test --lib context::worktree_graph`
+
+## X11: `loom/src/orchestrator/core/provision_gate.rs`
+
+The file is created by PLAN-stage-exits-and-environment and exists only once that plan has
+merged; read it first. Its `git status --porcelain=v1 -z --untracked-files=all` before and after
+provisioning runs `run_git_checked` in the stage worktree, by discovery. Convert both calls to
+`WorktreeGit::for_checkout(worktree)?.read_checked(&[<same args>])`: the read-only run (no index
+write-back), with the same success check and trimmed stdout, so the before/after comparison is
+unchanged. A `for_checkout` error takes the path the function already gives a failing git call.
+Drop the unused runner import.
+Command: `cargo test --lib orchestrator::core::provision_gate:: && cargo build`
+
+## X12: `loom/src/verify/criteria/cache_ignore.rs`
+
+`check_ignore(candidates, acceptance_dir)` runs `git -C <acceptance_dir> check-ignore -q --stdin
+-z` on the host during `loom stage complete` and `loom verify`, by discovery. Convert it to
+`WorktreeGit::for_dir(acceptance_dir).ok()?` (an error is `None`, as a missing repository is
+today). A `WorktreeGit` offers no stdin and, pinned, runs in the work tree rather than in
+`acceptance_dir`, so pass the candidates as arguments:
+`git.run_read_only(&["check-ignore", "-q", "--", <paths>])`, each path as
+`acceptance_dir.canonicalize().ok()?.join(token)` (canonical, so it lies under the canonical
+work tree git compares it with; the same resolution `-C <acceptance_dir>` gave a relative
+token; a path that is not UTF-8 is `None`, which means do not cache).
+Exit 0 is `Some(true)`, exit 1 `Some(false)`, anything else `None`, as today. The runner's
+read deadline replaces `CHECK_IGNORE_TIMEOUT`; delete the spawn, stdin and wait code and the
+imports and constant they leave unused. `path_like_tokens` and its tests are unchanged.
+Command: `cargo test --lib verify::criteria:: && cargo build`
+
+## X13: `loom/src/orchestrator/adjudication/prompt/sources.rs`
+
+`run_git_show(work_dir, commit)` spawns `Command::new("git")` in the daemon, with the commit
+after `--`: `["show", "--no-color", "--stat", "-p", "--", commit]`. Git then reads the SHA as a
+pathspec and shows HEAD, so the briefing quotes the wrong commit. Two changes:
+
+- Route the call through `crate::git::runner::run_git_checked(&["show", "--no-color", "--stat",
+  "-p", commit, "--"], &project_root)`: the SHA before `--`, the project root as today. Keep
+  the SHA-shape check, whose comment about `--` is rewritten to say the shape check is what
+  keeps an option out of the commit slot. The result is `Ok(String)` of git's stdout; a failure
+  stays an `Err`. Drop the `NO_HOOKS_ARGS` import; `Command` stays because `run_listing` runs
+  `find`.
+- Add a test in the file's `tests` module that the shown commit is the evidence commit, not
+  HEAD: in a `TempDir` repository (`<repo>/.loom/work` as the work directory) make two commits
+  with different file names and messages (`-c user.name=t -c user.email=t@t -c
+  commit.gpgsign=false`), call `run_git_show` with the FIRST commit's SHA, and assert the output
+  names the first commit's file and message and not the second's.
+Command: `cargo test --lib orchestrator::adjudication::prompt:: && cargo build`
+
+## X14: `loom/src/git/cleanup/batch.rs`
+
+`prune_worktrees(repo_root)` and the branch probe in `needs_cleanup(stage_id, repo_root)` each
+spawn `Command::new("git")` with `NO_HOOKS_ARGS` in `repo_root`. Route both through the runner:
+`run_git_checked(&["worktree", "prune"], repo_root)?` (an `Err` as today; the message takes the
+runner's format) and `run_git(&["rev-parse", "--verify", &format!("refs/heads/{branch_name}")],
+repo_root)` kept inside the existing `matches!(.., Ok(o) if o.status.success())`. Both run in
+`repo_root`, never in a stage worktree, so `for_checkout` does not apply. Drop the imports they
+leave unused.
+Command: `cargo test --lib git::cleanup:: && cargo build`
+
+## X15: `loom/src/git/branch/cleanup.rs`
+
+`cleanup_merged_branches(target_branch, repo_root)` spawns `Command::new("git")` for `branch
+--merged <target>` in `repo_root`. Route it through `run_git(&["branch", "--merged",
+target_branch], repo_root)` keeping `.with_context(|| "Failed to get merged branches")?` and
+the existing handling of the exit status (it reads stdout whatever the status). Drop the
+imports it leaves unused.
+Command: `cargo test --lib git::branch:: && cargo build`
+
+## X16: `loom/src/git/worktree/checks.rs`
+
+`check_git_available` (`git --version`) and `check_worktree_support` (`git worktree list`) spawn
+`Command::new("git")` with no directory, so git runs in the process's cwd. Route both through
+`run_git(&[..], Path::new("."))`, which keeps that cwd and adds the runner's `commondir` guard;
+keep each function's `Ok`/`bail!` outcomes and messages (a spawn failure keeps "Git is not
+installed or not in PATH"). Neither can be a stage worktree, so `for_checkout` does not apply.
+Drop the imports they leave unused.
+Command: `cargo test --lib git::worktree:: && cargo build`

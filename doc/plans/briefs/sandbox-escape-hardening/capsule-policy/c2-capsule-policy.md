@@ -66,6 +66,7 @@ The public surface (pinned: C3 and the contracts call it exactly like this):
         pub codex_home: &'a Path,              // the operator's real codex home
         pub codex_licensed: bool,
         pub credential_paths: &'a [PathBuf],
+        pub real_caches: &'a [PathBuf],         // RealCaches::cache_paths() of the daemon
     }
 
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -79,6 +80,8 @@ The public surface (pinned: C3 and the contracts call it exactly like this):
 
     pub fn session_filesystem(inputs: &SessionFsInputs<'_>) -> anyhow::Result<SessionFs>;
     pub fn resolve_git_common_dir(repo_root: &Path) -> anyhow::Result<PathBuf>;
+    pub fn refuse_real_cache_grants(allow_write: &[String], home: Option<&Path>, base: &Path,
+        cache_dir: &Path, real_caches: &[PathBuf]) -> anyhow::Result<()>;
     pub fn env_credential_paths(lookup: &dyn Fn(&str) -> Option<std::ffi::OsString>)
         -> Vec<PathBuf>;
 
@@ -98,11 +101,21 @@ checks that the message names the path). Do not duplicate them.
    one stage and kind, and retirement removes `C` only for the session the marker names, so the
    session must not be able to rewrite it. The daemon writes it before the session starts, so it
    exists whenever the capsule is built; an absent one is not listed.
+   Then, for every kind, each `real_caches` entry whose `symlink_metadata` succeeds and that is
+   neither equal to nor an ancestor of `home`, `repo_root`, `worktree` or `cache_dir`:
+   `deny_write +=` it and, when `canonicalize` gives a different path (a symlinked alias), that
+   path too; `edit_deny +=` the directory or file rule for each. A plan can no longer grant a
+   real cache back (`refuse_real_cache_grants`), and a cache the operator relocated into a
+   writable root (`CARGO_HOME` inside the worktree) is denied. The ancestor rule keeps the real
+   `~/.cache` (`RealCaches::xdg_cache`) undenied: the production `C` lies under it. Never list
+   an absent one (the placeholder rule of step 2).
 2. **D1.** When `kind` is `Stage`, `Contract` or `Adjudication`, whatever the cwd:
    `deny_write += git_common_dir`, `edit_deny += Edit(//<git_common_dir>/**)`. A judge never
    writes git, and one running in the checkout would otherwise hold `R/.git`. For `Knowledge`,
    `Merge` and `BaseConflict` (they commit in the checkout) instead, for each of `info`,
-   `objects/info`, `worktrees`, `modules`, `refs/replace` under `git_common_dir` whose
+   `objects/info`, `worktrees`, `modules`, `refs/replace`, `hooks` and `config` under
+   `git_common_dir` (the last two because `session_denies` names only the literal
+   `R/.git/hooks` and `R/.git/config`, which a `--separate-git-dir` store does not have) whose
    `symlink_metadata` succeeds at the call: `deny_write += <path>`, `edit_deny +=` the directory
    or file rule by its metadata. **Never list an absent one**: on Linux a `denyWrite` of an
    absent path mounts an empty placeholder that the HOST sees as an empty file while the command
@@ -134,7 +147,18 @@ checks that the message names the path). Do not duplicate them.
 "--path-format=absolute", "--git-common-dir"], repo_root)`, canonicalize the answer, require a
 directory, context on every step naming `repo_root`. `git/worktree/pinned.rs:111` (`common_dir`)
 does the same privately in another stage's territory; do not edit it. The duplicate is accepted
-(integration-verify may consolidate).
+(integration-verify may consolidate). Integration-verify classifies `session_fs.rs`'s
+`run_git_checked(` call in host-git-integrity's allowlist (`src/sandbox/session_fs.rs |
+host-on-R`); this stage does not edit `tests/host_git_call_sites.txt`.
+
+`refuse_real_cache_grants(allow_write, home, base, cache_dir, real_caches)`: resolve each entry
+(`~/x` under `home`, skipped when `home` is `None`; `//x` and `/x` absolute; anything else under
+`base`, the session's cwd), cut it at its first path component holding a glob character, and
+skip it when it equals or lies inside `cache_dir`. `bail!` naming the entry and the cache when
+it equals, lies inside or lies above a `real_caches` path, compared lexically and, where both
+paths exist, again after canonicalizing both (so `<alias>/**` for a cache named through a
+symlink is caught). `Ok(())` otherwise. Path comparison by components (`Path::starts_with`),
+never by string prefix.
 
 `env_credential_paths(lookup)`, in this order, skipping empty or relative values and
 duplicates: `GH_CONFIG_DIR` + `/hosts.yml`; `DOCKER_CONFIG` + `/config.json`; each `:`-separated
@@ -226,7 +250,9 @@ about never using `dangerouslyDisableSandbox`.
 are, then these 36 plain paths, in this order (no glob: a literal entry mounts nothing when
 absent, `/dev/null` over a file, a tmpfs over a directory, and triggers no recursive
 expansion; `concerns/sandbox-and-confinement-gaps.md`, "No `Read(...)` Deny Rule May Exist in
-Any Settings File"):
+Any Settings File"). Format the constant one entry per line, each as `"<path>",` with a
+trailing comma, as it is formatted today: the plan's acceptance greps `state_root.rs` for the
+literal lines `"~/.netrc",`, `"~/.config/gh/hosts.yml",`, `"~/.npmrc",` and `"~/.claude.json",`.
 
     ~/.config/gh/hosts.yml  ~/.netrc  ~/.npmrc  ~/.yarnrc.yml  ~/.git-credentials
     ~/.config/git/credentials  ~/.docker/config.json  ~/.kube  ~/.pypirc
@@ -256,25 +282,32 @@ holds no `..`, and holds a glob only as the trailing `/**` of the original five)
 ~/.config/gcloud/**, ~/.gnupg/**"; the default is `default_deny_read` (`:340`): every
 `CREDENTIAL_DENY_READ_PATHS` entry, the state-root secret files in both layouts, and the two
 `../` escape patterns. Rewrite that doc comment to say so by name, without listing paths. Change
-nothing else in the file.
+nothing else in the file, and keep the file's line count: `types.rs` is ledgered at exactly 1015
+lines (`maintainability-baseline.txt`, `file src/models/stage/types.rs 1015`), so the two doc lines
+at `:257-258` become exactly two lines.
 
 ## 7. `grant_paths.rs` and `settings/tests.rs`
 
 - `grant_paths.rs:59-63`: `warn_missing_grants`'s doc names the removed constant; say it warns
   about plan grants only (every other grant loom adds is created at spawn).
 - `settings/tests.rs`: line 8's import drops `PACKAGE_MANAGER_CACHE_WRITE_PATHS`; rename the
-  helper `allow_write_with_caches` (`:46-51`) to `plan_allow_write`, body `json!(prefix)`, doc
+  helper `allow_write_with_caches` (`:46-51`) to `plan_allow_write`, body
+  `if prefix.is_empty() { Value::Null } else { json!(prefix) }`, doc
   "`allowWrite` as the builder emits it for a claude-only stage: exactly the plan entries (no
   package cache is granted; each session's cache is granted by its capsule)"; update its four
-  call sites (`:268`, `:596`, `:649`, `:825`) and the comment at `:267`. Nothing else in the
-  file changes.
+  call sites (`:268`, `:596`, `:649`, `:825`) and the comment at `:267`. The empty case is
+  `Value::Null` because the call at `:596`, `plan_allow_write(&[])`, runs on a hand-built config
+  with `allow_write: vec![]`, and `policy.rs` emits `allowWrite` only when it is non-empty, so
+  the key is absent and indexing `fs_block["allowWrite"]` gives `Null`; `json!(prefix)` would be
+  `[]` and fail that assert. Nothing else in the file changes.
 
 ## 8. `maintainability-baseline.txt`
 
 After your edits, count and set exactly: remove `function src/sandbox/settings/policy.rs
 filesystem_settings 52` if `filesystem_settings` is now 50 lines or fewer (it should be about
 49), otherwise set its new count; set `file src/sandbox/settings/tests.rs` to the file's new
-`wc -l`. Touch no other line. `session_fs.rs` and its tests stay under 400 lines, every
+`wc -l`. Touch no other line (`file src/models/stage/types.rs 1015` stays: section 6 keeps that
+file's line count). `session_fs.rs` and its tests stay under 400 lines, every
 function under 50.
 
 ## Tests to add in `session_fs/tests.rs` (allowed case beside the denied case)
@@ -287,9 +320,20 @@ pointed at missing files, `GIT_CONFIG_NOSYSTEM=1`, and a local `user.name`/`user
   Contract and Adjudication, each with `worktree` `Some` and `None`, list the common directory in
   `deny_write` and `Edit(//<it>/**)` in `edit_deny`.
 - `checkout_kinds_deny_only_the_existing_git_metadata_entries` (exact name; acceptance runs it):
-  a common directory holding `info/`, `objects/info/` and `worktrees/` but no `modules` or
-  `refs/replace`; Knowledge, Merge and BaseConflict list exactly those three in both layers,
-  never the common directory itself and never an absent entry.
+  a common directory holding `info/`, `objects/info/` and `worktrees/` but no `modules`,
+  `refs/replace`, `hooks` or `config`; Knowledge, Merge and BaseConflict list exactly those
+  three in both layers, never the common directory itself and never an absent entry.
+- `checkout_kinds_deny_the_hooks_and_config_of_a_separate_store` (exact name; acceptance runs
+  it): `git init --separate-git-dir <t>/store.git <t>/repo`; a Knowledge layer with
+  `git_common_dir` the canonical store lists `<store>/hooks` (directory rule) and
+  `<store>/config` (file rule) in both layers.
+- `existing_real_caches_are_write_denied_and_ancestors_of_the_session_are_not`: a `real_caches`
+  list holding an existing directory, an absent path, a symlink to a directory, the parent of
+  `cache_dir` and `home` itself; `deny_write` holds the directory, the symlink and its target,
+  and none of the other three.
+- `real_cache_grants_are_refused_by_equality_containment_and_ancestry` (`~/.npm`,
+  `~/.npm/_cacache/**`, `~` and a canonical alias each `Err`; an entry under `cache_dir` and
+  `src/**` `Ok`).
 - `sibling_worktrees_are_read_denied_and_the_own_worktree_re_allowed`, paired with
   `a_checkout_session_reads_every_worktree` (no `.worktrees` entry, empty `allow_read`).
 - `credential_paths_are_read_denied_unless_they_would_cover_the_session` (an ordinary path kept;

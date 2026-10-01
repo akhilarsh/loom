@@ -27,12 +27,26 @@ You build the pinned interface every other worker converts call sites to, and cl
 ## Files you own (relative to `loom/`)
 
 `src/git/worktree/pinned.rs`, `src/git/worktree/pinned_tests.rs`, `src/git/runner.rs`,
-`src/git/runner/pinned.rs`, `src/git/runner/pinned/tests.rs`, `src/git/branch/status.rs`,
-`src/git/branch/status_tests.rs`, `src/git/branch/ancestry.rs`, `src/git/branch/mod.rs`,
-`src/git/merge/in_progress.rs`.
+`src/git/runner/tests.rs` (new), `src/git/runner/pinned.rs`, `src/git/runner/pinned/tests.rs`,
+`src/git/branch/status.rs`, `src/git/branch/status_tests.rs`, `src/git/branch/ancestry.rs`,
+`src/git/branch/mod.rs`, `src/git/merge/in_progress.rs`, `src/git/merge/in_progress_tests.rs`
+(new).
 
 Not yours: `src/git/mod.rs`, `src/git/merge/mod.rs` (worker B), `src/git/cleanup/**` (codex
-units X8, X9). The codex units in wave 2 call exactly the signatures below; do not rename them.
+units X8, X9, X14), `src/git/branch/cleanup.rs` (X15), `src/git/worktree/checks.rs` (X16). The
+codex units in wave 2 call exactly the signatures below; do not rename them.
+
+## 0. Make room first (file sizes)
+
+`src/git/runner.rs` is 351 lines and `src/git/merge/in_progress.rs` 396, both with inline tests;
+the additions below push both over 400, which fails `cargo test --test maintainability`.
+Before adding anything, move each file's inline `mod tests { ... }` body, unchanged, to its own
+file: `runner.rs` to `src/git/runner/tests.rs`, declared `#[cfg(test)] #[path =
+"runner/tests.rs"] mod tests;`; `in_progress.rs` to `src/git/merge/in_progress_tests.rs`,
+declared `#[cfg(test)] #[path = "in_progress_tests.rs"] mod tests;` (a `#[path]` is relative to
+the declaring file's directory). The test paths `git::runner::tests::*` and
+`git::merge::in_progress::tests::*` stay the same; a moved assertion line is not a test-integrity
+event. Every test this brief adds to those two files goes in the new files.
 
 ## 1. `WorktreeGit` additions (`src/git/worktree/pinned.rs`)
 
@@ -45,16 +59,22 @@ pub const READ_ONLY_ARGS: [&str; 1] = ["--no-optional-locks"];
 
 impl WorktreeGit {
     /// Git for `checkout` as a process outside every stage sandbox runs it:
-    /// pinned (`Self::pinned`) when `checkout`, canonicalized, is a stage
-    /// worktree `<repo>/.worktrees/<name>` of a repository whose `.git` is a
-    /// directory (not a symlink); as discovered for any other directory, the
-    /// main checkout included. A stage-shaped checkout that cannot be pinned
-    /// is an error, never discovered git.
+    /// pinned (`Self::pinned`) when `checkout`, canonicalized, is the
+    /// outermost stage location `<repo>/.worktrees/<name>` among itself and
+    /// its ancestors (`<repo>/.git` a directory, or the gitfile of a
+    /// `--separate-git-dir` checkout); an error when an ancestor is the
+    /// outermost stage location (the checkout lies inside a stage worktree);
+    /// as discovered for any other directory, the main checkout included. A
+    /// stage location that cannot be pinned is an error, never discovered git.
     pub fn for_checkout(checkout: &Path) -> Result<Self>;
 
-    /// `Self::for_checkout` for the checkout that holds `dir`: the innermost
-    /// ancestor of `dir` (itself included) that is a stage worktree is pinned,
-    /// its work tree that ancestor; with none, git is discovered at `dir`.
+    /// `Self::for_checkout` for the checkout that holds `dir`. `dir` is made
+    /// absolute without resolving symlinks, and its lexical ancestors (itself
+    /// included) are matched against the stage locations; the OUTERMOST match
+    /// is pinned, its work tree that worktree, but only when
+    /// `dir.canonicalize()` lies under the canonical matched worktree, else
+    /// `Err`. With no match, git is discovered at `dir` and `work_tree()` is
+    /// the top level `rev-parse --show-toplevel` reports at `dir`, not `dir`.
     /// A `.git` an agent planted below a stage worktree is never followed.
     pub fn for_dir(dir: &Path) -> Result<Self>;
 
@@ -73,8 +93,30 @@ impl WorktreeGit {
 
 - One private helper decides stage shape: `fn stage_worktree_repo(path: &Path) -> Option<&Path>`
   returns `path.parent().parent()` when `path.parent()`'s file name is `.worktrees` and
-  `symlink_metadata(<repo>/.git)` is a directory. `for_checkout` applies it to the checkout,
-  `for_dir` to each of `dir.ancestors()` in order (innermost first).
+  `symlink_metadata(<repo>/.git)` succeeds, whatever its type: a directory, or the gitfile of a
+  `--separate-git-dir` main checkout (`git init --separate-git-dir`), whose worktree registry
+  lives in the store the gitfile names. Do NOT require a directory: in that layout a stage
+  worktree would be classified as no stage and get discovered git through its agent-writable
+  `T/.git`. `Self::pinned` settles the layout (it asks git in `<repo>` for the common directory
+  and requires a registration there) and fails closed.
+- The OUTERMOST stage-shaped path decides, never the innermost: an inner match
+  (`T/.worktrees/x`) has a `<repo>` inside the stage worktree `T`, whose `T/.git` the agent
+  writes, so pinning to it would ask agent-controlled git for the common directory.
+  `for_checkout` checks the canonical checkout and each of its ancestors: the checkout itself
+  outermost means `Self::pinned(repo, checkout)`; a proper ancestor outermost means `bail!`
+  ("<checkout> lies inside the stage worktree <ancestor>"); none means discovered. `for_dir`
+  checks each lexical ancestor of the absolutized `dir` (itself included) and pins to the
+  outermost match.
+- `for_dir` never lets a symlink decide the worktree: the lexical match picks the candidate,
+  then `dir.canonicalize()?` must `starts_with` the canonical work tree `Self::pinned` returns,
+  else `bail!` naming both paths. Without it, an agent-made symlink `T/loom -> /tmp/x` would
+  move git discovery into the agent's directory (`for_dir(T/loom)` lexically sits inside `T`,
+  but its real location does not).
+- A discovered handle from `for_dir` takes its `work_tree()` from `git rev-parse
+  --show-toplevel` run at `dir` through the runner (so the `commondir` guard covers it), then
+  `Self::discovered(<that path>)`; a failing `rev-parse` is `Err`. X4 and X10 replace their
+  own `--show-toplevel` calls with `work_tree()`, and porcelain paths are relative to the top
+  level, so `dir` itself would be wrong for a subdirectory.
 - `read_checked` reuses the runner's success check: make `git/runner.rs::stdout_of_success`
   `pub(crate)` and call it; do not copy its message format.
 - Update the module doc: name `for_checkout`/`for_dir` as the entry points for host code that
@@ -82,8 +124,9 @@ impl WorktreeGit {
 
 Known imprecision, document it on `for_dir` in one sentence: a repository that itself lives
 inside an outer stage worktree (`/x/.worktrees/o/repo`) and is reached through `for_dir` on a
-subdirectory is pinned to the outer worktree. `for_checkout(repo)` is exact for it. Callers
-that hold the checkout root use `for_checkout`.
+subdirectory is pinned to the outer worktree, because the outermost stage location decides;
+`for_checkout(repo)` on it is an error. Callers that hold the checkout root use
+`for_checkout`.
 
 ## 2. The `commondir` guard (`src/git/runner.rs`, `src/git/runner/pinned.rs`)
 
@@ -93,8 +136,15 @@ At `2908339a` the runner has `run_git_with_env` (discovery unless the caller's e
 `run_git_pinned` is NOT D2 pinning; it still discovers through `.git`. Never use it for a stage
 worktree.
 
-Add one private function in `runner.rs`, called by `run_git_with_env` before it spawns and by
-`run_git_pinned_within` before it spawns:
+Add `pub(crate) fn run_git_with_env_within(args: &[&str], env: &[(&str, &OsStr)], repo_root:
+&Path, timeout: Duration) -> Result<Output>` in `runner.rs`: it is today's `run_git_with_env`
+body with the deadline as a parameter, and `run_git_with_env` becomes `run_git_with_env_within`
+with `git_timeout(args)`. Worker B's checkout-integrity checks (`fsck`, `verify-pack`,
+`commit-graph verify`) call it with 300 s; keep this exact signature.
+
+Add one private function in `runner.rs`, called by `run_git_with_env_within` before it spawns
+(so both `run_git_with_env` and B's calls pass it) and by `run_git_pinned_within` before it
+spawns:
 
 ```rust
 /// Refuses discovery-based git whose nearest `.git` at or above `repo_root`
@@ -120,12 +170,20 @@ fail on its own); at the first ancestor with a `.git` entry (`symlink_metadata`)
   ancestry checks in `R` would otherwise read the replacement object instead of the real one.
   Document it beside `NO_HOOKS_ARGS`. Before relying on it, run `rg -n 'replace' src --type
   rust` and confirm no loom code path depends on replace refs being honoured; report any.
-- A PINNED `WorktreeGit::run` (a handle with a pin, whichever constructor made it) also
-  prepends `-c diff.ignoreSubmodules=all -c submodule.recurse=false -c
-  status.submoduleSummary=false`, as one constant `PINNED_WORKTREE_ARGS` beside
-  `READ_ONLY_ARGS`. A tracked gitlink in a stage worktree otherwise makes host `git status` or
-  `git diff` recurse into `<worktree>/<path>/.git`, a directory the agent wrote, and run its
-  configuration. A discovered handle (git in `R`) does not get them.
+- Submodules, for EVERY runner call and every direct site that splices `NO_HOOKS_ARGS`
+  (`rg -n NO_HOOKS_ARGS src --type rust` lists them; discovered calls in the main checkout `R`
+  included): add `-c diff.ignoreSubmodules=all -c submodule.recurse=false -c
+  status.submoduleSummary=false` to `git/runner.rs::NO_HOOKS_ARGS` itself, which grows from
+  four to ten elements (`[&str; 10]`), and extend its doc comment, which names only the hooks
+  and fsmonitor keys, with these three. `WorktreeGit::run` adds nothing of its own, and a
+  discovered handle (git in `R`) gets them like a pinned one. A tracked gitlink otherwise makes
+  host `git status` or `git diff` recurse into `<path>/.git`, a directory the agent wrote, and
+  run its configuration. That reaches `R` too: a checkout session can commit a gitlink and
+  write `R/sub/.git` with a clean filter, and `git/merge/probe.rs::require_clean_repository`
+  runs `status --porcelain=v1 --untracked-files=no` in `R` before every merge (measured on git
+  2.53: it ran that filter without the three flags and did not with them). The only existing
+  submodule use is `--ignore-submodules=all` in `fs/knowledge/catalog/evidence.rs`, which the
+  flags leave unaffected.
 
 ## 3. Pinned branch helpers (`src/git/branch/status.rs`, `ancestry.rs`, `mod.rs`)
 
@@ -147,10 +205,13 @@ Do not copy its fingerprint logic.
 
 ## 4. In-progress merges (`src/git/merge/in_progress.rs`)
 
-- `git_dir_for_repo_path(repo_path)`: a `.git` directory is returned as today. A `.git` FILE:
-  `WorktreeGit::for_checkout(repo_path)?`; when `git_dir()` is `Some`, return it (the registered
-  admin directory, whatever the file says); when `None` (a checkout loom did not create), parse
-  the file as today.
+- `git_dir_for_repo_path(repo_path)`: call `WorktreeGit::for_checkout(repo_path)?` FIRST, for
+  every path and whatever the type of its `.git` entry, since an agent can replace a stage
+  worktree's `T/.git` file with a directory holding a planted `MERGE_HEAD`. When `git_dir()` is
+  `Some` (a stage-shaped path), return it: the registered admin directory, whatever `T/.git`
+  holds. When `None` (the main checkout, or a checkout loom did not create), read `.git` as
+  today: a directory is returned, a file is parsed. A stage-shaped path that cannot be pinned
+  is an `Err`, which `merge_head_exists` and `detect_at` already turn into "no merge".
 - `unmerged_paths(repo_path)`: `WorktreeGit::for_checkout(repo_path)?.read_checked(&["diff",
   "--name-only", "--diff-filter=U"])`.
 - Signatures of every `pub` function stay as they are (`commands/stage/complete.rs` and
@@ -174,8 +235,26 @@ In `pinned_tests.rs` (reuse `contract_worktree` and `plant_foreign_git_dir` from
 - `a_stage_shaped_directory_the_repository_does_not_register_is_refused`:
   `<repo>/.worktrees/stranger` as a plain directory; `for_checkout` is `Err` containing
   `is not a registered worktree`.
+- `a_symlinked_directory_inside_a_stage_worktree_is_refused`: `<worktree>/loom` is a symlink to
+  a directory outside the worktree that holds an `init`ed repository with the marker clean
+  filter, `.gitattributes` applying it and a stat-dirty tracked file; `for_dir(<worktree>/loom)`
+  is `Err` and the marker is absent. Positive control last: plain `git status` in
+  `<worktree>/loom` creates it.
+- `a_stage_worktree_of_a_separate_git_dir_checkout_is_pinned`: `git init --separate-git-dir
+  <t>/store.git <t>/repo`, a commit, `git worktree add <t>/repo/.worktrees/s1 -b loom/s1`;
+  `plant_foreign_git_dir` on s1; `for_checkout(s1)` has `git_dir()` under the canonical
+  `<t>/store.git/worktrees/` and `run_read_only(status)` leaves the marker absent;
+  `for_dir(<s1>/sub)` likewise; positive control last (plain `git status` in s1 creates it).
+- `a_checkout_inside_a_stage_worktree_is_refused`: in a stage worktree `T` of a normal
+  repository, `T/.worktrees/x` is a directory and `T/.git` stays the gitfile git wrote;
+  `for_checkout(T/.worktrees/x)` is `Err` containing `lies inside the stage worktree`, and
+  `for_dir(T/.worktrees/x/sub)` has `T`'s registered `git_dir()`.
+- `for_dir_in_a_plain_subdirectory_reports_the_top_level`: in a plain repository (no stage
+  worktree), `for_dir(<repo>/sub)` has `git_dir() == None` and `work_tree()` equal to the
+  canonical repository root, not `<repo>/sub`; in a stage worktree, `for_dir(<worktree>/sub)`
+  has the registered `git_dir()` and `work_tree()` equal to the canonical worktree.
 
-In `runner.rs` tests (reuse `isolated_git`/`isolated_git_ok`):
+In `runner/tests.rs` (reuse `isolated_git`/`isolated_git_ok`):
 
 - `a_main_git_dir_holding_commondir_is_refused`: repository `R` with committed `README.md`
   (`one\n`); a bare clone `foreign.git` beside it with `core.bare=false` and
@@ -199,17 +278,24 @@ In `pinned_tests.rs` also:
   same-length rewrite; `for_checkout(worktree)?.run_read_only(&["status", "--porcelain"])`
   leaves the marker absent. Positive control last: plain `git status` in the worktree creates
   it. If plain git does not recurse in your fixture, find the git setting that makes it (and
-  that the constant turns off) before writing the assertion; never ship a control that cannot
-  fire.
+  that `NO_HOOKS_ARGS` turns off) before writing the assertion; never ship a control that
+  cannot fire.
+
+In `runner/tests.rs` also: `a_gitlink_in_the_main_checkout_is_not_recursed_into` (the same
+gitlink fixture as the pinned test, built in a plain repository `R`; `run_git(&["status",
+"--porcelain=v1", "--untracked-files=no"], &R)` leaves the marker absent, as
+`require_clean_repository` runs it; positive control last: plain `git status` in `R` creates
+it).
 
 In `status_tests.rs`: `pinned_status_lists_changes_through_the_registered_git_dir`
 (`list_working_tree_changes_in(&WorktreeGit::for_checkout(worktree)?)` lists a file changed in
 the worktree).
 
-In `in_progress.rs` tests: `a_worktree_merge_head_is_read_from_its_registered_git_dir` (write a
+In `in_progress_tests.rs`: `a_worktree_merge_head_is_read_from_its_registered_git_dir` (write a
 `MERGE_HEAD` into the registered admin directory, repoint `T/.git` to a directory without one;
 `detect_in_progress_merge_at_worktree(T)` finds the merge; a `MERGE_HEAD` written only into the
-repointed directory is not reported).
+repointed directory is not reported; the same holds when `T/.git` is replaced by a DIRECTORY
+holding a `MERGE_HEAD`).
 
 Git in tests: `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` pointed at missing files,
 `GIT_CONFIG_NOSYSTEM=1`, identity and `commit.gpgsign=false` via `-c`.

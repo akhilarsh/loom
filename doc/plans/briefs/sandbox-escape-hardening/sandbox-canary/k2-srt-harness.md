@@ -92,9 +92,10 @@ Isolated git in tests: `src/verify/impact_tests_tests.rs::git` :54-60 (`GIT_CONF
 - `fake_home`: add `.codex/plugin-data` to the directory list.
 - `confine`: after `write_settings`, set `cache` with `srt::session_cache(&capsule, &key,
   &session.id, &cwd, &f.home)` (`key` built from `stage.id` and `kind` as D3 spells it) and
-  `capsule`. When `C` does not exist after the launch, create it 0700 with the marker
-  `C/.loom-session` holding the session id, and name, in a comment, the production code that
-  does so (`rg -n 'session-caches' src/`).
+  `capsule`. After the launch and before `confine` does anything else with `C`, assert that
+  `C` exists on the host (the launch creates it; name, in a comment, the production code that
+  does so: `rg -n 'session-caches' src/`). `confine` never creates `C` itself, so a launch that
+  stops creating it fails the fixture and is not hidden by `confine` creating it.
 - Grant lines: :263 and :287 become `confined.cache.join("x"),`; :305 becomes
   `f.home.join(".codex/plugin-data/x")`, and the comment above it says the lane's
   `plugin-data` grant (D6) is live, so the refusal of `hooks.json` is not a dead sandbox.
@@ -158,3 +159,16 @@ and every srt test self-skips inside a stage session (srt binds a Unix socket; t
 denies AF_UNIX). The main agent builds after both workers return; the operator runs the suite
 outside the sandbox (plan prose, "Manual step"). Say in your report that these tests have only
 taken their skip path.
+
+The operator's srt command pins `@anthropic-ai/sandbox-runtime@0.0.78` (the version the bind
+behaviour and the missing git-dir grant were measured on) and runs
+`cargo test confinement -- --nocapture`: cargo captures a passing test's stderr otherwise, so
+a `SKIP` line would never show.
+
+```bash
+shim="$(mktemp -d)"
+printf '#!/bin/sh\nexec bunx @anthropic-ai/sandbox-runtime@0.0.78 "$@"\n' > "$shim/srt"
+chmod +x "$shim/srt"
+cd loom && env -u LOOM_WORK_DIR PATH="$shim:$PATH" LOOM_TEST_REQUIRE_SANDBOX_FREE=1 \
+  cargo test confinement -- --nocapture
+```

@@ -9,6 +9,7 @@ The crate compiles again only once your files match their changes.
 
 - `loom/src/orchestrator/terminal/native/launch.rs`
 - `loom/src/orchestrator/terminal/native/launch/host.rs`
+- `loom/src/orchestrator/terminal/native/launch/session_facts.rs` (new)
 - `loom/src/orchestrator/terminal/native/session_settings.rs`
 - `loom/src/orchestrator/terminal/native/session_settings/contents.rs`
 - `loom/src/orchestrator/terminal/native/wrapper/host_env.rs`
@@ -19,12 +20,17 @@ The crate compiles again only once your files match their changes.
 - `loom/src/orchestrator/terminal/native/tests_capsule_contents.rs`
 - `loom/src/orchestrator/terminal/native/tests_capsule_interpreters.rs`
 - `loom/src/orchestrator/terminal/native/tests_confinement_e2e.rs`: ONLY the `LaunchHost`
-  literal's one new field (section 1) and its `use` line, granted to this stage as a
+  literal's one new field (section 1) and its `use` lines, granted to this stage as a
   compile-only edit. The sandbox-canary stage owns the rest
   of that file; change no probe, no assertion, nothing else.
 - `loom/src/process/environment.rs`
+- `loom/src/process/mod.rs`: ONLY the re-export line for `apply_confined_environment` (section 6).
+- `loom/src/verify/criteria/confine.rs`: ONLY the `CommandConfinement::Confined` arm of
+  `prepare_confined`, which calls `apply_confined_environment` (section 6); nothing else.
+- `loom/src/daemon/server/environment.rs` (section 9)
 - `loom/src/orchestrator/core/inbox_drain/sweep.rs`
 - `loom/src/orchestrator/core/inbox_drain/tests_sweep_cache.rs` (new)
+- `loom/src/commands/init/cleanup.rs` and `loom/src/commands/clean/relay_dirs.rs` (section 10)
 
 Not yours: `wrapper.rs` (its `build_wrapper_script` already renders `WrapperHostEnv::render`, so
 it needs no change), `orchestrator/core/inbox_drain.rs` (register your sweep tests from
@@ -43,7 +49,12 @@ From C1, `crate::sandbox::session_cache`:
     pub struct Ecosystems { pub cargo: bool, pub bun: bool, pub npm: bool, pub pnpm: bool,
                             pub go: bool, pub uv: bool }       // Default, Copy
     impl Ecosystems { pub fn detect(dir: &Path) -> Self; }
-    pub fn session_cache_root(work_dir: &Path) -> anyhow::Result<PathBuf>;   // cfg(test): <work_dir>/session-caches
+    pub fn project_cache_key(project_root: &Path) -> String;  // first 16 hex of the SHA-256 of the project root
+    pub fn project_session_cache_root(project_root: &Path) -> anyhow::Result<PathBuf>;
+                                    // <user cache dir>/loom/session-caches/<project key>;
+                                    // cfg(test): <project_root>/.loom/work/session-caches
+    pub fn session_cache_root(work_dir: &Path) -> anyhow::Result<PathBuf>;   // the project's root above;
+                                                                // cfg(test): <work_dir>/session-caches
     pub fn session_cache_key(stage_id: Option<&str>, kind: SessionType, session_id: &str)
         -> anyhow::Result<String>;                              // "<stage-id>-<kind>", or the session id
     pub fn session_cache_dir(root: &Path, key: &str) -> anyhow::Result<PathBuf>;
@@ -51,12 +62,16 @@ From C1, `crate::sandbox::session_cache`:
                                  real: &RealCaches, used: Ecosystems, codex_licensed: bool)
         -> anyhow::Result<PathBuf>;                             // replaces any previous C, writes the marker
     pub fn session_cache_env(dir: &Path, real: &RealCaches, codex_licensed: bool) -> Vec<(String, String)>;
+    pub fn session_cache_owner(dir: &Path) -> Option<String>;  // the session id in C's owner marker
     pub fn release_session_cache(dir: &Path, session_id: &str) -> anyhow::Result<bool>;  // removes C only for its owner
     pub fn remove_session_cache(dir: &Path) -> anyhow::Result<()>;
 
 `C` is `<root>/<stage-id>-<session-kind>`: every session of one stage and kind gets the same
 path (so cargo does not recompile registry dependencies each session), and each spawn replaces
-the previous session's content. The marker says which session a `C` belongs to now.
+the previous session's content. The marker says which session a `C` belongs to now. `<root>` is
+namespaced per project (`session_cache_root(work_dir)`): two repositories on one host both run
+stages with the same ids, and an unnamespaced root would let one's spawn delete the other's live
+cache.
 
 From C2, `crate::sandbox::session_fs`:
 
@@ -76,10 +91,16 @@ and `PACKAGE_MANAGER_CACHE_WRITE_PATHS`; `CODEX_SANDBOX_WRITE_PATHS` is now
 `["~/.codex/plugin-data"]`. Read C2's and C1's reports if the main agent passes them; the files
 themselves are the truth.
 
-## 1. `launch/host.rs`: resolve the new facts once, in `from_env`
+## 1. `launch/host.rs` and `launch/session_facts.rs`: resolve the new facts once, in `from_env`
 
 `LaunchHost` (`host.rs:30-43`) resolves every host fact in `from_env` and tests set fields
-directly; keep that invariant. Add ONE field and one struct:
+directly; keep that invariant. `LaunchHost` stays in `host.rs` and gains ONE field,
+`pub(super) session: SessionFacts`. `host.rs` is 315 lines and the new struct, the cache
+preparation and the wrapper environment would take it near 400, so they live in a NEW sibling
+file `launch/session_facts.rs`, all `pub(super)`. Declare it in `launch.rs` beside `mod host;`
+(`mod session_facts;`) and import `SessionFacts` into `host.rs` with `use super::session_facts::
+SessionFacts;`. `LaunchHost`'s fields are `pub(super)`, so an `impl LaunchHost` block in
+`session_facts.rs` reaches them. The new file holds:
 
     /// The per-spawn facts a session's capsule and cache need beyond the host checks.
     pub(super) struct SessionFacts {
@@ -96,7 +117,6 @@ directly; keep that invariant. Add ONE field and one struct:
         pub(super) fn resolve(repo_root: &Path, cache_root: PathBuf, home: &Path,
                               lookup: &dyn Fn(&str) -> Option<OsString>) -> Result<Self>;
     }
-    // LaunchHost gains: pub(super) session: SessionFacts,
 
 `resolve` calls `resolve_git_common_dir(repo_root)?` (a repository that does not resolve fails
 the spawn), `RealCaches::from_lookup(home, lookup)` and `env_credential_paths(lookup)`. In
@@ -110,7 +130,8 @@ In `writable_roots` (`host.rs:243-275`) push `session_cache_root(work_dir)` (whe
 roots `session_writable_roots` returns, so `LOOM_BIN` and hook PATH entries under it are refused.
 Do not change `WritableRootInputs`: the canary's e2e constructs it.
 
-Two methods:
+Two methods, in an `impl LaunchHost` block in `session_facts.rs` (`wrapper_env` replaces the
+existing `LaunchHost::wrapper_env(&self, scratch_dir: PathBuf)` in `host.rs`: delete that one):
 
     /// Create this session's cache directory C at `<cache root>/<key>` (replacing the previous
     /// session's, 0700, owner marker written, seeded for the ecosystems `cwd` uses); with the
@@ -130,9 +151,20 @@ self.uid, &self.session.real_caches, Ecosystems::detect(cwd), codex_licensed)` w
 under `self.home` (skip when `None`) with `DirBuilder::new().recursive(true).mode(0o700)`; a
 failure there is a `tracing::warn!`, not a spawn failure (the forward reports its own error).
 
-`host.rs` is 315 lines and these additions keep it under 400. Keep them in `host.rs`: the
-plan's wiring checks look for `resolve_git_common_dir(`, `prepare_session_cache(`,
-`session_cache_env(` and `Ecosystems::detect(` in that file.
+The plan's wiring checks look for `resolve_git_common_dir(`, `prepare_session_cache(`,
+`session_cache_env(` and `Ecosystems::detect(` in `session_facts.rs` (`resolve_git_common_dir(`
+in `resolve`, `prepare_session_cache(` and `Ecosystems::detect(` in `prepare_cache`,
+`session_cache_env(` in `wrapper_env`), so call each there and nowhere else. Both `host.rs` and
+`session_facts.rs` stay under 400 lines.
+
+`session_facts.rs` carries an inline `#[cfg(test)] mod tests` with
+`session_facts_resolve_a_separate_git_dir_store`: `git init --separate-git-dir <store> <repo>`,
+one commit, and a linked worktree added with `git worktree add`; `SessionFacts::resolve` for the
+main checkout and for the linked worktree gives `git_common_dir ==` the canonical store. In the
+checkout `<repo>/.git` is a gitfile, not the store, so an implementation that joined
+`repo_root.join(".git")` fails it. Run `git` with `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM`
+pointed at missing files, `GIT_CONFIG_NOSYSTEM=1` and a local `user.name`/`user.email`, as C2's
+`session_fs` git fixtures do; every path comes from a TempDir.
 
 ## 2. `launch.rs`
 
@@ -141,7 +173,8 @@ plan's wiring checks look for `resolve_git_common_dir(`, `prepare_session_cache(
 there) and build `SessionDirs { scratch: host.prepare_scratch(&session.id)?, cache:
 host.prepare_cache(&key, &session.id, cwd, codex)? }` with
 `codex = sandbox.implementers.includes_codex()`, pass `&dirs` to
-`write_capsule`, and `host.wrapper_env(&dirs, codex)` to `create_session_wrapper_script`. The
+`write_capsule`, and `host.wrapper_env(&dirs, codex)` to `create_session_wrapper_script`
+(`SessionDirs` comes from `session_facts`: `use session_facts::SessionDirs;` in `launch.rs`). The
 function is 46 lines; extract a helper so it stays under 50. `write_capsule` (`launch.rs:256-279`)
 takes `dirs: &SessionDirs` in place of `scratch_dir` (7 parameters, clippy's limit) and fills the
 new `CapsuleRequest::session` (section 3) from `host.session` and `dirs.cache`.
@@ -156,6 +189,7 @@ new `CapsuleRequest::session` (section 3) from `host.session` and `dirs.cache`.
           pub cache_dir: &'a Path,
           pub codex_home: &'a Path,
           pub credential_paths: &'a [PathBuf],
+          pub real_caches: &'a [PathBuf],
       }
 
   and `CapsuleRequest` gains `pub session: SessionPaths<'a>` (doc it).
@@ -165,8 +199,21 @@ new `CapsuleRequest::session` (section 3) from `host.session` and `dirs.cache`.
   repo_root, worktree, git_common_dir: request.session.git_common_dir, cache_dir:
   request.session.cache_dir, home: request.surfaces.home(), codex_home:
   request.session.codex_home, codex_licensed: request.sandbox.implementers.includes_codex(),
-  credential_paths: request.session.credential_paths })`, and passes `session_fs: &session_fs`
-  to `CapsuleInputs`. Keep the function under 50 lines.
+  credential_paths: request.session.credential_paths, real_caches:
+  request.session.real_caches })`, and passes `session_fs: &session_fs` to `CapsuleInputs`.
+  `write_capsule` fills `real_caches` from `host.session.real_caches.cache_paths()` (bind the
+  `Vec` in `write_capsule` so the borrow outlives the request). Keep the function under 50
+  lines.
+- `write_session_capsule`, after `capsule_settings` returns and before the file is written:
+  collect the strings of `settings["sandbox"]["filesystem"]["allowWrite"]` and call
+  `crate::sandbox::session_fs::refuse_real_cache_grants(&entries, request.surfaces.home(),
+  worktree.unwrap_or(repo_root), request.session.cache_dir, request.session.real_caches)?`.
+  An `Err` fails the spawn with the entry and the cache named, as `validate_config`'s
+  refusals do; no capsule is written. A plan `allow_write` entry such as `~/.cargo/registry`
+  would otherwise reach the real cache the plan exists to protect.
+- Test `tests_launch_capsule::a_launch_whose_plan_grants_a_real_cache_fails` (exact name):
+  a fixture launch whose plan `allow_write` holds `~/.npm` (with the fixture home's `.npm`
+  created) fails, its error naming `~/.npm`, and writes no capsule file.
 - `capsule_denies` (`:146-169`): drop the `plugin_entries` computation and field; the
   `codex_plugin_entries` import goes. Update both doc comments (the module doc at `:1-10` gains
   one sentence: the capsule also carries the session's own filesystem layer,
@@ -198,28 +245,49 @@ before. Update the module doc's first sentence to mention the cache environment.
 session's cache variables those commands would fall back to the real caches, which are read-only
 now, and fail with EROFS.
 
-- `is_allowed` (`:99-103`) accepts a name in `STAGE_HOST_ENV_ALLOWLIST` OR in
-  `SESSION_CACHE_VARIABLES`. Leave the existing list and its comments alone.
-- `apply_stage_environment_from` (`:84-97`), after forwarding, sets every
-  `SESSION_GIT_CONFIG_ENV` pair. The host's own `GIT_CONFIG_*` are never forwarded (they can
-  carry a credential, for instance an `http.extraheader`); the fixed pair is the only git
-  configuration a confined command gets from the environment.
+`apply_stage_environment_from` (`:84-97`) is shared: `apply_stage_environment` is also called by
+the host-side spawners (`native/spawner.rs`, `tmux/mod.rs`) and by `spawn_confined`
+(`verify/criteria/confine.rs`, `prepare_confined`). The session additions below go on the
+confined-command path only. An operator's tmux pane must not get `gc.auto=0`, and a host-side
+spawn must not forward cache or proxy locations (`GOPROXY` can name a proxy URL) from the
+operator's shell beyond what it forwarded before.
+
+- Add `pub fn apply_confined_environment(command: &mut Command)`, which calls a private
+  `apply_confined_environment_from(command, source)`. That one collects `source` into a `Vec`
+  once, calls `apply_stage_environment_from` with a clone of it, then forwards every entry whose
+  name is in `SESSION_CACHE_VARIABLES` (a small private `is_session_cache_variable`; leave
+  `is_allowed`, `STAGE_HOST_ENV_ALLOWLIST` and its comments alone) and sets every
+  `SESSION_GIT_CONFIG_ENV` pair. Re-export it from `process/mod.rs` next to
+  `apply_stage_environment` (`:20`), and change the `CommandConfinement::Confined` arm of
+  `prepare_confined` in `verify/criteria/confine.rs` (`:148`) to call it. Neither the shared
+  function nor its other callers change.
+- The host's own `GIT_CONFIG_*` are never forwarded (they can carry a credential, for instance an
+  `http.extraheader`); the fixed pairs are the only git configuration a confined command gets
+  from the environment.
 - `apply_stage_environment_from` also sets `LOOM_ACCEPTANCE_STAGE_ID`,
   `LOOM_ACCEPTANCE_SESSION_ID` and `LOOM_ACCEPTANCE_WORK_DIR` from the source's
   `LOOM_STAGE_ID`, `LOOM_SESSION_ID` and `LOOM_WORK_DIR` when each is set and non-empty (one
-  constant `ACCEPTANCE_CONTEXT_VARIABLES: [(&str, &str); 3]` pairing source and target names).
+  constant `ACCEPTANCE_CONTEXT_VARIABLES: [(&str, &str); 3]` pairing source and target names:
+  an explicit list of exactly these three, never a `LOOM_ACCEPTANCE_` prefix match).
   The `LOOM_*` names themselves stay withheld, so a `loom` subcommand inside an acceptance command
   keeps its operator behaviour; the copies exist for the in-session canary (sandbox-canary stage),
   which must find its session's capsule when integration-verify's `loom stage complete` runs it.
-  No loom code reads the `LOOM_ACCEPTANCE_*` names.
-- Doc both on `STAGE_HOST_ENV_ALLOWLIST`: inside a session the forwarded cache variables point
+  Loom's own code reads one other `LOOM_ACCEPTANCE_*` name, `LOOM_ACCEPTANCE_CACHE`
+  (`verify/criteria/cache.rs`, the acceptance-cache policy); it stays unforwarded, which the
+  explicit list guarantees.
+- Doc both on `apply_confined_environment`: inside a session the forwarded cache variables point
   into the session's own cache directory, so an acceptance command builds from it; outside a
-  session they carry the daemon's own values.
+  session they carry the invoking shell's own values.
 
 Tests (in the existing `mod tests`, exec'ing `/usr/bin/env` like the two tests there):
-`session_cache_locations_survive_a_confined_run` (source `CARGO_HOME`, `npm_config_cache`,
-`GOPROXY`, `XDG_CACHE_HOME` and a `GITHUB_TOKEN` canary: the four survive, the canary does not)
-and `git_config_is_fixed_and_never_forwarded_from_the_host` (exact name; acceptance runs it:
+`session_cache_locations_survive_a_confined_run` (through `apply_confined_environment_from`:
+source `CARGO_HOME`, `npm_config_cache`, `GOPROXY`, `XDG_CACHE_HOME` and a `GITHUB_TOKEN`
+canary: the four survive, the canary does not), paired with
+`host_side_spawns_get_no_session_cache_variables_and_no_git_config` (through
+`apply_stage_environment_from`, the same source: `npm_config_cache`, `GOPROXY` and
+`XDG_CACHE_HOME` and any `GIT_CONFIG_` line are absent from the output), and
+`git_config_is_fixed_and_never_forwarded_from_the_host` (exact name; acceptance runs it; through
+`apply_confined_environment_from`:
 source `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=http.extraheader`, `GIT_CONFIG_VALUE_0=AUTHORIZATION:
 basic secret-canary`; output holds `GIT_CONFIG_KEY_0=gc.auto` and neither `http.extraheader` nor
 `secret-canary`), and `session_identity_reaches_acceptance_under_its_own_names` (exact name;
@@ -258,8 +326,15 @@ Build each cache with C1's `prepare_session_cache` (key from `session_cache_key`
 record, root from `session_cache_root(&fx.work_dir)`, a `RealCaches::from_lookup` over a
 TempDir home, `Ecosystems::default()`), so the marker is the real one.
 
+`sweep_one` returns early (`sweep.rs:57-62`) unless a scratch directory, an undrained inbox or a
+capsule exists for the session, so every test below that expects a retirement first plants a
+capsule or a scratch directory for that session: a capsule as `tests_sweep.rs::write_capsule`
+does (`session_settings_path(&fx.work_dir, &record.id)`, create its parent, write `{}`), or the
+directory `fx.scratch_root.join(&record.id)`. A helper there is private; copy the few lines.
+
 - `retirement_removes_the_session_cache_and_leaves_linked_real_files` (exact name; acceptance
-  runs it): a Completed Knowledge record on a Completed stage and its prepared cache holding
+  runs it): a Completed Knowledge record on a Completed stage, a planted capsule (or scratch
+  directory) for it, and its prepared cache holding
   `cargo/registry/cache/x.crate`, a symlink to a real file outside it; after
   `sweep_sessions(&mut fx.host(false), ...)` the id is in `report.retired`, the cache directory
   is gone, the real file is intact.
@@ -273,7 +348,8 @@ TempDir home, `Ecosystems::default()`), so the marker is the real one.
 
 ## 8. The test fixtures (no assertion line changes except where named)
 
-- `tests_launch_capsule.rs` fixture (`:48-93`): create `repo/.git` as a directory; the
+- `tests_launch_capsule.rs` fixture (`:48-93`): create `repo/.git` as a directory, and add
+  `use super::session_facts::SessionFacts;` after its `use super::host::{...}` line (`:8`); the
   `LaunchHost` literal gains `session: SessionFacts { git_common_dir: <repo/.git canonical>,
   cache_root: temp.path().join("session-caches"), real_caches:
   RealCaches::from_lookup(&temp.path().join("home"), &|_| None), credential_paths: Vec::new()
@@ -289,8 +365,10 @@ TempDir home, `Ecosystems::default()`), so the marker is the real one.
   `repo/.git` in `denyWrite` nor any `.worktrees` entry in `denyRead`.
 - `tests_confinement_e2e.rs` (the ownership exception above): the literal at `:85` gains
   `session: SessionFacts::resolve(&repo, base.join("session-caches"), &home, &|_| None).unwrap(),`
-  and the import at `:13` becomes `use super::host::{LaunchHost, SessionFacts};`. That fixture
-  runs `git init` before building the host, so `resolve` works there.
+  and the import at `:13`, `use super::host::LaunchHost;`, stays and is followed by
+  `use super::session_facts::SessionFacts;` (the module is `launch::session_facts`; both test
+  files are declared from `launch.rs`, so `super` is `launch`; adjust to the actual module path).
+  That fixture runs `git init` before building the host, so `resolve` works there.
 - `tests_session_settings.rs`: `checkout()` (`:178-198`) also creates `repo/.git`; `Checkout`
   gains the cache root (`root.join("session-caches")`); `write_capsule` (`:206-229`) fills
   `session: SessionPaths { git_common_dir: &<repo/.git>, cache_dir: &<cache root>/<session id>,
@@ -325,6 +403,74 @@ TempDir home, `Ecosystems::default()`), so the marker is the real one.
   `the_default_host_env_exports_no_cache_variable` (no `CARGO_HOME=`), and
   `session_env_values_are_shell_escaped` (a value with a space is single-quoted).
 
+## 9. `daemon/server/environment.rs`: the daemon keeps the location variables
+
+The daemon strips its environment to `HOST_ENV_ALLOWLIST` (`DaemonEnvironment::apply`) before the
+orchestrator thread starts, so `std::env::var_os` in the daemon never sees `CARGO_HOME`,
+`XDG_CACHE_HOME`, `DOCKER_CONFIG` and the rest. `from_env`'s `RealCaches::from_lookup` and
+`env_credential_paths` (section 1) would always fall back to their defaults in production, while
+the contracts, which inject a lookup, still pass. Add these location-valued names to
+`HOST_ENV_ALLOWLIST` (names only: locations, never a token or password), under a comment saying
+what they are for (they relocate the operator's package caches, codex home and credential files,
+which the session cache seeding and the credential read-deny list resolve at spawn):
+
+- caches and toolchains: `CARGO_HOME`, `RUSTUP_HOME`, `XDG_CACHE_HOME`, `BUN_INSTALL`,
+  `BUN_INSTALL_CACHE_DIR`, `npm_config_cache`, `NPM_CONFIG_CACHE`, `npm_config_store_dir`,
+  `YARN_CACHE_FOLDER`, `GOPATH`, `GOMODCACHE`, `GOCACHE`, `GOPROXY` (a value with userinfo is
+  dropped later, by `session_cache_env`), `UV_CACHE_DIR`, `PIP_CACHE_DIR`, `DENO_DIR`, and the
+  three more names C1's `RealCaches::from_lookup` reads for the pnpm store, `NPM_CONFIG_STORE_DIR`,
+  `PNPM_HOME` and `XDG_DATA_HOME`;
+- codex and credential locations: `CODEX_HOME`, `GH_CONFIG_DIR`, `DOCKER_CONFIG`, `KUBECONFIG`,
+  `NPM_CONFIG_USERCONFIG`, `npm_config_userconfig`, `GNUPGHOME`, `PASSWORD_STORE_DIR`,
+  `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE`, `CLOUDSDK_CONFIG`, `AZURE_CONFIG_DIR`.
+
+Add a test to that file's existing `mod tests` (it already holds
+`secret_canaries_and_privileged_loom_values_are_not_captured`; mirror it, through
+`DaemonEnvironment::capture_from`): `location_variables_survive_the_daemons_environment_strip`,
+whose source holds `CARGO_HOME`, `DOCKER_CONFIG` and a `GITHUB_TOKEN` canary; the capture keeps
+the first two and drops the token. Report the test's full path
+(`daemon::server::environment::tests::...`).
+
+## 10. `loom init` and `loom clean` remove the project's session caches
+
+`sweep_sessions` is the only release path for a `C`, and it does not see every end of a session:
+`loom sessions kill` deletes the session record at once, `loom init --clean` deletes the work dir,
+and the run loop exits when the graph completes, so the last sessions are never retired. Their
+caches (80 to 600 MB each) would accumulate, because a spawn replaces only the cache of its own
+stage and kind. Both commands therefore remove caches through the project's namespace,
+`project_session_cache_root(project_root)`, with `remove_session_cache` semantics (it never
+follows a symlink and restores owner access on go's `0555` directories, which a plain
+`remove_dir_all` cannot empty). Neither calls `remove_session_cache` on a path they did not
+derive from the namespace.
+
+- `loom init` (`commands/init/cleanup.rs`, `cleanup_work_directory`): before the
+  `!work_dir.exists()` early return, remove the namespace of `repo_root`. A failure prints a
+  warning in the style of `relay_dirs::remove` and never fails the init. The call needs no test of
+  its own: under `cfg!(test)` the namespace lies inside the work dir the function removes anyway,
+  so a test could not tell.
+- `loom clean` (`commands/clean/relay_dirs.rs`, `clean_relay_dirs`): derive the project root from
+  `work_dir` (`WorkDir::new(work_dir.to_path_buf())`, then `project_root()`; do nothing when it
+  is `None`), in a helper so the function stays under 50 lines. `RelayScope::EverySession`
+  (`--state`, `--all`) removes the whole namespace and counts it as one removed directory when it
+  existed. `RelayScope::NotRunning` (`--sessions`) must not delete the cache of a Running
+  session, whose capsule grants it: for each directory directly under the namespace root whose
+  `session_cache_owner` is `Some(id)` with `!record_is_running(work_dir, &id)`, call
+  `release_session_cache(&dir, &id)` and count a `true`; a directory with no owner marker, or a
+  Running owner, stays.
+
+Test in `relay_dirs.rs`'s `mod tests`:
+`commands::clean::relay_dirs::tests::clean_removes_the_project_session_caches` (adjust to the real
+module path and report it). With `tree()` and `session(...)`, prepare one cache per session with
+`prepare_session_cache` (root `session_cache_root(&tree.work_dir)`, which equals
+`project_session_cache_root(<tmp>)` under `cfg!(test)` because the tree's work dir is
+`<tmp>/.loom/work`; keys `stage-1-stage` for the Running session and `stage-1-knowledge` for the
+Completed one, from `session_cache_key`; a `RealCaches::from_lookup` over a TempDir home;
+`Ecosystems::default()`; uid from the TempDir's metadata), and plant a symlink at the namespace
+root pointing at a victim directory holding a file. After `clean_relay_dirs(.., NotRunning)` the
+Completed session's cache is gone and the Running one's stays with its marker; after
+`clean_relay_dirs(.., EverySession)` the namespace directory is gone. In both cases the victim
+file is intact.
+
 ## Traps
 
 - Every path in tests comes from a TempDir; no literal home, uid or repository path. The
@@ -340,6 +486,7 @@ TempDir home, `Ecosystems::default()`), so the marker is the real one.
 
 ## Check (once)
 
-`cargo test --lib orchestrator::terminal::native::` from `loom/`. Report, never fix, a compile
+From `loom/`, one run: `cargo test --lib -- orchestrator::terminal::native::
+daemon::server::environment:: commands::clean::relay_dirs:: process::environment::`. Report, never fix, a compile
 error in a file you do not own, with its file:line and the owning worker (C1: `sandbox/session_cache/`;
 C2: the rest of `sandbox/`, `fs/permissions/state_root.rs`, `codex.rs`).

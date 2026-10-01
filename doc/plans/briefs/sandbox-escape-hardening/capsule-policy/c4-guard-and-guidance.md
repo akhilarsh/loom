@@ -96,7 +96,8 @@ The five existing checks stay exactly as they are and keep passing.
 
 ## 3. `signals/format/helpers.rs`: `append_package_cache_note`
 
-Replace the text (`helpers.rs:246-248`) and its doc comment. Keep the label
+Replace the text (the body of `append_package_cache_note`; locate it by name, the stage-exits
+plan moved its lines) and its doc comment. Keep the label
 `**Package-manager caches:**` byte for byte: `signals/tests_commit_timing.rs:181` asserts it.
 The new text says, in plain sentences:
 
@@ -112,17 +113,24 @@ The new text says, in plain sentences:
 - two things cannot happen in the sandbox: installing a Rust toolchain (`rustup` is read-only
   and auto-install is off) and fetching a cargo git dependency from a host the allow-list lacks;
 - `EROFS` / `Read-only file system` from a package manager means a tool reached a real cache or a
-  toolchain directory: STOP and report it as a blocker, never work around it.
+  toolchain directory: block the stage with `loom stage block <stage-id> "<path> is read-only in
+  the sandbox"`; never work around it.
 
-Add a `#[cfg(test)] mod tests` at the end of `helpers.rs` with
+PLAN-stage-exits-and-environment (merged first) already created an inline `#[cfg(test)] mod
+tests` in `helpers.rs` with `the_package_cache_note_names_loom_stage_block`: the note must hold
+`loom stage block` and must not hold `report it as a blocker`, a phrase that plan added to
+`signals/tests_doctrine_blocks.rs::RETIRED_PHRASES`. Add both tests below to that existing `mod
+tests`, and keep `the_package_cache_note_names_loom_stage_block` green (the last bullet above is
+worded for it). The tests are
 `the_package_cache_note_states_the_per_session_caches` (the note holds the label, `read-only`
 and `CARGO_HOME`) paired with `the_package_cache_note_no_longer_grants_the_real_caches` (it holds
 neither "are writable" nor "allow_write entry").
 
 ## 4. `skills/loom-plan-writer/references/sandbox.md`
 
-Replace the paragraph at line 7 ("**Package-manager caches are pre-granted.** ...") with one
-headed exactly `**Package-manager caches are per session.**` that states: every session runs on
+Replace the paragraph that opens with the label `**Package-manager caches are pre-granted.**`
+(find it by that label, not by a line number) with one headed exactly
+`**Package-manager caches are per session.**` that states: every session runs on
 its own cache directory, at a path stable per stage and session kind, emptied and seeded afresh
 at every spawn for the ecosystems the worktree uses (by `Cargo.toml`, `go.mod`,
 `bun.lock`/`bun.lockb`, `package-lock.json`, `pnpm-lock.yaml`, `uv.lock`) and removed when its
@@ -134,8 +142,11 @@ only its registry domain in `network.allowed_domains`; out of reach: installing 
 configured only in `~/.npmrc`, `~/.yarnrc.yml` or `~/.pypirc`, which sessions cannot read
 (commit a project-level config instead); the stage session's first build after its contract
 session recompiles Rust registry dependencies once (the two kinds have different cache paths).
+End the paragraph with one more sentence: "The repository's pre-commit hook runs only in
+checkout sessions; a worktree stage's commits are applied by the daemon with hooks disabled."
 
-In the "ungrantable classes" list (lines 24-37) add two bullets and change the count word:
+In the "ungrantable classes" list (find it by that name; its lines move once the paragraph above
+grows) add two bullets and change the count word:
 **Git writes in a worktree stage** (stage, contract and adjudication sessions cannot write the
 git directory: `git add`, `git commit`, `git stash`, anything writing refs, objects or the
 index; a criterion that writes git is not an acceptance criterion) and **Other stage

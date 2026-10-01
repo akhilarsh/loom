@@ -84,6 +84,8 @@ In `session_cache/mod.rs`, re-exporting from the submodules so every item is rea
                             pub go: bool, pub uv: bool }
     impl Ecosystems { pub fn detect(dir: &Path) -> Self; }
 
+    pub fn project_cache_key(project_root: &Path) -> String;
+    pub fn project_session_cache_root(project_root: &Path) -> anyhow::Result<PathBuf>;
     pub fn session_cache_root(work_dir: &Path) -> anyhow::Result<PathBuf>;
     pub fn session_cache_key(stage_id: Option<&str>, kind: SessionType, session_id: &str)
         -> anyhow::Result<String>;
@@ -107,7 +109,10 @@ hashes a registry package's source path, which lies under `CARGO_HOME`. Measured
 build under `CARGO_HOME=c1`, then `c2`, then `c1` recompiled `cfg-if` at every change, while a
 stable `CARGO_HOME` path whose content was replaced did not. So `C` is
 `<root>/<stage-id>-<session-kind>`: every session of one stage and kind (a handoff, a retry)
-gets the same path and no dependency rebuild. The content is still per session: each spawn
+gets the same path and no dependency rebuild. `<root>` is namespaced per project (section 7):
+two clones of one host share the user cache directory, and both run a stage named
+`integration-verify`, so an unnamespaced key would make the second spawn delete the first's live
+cache. The content is still per session: each spawn
 deletes whatever the previous session left and seeds afresh, so nothing a session wrote reaches
 the next one, the real caches are never written, and the host never builds from `C` (the
 operator's decision 1).
@@ -156,6 +161,11 @@ the real caches through it.
 for `package-lock.json` or `npm-shrinkwrap.json`, `pnpm` for `pnpm-lock.yaml`, `uv` for
 `uv.lock` (`Path::is_file`). Nothing else is read.
 
+`detect` ignores every package directory, in `types` and in `packages` alike, whose path
+(relative to `profile.root`) has a component named `fixtures`: test data is not a project the
+session builds. This repository's `loom/tests/fixtures/source/labeled/go/go.mod` would otherwise
+set `go` and seed go's build cache (about 6,000 links) on every spawn.
+
 ## 3. `tree.rs`: the three filesystem primitives (never follow a symlink)
 
 All three walk with `std::fs::read_dir` and `symlink_metadata`; a symlink found in the SOURCE
@@ -169,12 +179,17 @@ anywhere). A source that does not exist is `Ok(())` and creates nothing beyond `
   file>, <dest file>)`. This is the "replicate with symlinked files" mechanism: the tool can add
   new files beside the links, and a directory-level link would fail (npm measured EEXIST).
 - `pub(super) fn link_entries(src: &Path, dest: &Path, skip: &[&str]) -> Result<()>`: one
-  symlink per top-level entry of `src` (directory or regular file) whose name is not in
-  `skip`.
+  symlink per top-level entry of `src` (directory or regular file) whose name is not in `skip`
+  and does not start with `.`.
 
 Symlink targets are the absolute source paths as given (the real cache location), not
 canonicalized. Keep each function under 50 lines; recursion depth is the tree's depth, which is
 fine.
+
+**One rule for every seed: it never reproduces a tool's control or temp entries.** That is bun's
+`.tmp`, go's `trim.txt`, and any dot-entry at the top of a root `link_entries` links. A linked
+control entry points at the read-only real cache, and the tool then fails where it writes to it
+(sections 4 and 5 name the cases).
 
 `remove_session_cache(dir)` lives here too (prepare and `release_session_cache` call it):
 
@@ -206,7 +221,12 @@ returns `Result<()>`. The sizes below are why nothing is ever copied whole.
   `git/`, `.crates.toml`, `.crates2.json`, `.package-cache*` or `.global-cache`: cargo creates
   the lock and tracking files it needs, and `git/` starts empty (git dependencies re-fetch; the
   plan records it).
-- `seed_bun(real, dest)`: `link_entries(real, dest, &[])` (0.8 s for 20,045 entries measured).
+- `seed_bun(real, dest)`: `link_entries(real, dest, &[".tmp"])` (0.8 s for 20,045 entries
+  measured), which skips `.tmp` and every other dot-entry. Bun keeps a `.tmp` directory in the
+  cache root and writes into it on every install: reproduced, with `.tmp` linked to the read-only
+  real cache `bun install` and `bun x markdownlint-cli2` exit 1 ("Unexpected accessing temporary
+  directory"), and with a real `.tmp` both succeed. The real `~/.bun/install/cache/.tmp` exists
+  on the planning host.
 - `seed_npm(real, dest)`: `copy_tree(real/_cacache/index-v5, dest/_cacache/index-v5)` (116 MB,
   about 1 s measured) and `link_files(real/_cacache/content-v2, dest/_cacache/content-v2)`.
   Nothing else (`_logs`, `_npx`, `_cacache/tmp` start empty).
@@ -214,8 +234,11 @@ returns `Result<()>`. The sizes below are why nothing is ever copied whole.
   `copy_tree(real/v<N>/index, dest/v<N>/index)` and `link_files(real/v<N>/files,
   dest/v<N>/files)`. `dest` is `C/pnpm-store`: pnpm appends `v10` itself (verified with pnpm
   10.15.0: `npm_config_store_dir=<dir> pnpm store path` prints `<dir>/v10`).
-- `seed_go_build(real, dest)`: `link_files(real, dest)`. The module cache is never seeded:
-  `GOPROXY` serves it read-only (section 6).
+- `seed_go_build(real, dest)`: `link_files(real, dest)`, then remove `dest/trim.txt` when it is
+  a symlink (`symlink_metadata`; a missing one is fine), so `trim.txt` is never linked. Go
+  recreates it. Reproduced with go 1.25.5 under bwrap: a read-only linked `trim.txt` holding a
+  timestamp older than a day makes `go build` exit 1 ("failed to trim cache: ... read-only file
+  system"). The module cache is never seeded: `GOPROXY` serves it read-only (section 6).
 - `seed_uv(real, dest)`: `copy_tree` every directory directly in `real` whose name starts with
   `simple-v`, `wheels-v` or `interpreter-v`; `link_files(real/archive-v0, dest/archive-v0)`.
   Leave `sdists-*`, `git-*`, `builds-*` and `environments-*` empty (4.6 s, about 590 MB
@@ -234,20 +257,36 @@ D6. Codex writes run state into its home during every run (sqlite databases and 
 and `-shm` files, `models_cache.json`, `version.json`, `shell_snapshots/`,
 `thread-writer-locks/`, `session_index.jsonl`, `history.jsonl`, `sessions/`,
 `archived_sessions/`, `log/`, `.tmp/`, `tmp/`, `app-server-control/`, `app-server-daemon/`,
-`ipc/`, `memories/`, `cache/`), so a link to any of those fails with EROFS. Use an allowlist,
-so an entry a future codex adds starts fresh instead of failing through a link:
+`ipc/`, `memories/`, `cache/`), so a link to any of those fails with EROFS. Codex also writes
+inside entries of `packages`, `plugins` and `skills`: mtimes on the planning host show it writing
+today in `plugins/cache/openai-curated-remote`, `plugins/.remote-plugin-install-staging`,
+`packages/app-server-daemon` (`install.lock`, `auto-update-version`) and `skills/.system`, so a
+per-entry link to those fails the same way. Use an allowlist, so an entry a future codex adds
+starts fresh instead of failing through a link:
 
 - copy (regular files only): `CODEX_PROTECTED_FILES` (`config.toml` keeps the
-  `exclude_slash_tmp` setting loom relies on, `architecture/codex-plugin.md`);
+  `exclude_slash_tmp` setting loom relies on, `architecture/codex-plugin.md`), and the root
+  dot-files `.codex-global-state.json`, `.personality_migration` and `.sandbox_migration` when
+  present (codex rewrites them; as copies they are writable and not write-denied);
 - symlink when present: `auth.json` (codex rewrites it in place with truncate+write, which
   reaches the real file C2 grants), `AGENTS.md`, `hooks`, `installation_id`,
   `loom-skill-catalog`, `rules`, `vendor_imports`;
 - real directory holding `link_entries` of the real one, when present: `packages`, `plugins`,
-  `skills` (codex adds entries there);
-- everything else: not created.
+  `skills`, with these exceptions inside them. `plugins/cache` and `skills/.system` are
+  replicated as real directory trees of symlinked files (`link_files`), so codex can add files
+  beside the links. `plugins/.remote-plugin-install-staging` and `packages/app-server-daemon`
+  are created as fresh empty directories. Every other entry of the three directories stays a
+  per-entry link (`link_entries` with `plugins/cache` and `packages/app-server-daemon` in
+  `skip`; it already skips the dot-entries `.remote-plugin-install-staging` and `.system`);
+- everything else, `.tmp` and `tmp` included: not created, so it starts fresh.
 
-Name the three lists as constants with a doc comment each. The real entry names were listed
-from a live `~/.codex` on the planning host: `AGENTS.md app-server-control app-server-daemon
+Name the lists as constants with a doc comment each (protected files, copied dot-files, linked
+entries, the three per-entry-link directories, the two replicated trees, the two fresh
+directories). The real entry names were listed from a live `~/.codex` on the planning host. Beside
+the names below it holds the root dot-entries `.codex-global-state.json`,
+`.personality_migration`, `.sandbox_migration` and `.tmp`; `plugins` holds `cache` and
+`.remote-plugin-install-staging`, `skills` holds `.system`, and `packages` holds
+`app-server-daemon`: `AGENTS.md app-server-control app-server-daemon
 archived_sessions auth.json cache computer-use config.toml goals_1.sqlite hooks hooks.json
 installation_id ipc log logs_2.sqlite loom-skill-catalog mcp-oauth-locks memories
 memories_1.sqlite models_cache.json node_repl packages plugin-data plugins queue_1.sqlite
@@ -256,6 +295,10 @@ state_5.sqlite thread-writer-locks thread_history_1.sqlite tmp
 tui-thread-reference-capabilities vendor_imports version.json visualizations` (plus `-wal` and
 `-shm` siblings of each sqlite file). `plugin-data` is never linked: the companion's job state
 lives at the real `~/.codex/plugin-data`, which C2 grants directly.
+
+This layout is unmeasured with a live codex run: no stage's acceptance runs the codex lane. The
+plan's operator step (`## After the plan (operator)`, the one-stage scratch plan with a codex
+implementer) checks it after the plan merges.
 
 ## 6. `env.rs`: `session_cache_env(dir, real, codex_licensed)`
 
@@ -290,12 +333,26 @@ reads nothing else.
 
 ## 7. `mod.rs`: root, directory, prepare
 
+- `project_cache_key(project_root) -> String`: the first 16 hex characters of
+  `hex::encode(Sha256::digest(project_root.as_os_str().as_bytes()))` (`sha2::{Digest, Sha256}`
+  and `std::os::unix::ffi::OsStrExt`; mirror `codex_lifecycle/jobs.rs:156`; `sha2` and `hex` are
+  dependencies already). It hashes the path as given; its callers pass the canonical project
+  root (`WorkDir::project_root`, the parent of `.loom/work`).
+- `project_session_cache_root(project_root)`: the cache root of one project, the directory
+  `loom init` and `loom clean` (C3) remove. Under `cfg!(test)`,
+  `<project_root>/.loom/work/session-caches`, which is the directory `session_cache_root`
+  returns for that project's real work dir, so a test of the cleanup finds what a test of the
+  launch prepared. Otherwise canonicalize `project_root` (context naming the path), then
+  `dirs::cache_dir().context(...)?.join("loom").join("session-caches").join(<project_cache_key
+  of the canonical root>)` (put the join in a private `namespace_under(cache_dir, project_root)`
+  so a test checks it without `dirs`), refused with an error when the result lies under `/tmp`
+  (mirror `relay/scratch.rs:47`: every sandbox on the host can write `/tmp/claude-<uid>`).
 - `session_cache_root(work_dir)`: under `cfg!(test)`, `<absolute work_dir>/session-caches`
   (mirror `host_scratch_root` in `orchestrator/terminal/native/launch/host.rs:201`, so no unit
-  test creates directories in the operator's cache); otherwise
-  `dirs::cache_dir().context(...)?.join("loom").join("session-caches")`, refused with an error
-  when it lies under `/tmp` (mirror `relay/scratch.rs:47`: every sandbox on the host can write
-  `/tmp/claude-<uid>`).
+  test creates directories in the operator's cache); otherwise the project root of `work_dir`
+  (`crate::fs::work_dir::WorkDir::new(absolute work_dir)?.project_root()`, an error with context
+  when it is `None`) passed to `project_session_cache_root`. Doc the rule and why: the stage id
+  and kind alone collide across repositories that share one host cache root.
 - `session_cache_key(stage_id, kind, session_id)`: with a stage,
   `validate_id(stage_id)` then `format!("{stage_id}-{kind}")` (`SessionType`'s `Display`:
   `stage`, `contract`, `knowledge`, `merge`, `base_conflict`, `adjudication`; none holds a `-`,
@@ -330,6 +387,13 @@ reads nothing else.
   `remove_session_cache(dir)` and `Ok(true)`. Retirement (C3) calls this, never
   `remove_session_cache` directly.
 
+**Where seeding runs.** `prepare_session_cache` runs synchronously, once per spawn, on the
+daemon's orchestrator tick inside `start_ready_stages`
+(`orchestrator/core/stage_executor.rs`), through C3's launch code. On this host one spawn that
+detects cargo and bun is an 84 MB index copy plus about 30,000 symlinks, and the tick is blocked
+for that long. Keep the seeds to local filesystem work: no network, no retry loop, one
+`read_dir` pass per directory.
+
 ## Tests (each boundary test asserts the allowed case beside the denied one)
 
 Build every path from a `TempDir`; get the uid from `std::fs::metadata(temp.path())?.uid()`
@@ -349,7 +413,9 @@ Build every path from a `TempDir`; get the uid from `std::fs::metadata(temp.path
 - `detect_reads_manifests_and_lockfiles` (a tree with `Cargo.toml`, `go.mod`,
   `web/package.json` plus `web/bun.lock`, `py/pyproject.toml` plus `py/uv.lock`: cargo, go, bun
   and uv set, npm and pnpm not), paired with `detect_seeds_nothing_for_a_bare_tree` (only a
-  README).
+  README) and `detect_ignores_packages_under_a_fixtures_directory` (`tests/fixtures/go/go.mod`
+  and `tests/fixtures/web/bun.lock` beside `web/package.json`: neither sets `go` nor `bun`; the
+  same files outside `fixtures` do).
 
 `tests_seed.rs`:
 
@@ -360,8 +426,23 @@ Build every path from a `TempDir`; get the uid from `std::fs::metadata(temp.path
   directory without `.cargo-ok`, no reproduction of a symlink planted inside the real index.
 - `seed_npm_copies_the_index_and_links_content_files`, `seed_pnpm_copies_each_store_index_and_links_files`,
   `seed_go_build_links_every_cache_file`, `seed_uv_copies_metadata_and_links_archives`,
-  `seed_xdg_cache_links_all_but_loom_and_relocated_tools`, `seed_bun_links_every_top_level_entry`.
+  `seed_xdg_cache_links_all_but_loom_and_relocated_tools`,
+  `seed_bun_links_every_entry_but_tmp` (`.tmp` absent beside a linked package directory).
+- `seed_go_build_never_links_trim_txt` (a real `trim.txt` and a cache file in `real`: the cache
+  file is a link, `dest/trim.txt` does not exist).
 - `seeding_a_missing_real_cache_leaves_an_empty_directory`.
+- `sandbox::session_cache::tests_seed::two_projects_get_different_cache_namespaces` (exact
+  name): two TempDir project roots give different `project_cache_key` values, each exactly 16
+  lowercase hex characters, and one root gives the same key twice; `namespace_under(cache, a)`
+  and `namespace_under(cache, b)` differ and both lie under `cache/loom/session-caches/`.
+- `preparing_one_project_spares_another_projects_cache` (exact name): `ra =
+  namespace_under(cache, a)` and `rb = namespace_under(cache, b)` for two TempDir project roots;
+  `prepare_session_cache(rb, "stage-1-stage", "sb", ...)` then a planted `rb/stage-1-stage/
+  cargo/planted.txt`; then `prepare_session_cache(ra, "stage-1-stage", "sa", ...)`, a second
+  prepare in `ra` for session `sa2`, and `release_session_cache(&ra.join("stage-1-stage"),
+  "sa2")`. Afterwards `session_cache_owner(&rb.join("stage-1-stage")) == Some("sb")` and
+  `planted.txt` is still there: the same stage id and kind in two repositories never address
+  one cache.
 - `prepare_creates_a_private_directory_and_replaces_a_leftover` (mode `0o700`; a stray file the
   previous session wrote is gone; the marker names the new session) and
   `prepare_never_follows_a_symlink_planted_at_the_session_directory` (a symlink at `root/<key>`
@@ -388,6 +469,16 @@ Build every path from a `TempDir`; get the uid from `std::fs::metadata(temp.path
   scenario's layout: protected files regular copies with the real bytes, `auth.json` and `hooks`
   symlinks, `skills` a real directory of links, no `sessions`, `*.sqlite*` or
   `models_cache.json`), paired with `seeding_a_missing_codex_home_creates_nothing_inside`.
+- `seed_codex_home_replicates_written_trees_and_leaves_written_directories_fresh`: with
+  `plugins/cache/openai-curated-remote/x.json`, `plugins/.remote-plugin-install-staging/y`,
+  `plugins/other`, `packages/app-server-daemon/install.lock`, `packages/other`,
+  `skills/.system/z.md` and `skills/mine` in the real home, `plugins/cache` and `skills/.system`
+  are real directories holding symlinks to the real files (a new file can be created beside
+  them), `plugins/.remote-plugin-install-staging` and `packages/app-server-daemon` are real empty
+  directories, `plugins/other`, `packages/other` and `skills/mine` are per-entry links, and the
+  root dot-files `.codex-global-state.json`, `.personality_migration` and `.sandbox_migration`
+  are regular copies with the real bytes (not write-denied; `CODEX_PROTECTED_FILES` holds
+  neither) while `.tmp` and `tmp` are absent.
 
 `tests_env.rs`:
 

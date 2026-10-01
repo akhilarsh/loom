@@ -9,8 +9,9 @@ PLAN-stage-exits-and-environment merges, so locate every edit by symbol.
 Decision D1 puts the whole git common directory in every worktree session's `denyWrite`, so
 `git add` and `git commit` fail in a stage worktree with EROFS. The session instead asks the
 daemon to commit: `loom commit` (W2) writes a relay ticket of a new control kind `commit`, the
-relay hook moves it into `W/inbox/<session-id>/`, and the daemon's inbox drain applies it at most
-once. You build the protocol type, the matrix column, the one path validator both sides share,
+relay hook moves it into `<work_dir>/inbox/<session-id>/` (`<work_dir>` is the state directory
+`.loom/work`), and the daemon's inbox drain applies it at most once. `W` in this brief is the
+worktree's git administrative directory, as in `common.md`. You build the protocol type, the matrix column, the one path validator both sides share,
 and the daemon's apply. This is the security core of the stage: the daemon runs git on the host,
 outside every sandbox, on a request the agent wrote.
 
@@ -26,8 +27,10 @@ outside every sandbox, on a request the agent wrote.
   `loom/src/orchestrator/core/inbox_drain/tests_matrix.rs`
 - `loom/src/commands/hook/relay/tests.rs`, `loom/src/commands/hook/relay/tests_sweep.rs`
 
-`inbox_drain/sweep.rs` and `inbox_drain/tests_sweep.rs` belong to stage `capsule-policy`: never
-touch them. `loom/src/git/**` (including `git/worktree/pinned.rs`) belongs to
+`inbox_drain/sweep.rs`, `inbox_drain/tests_sweep.rs` and the new `inbox_drain/tests_sweep_cache.rs`
+belong to stage `capsule-policy`: never touch them. That stage runs in parallel with this one, and
+`tests_sweep_cache.rs` imports `fixture` and `payload_for` from your `test_support.rs` (section 7:
+additive changes only). `loom/src/git/**` (including `git/worktree/pinned.rs`) belongs to
 `host-git-integrity`: use `WorktreeGit` read-only; if you need more from it, write it in your own
 file on top of `WorktreeGit::run`.
 
@@ -166,7 +169,10 @@ pub(super) struct CommitSite<'a> {
 pub(super) fn apply_commit(site: &CommitSite<'_>, request: &CommitRequest) -> Settle
 ```
 
-Steps (each helper under 50 lines; the file under 400):
+Steps (each helper under 50 lines; the file under 400). Before step 1, at the start of every
+apply, remove each leftover file in the daemon's staging directory `<work_dir>/commit-staging/`: a
+daemon that crashed between writing a temp file and deleting it leaves one, and applies run one at
+a time, so no file there is in use. The directory is created again (mode 0700) when absent.
 
 1. **Owner and state.** Change `apply.rs::require_owner` to `pub(super)` and to return the loaded
    `Stage` (`Result<Stage, String>`); `stage_request` keeps ignoring the value. On top of it,
@@ -185,9 +191,15 @@ Steps (each helper under 50 lines; the file under 400):
    detached HEAD; anything else refuses with "the stage worktree's HEAD is <x>, not
    refs/heads/loom/<id>; nothing was committed". Use the stage id for the branch, not the
    worktree id. Record `old = rev-parse --verify HEAD`.
-5. **Reset the index to HEAD:** `read-tree HEAD`. Under D1 a session cannot write its git
+5. **Reset the index to HEAD:** `read-tree --reset HEAD`. Under D1 a session cannot write its git
    administrative directory, so the index is the daemon's; this drops anything an earlier
-   failed request left staged. `read-tree` reads no worktree file.
+   failed request left staged. `read-tree --reset HEAD` reads no worktree file content and keeps
+   the stat data of every entry that matches HEAD. Never plain `read-tree HEAD`: measured on git
+   2.53, it zeroes the cached stat data of EVERY index entry, and under D1 nothing can refresh
+   `W/index` afterwards (the session cannot write it, and host readers run `--no-optional-locks`).
+   Every later `git diff-index HEAD` in the worktree would then list every tracked file, and that
+   output feeds `context/worktree_graph.rs::changed_paths`, the impact-test selection and the
+   acceptance cache fingerprint.
 6. **Read every path** (`commit_read.rs`, below) into a list of index entries (mode, blob id,
    path) and removals. Any refusal refuses the whole request; blobs already written stay as
    unreachable objects for gc. Limits: at most 256 paths (`MAX_COMMIT_PATHS`), 64 MiB per file,
@@ -209,7 +221,7 @@ Steps (each helper under 50 lines; the file under 400):
 11. **Result:** `Settle::Applied(Some(format!("committed {new}")))` with the full 40-hex id. That
     note is the ledger row's `reason`, which `loom request status` prints (W2).
 
-On every refusal after step 5, run `read-tree HEAD` again so the index is left at HEAD.
+On every refusal after step 5, run `read-tree --reset HEAD` again so the index is left at HEAD.
 
 **Every git call in the apply** goes through one helper that prepends these to the arguments
 (`run_git_with_env` already adds `-c core.hooksPath=/dev/null`, `git/runner.rs:71-77`):
@@ -245,8 +257,9 @@ with `libc::open(..., O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)`). Then, 
     `O_NONBLOCK` and fails this; a symlink swapped in fails the open with `ELOOP`; a directory
     fails the type check). Size at most 64 MiB and within the request total, checked on the
     descriptor before reading. Mode `100755` when any execute bit is set, else `100644`.
-  - symlink: `readlinkat(parent, leaf)` into a 4,096-byte buffer; mode `120000`; the blob is the
-    target string. Never open the target.
+  - symlink: `readlinkat(parent, leaf)` into a buffer of `PATH_MAX + 1` bytes; a target that fills
+    the buffer is refused (`readlinkat` truncates silently, so a full buffer may hold a cut
+    target); mode `120000`; the blob is the target string. Never open the target.
   - absent (`ENOENT` here or at a parent): a removal, but only if HEAD tracks the path: after
     step 5 the index is HEAD, so `ls-files -z -- :(literal)<p>` must print exactly `<p>`;
     otherwise refuse ("'<p>' does not exist and HEAD does not track it").
@@ -256,12 +269,21 @@ with `libc::open(..., O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)`). Then, 
   `host-git-integrity`), so the settled `hash-object --stdin` and `update-index --index-info`
   legs are argv-only here. Copy the bytes read from the descriptor (streamed, bounded) into a
   `tempfile::NamedTempFile` (a normal dependency, `loom/Cargo.toml:37`) created in
-  `<work_dir>/commit-staging/` (create it mode 0700). No session can write the state directory,
-  so git hashes exactly the bytes read through the descriptor. Then
-  `hash-object -w --path=<p> <temp file>` for a regular file (`--path` applies `.gitattributes`
-  conversion as `git add` would; filter drivers come only from the repository's own
-  `R/.git/config`, which pinned git reads) or `hash-object -w --no-filters <temp file>` for a
-  symlink's target. Delete each temp file after hashing it.
+  `<work_dir>/commit-staging/` (mode 0700; the start-of-apply sweep above empties it). No session
+  can write the state directory, so git hashes exactly the bytes read through the descriptor. Then
+  `--attr-source=HEAD hash-object -w --path=<p> <temp file>` for a regular file (`--path` applies
+  `.gitattributes` conversion as `git add` would) or `hash-object -w --no-filters <temp file>` for
+  a symlink's target. Delete each temp file after hashing it.
+
+  `--attr-source=HEAD` is a global git option (git 2.40 or later), so it goes after the helper's
+  leading `-c` pairs and before the subcommand; the call's first argument stays `-c` and the
+  runner's 15 s read deadline still applies. Measured: a pinned `hash-object --path` reads
+  `<worktree>/.gitattributes`. A FIFO there blocks the call until the deadline kills it, which
+  stalls every stage's poll tick and repeats per request, and `* filter=x` runs a clean filter
+  defined only in the operator's global config. With `--attr-source=HEAD` the call returned at
+  once and ran no filter. So: the daemon reads no worktree file except the named paths, through
+  the descriptor walk; attributes come from HEAD's tree; a committed `.gitattributes` can still
+  select a filter defined in `R/.git/config`, global or system config (an accepted limit).
 
 Git failure text: stderr trimmed, capped at 2,000 bytes, prefixed with the git action. Use one
 helper for it; do not copy `run_git_checked`'s multi-line format.
@@ -273,14 +295,22 @@ Traps:
   accept it and say so in a comment.
 - Accepted limit: the daemon's own killed git can leave `index.lock` in the worktree's git
   administrative directory. Sessions cannot write that directory, so only the daemon's git can
-  leave one; the next request's `read-tree` then refuses with git's own `index.lock` message.
-  Do not add lock removal.
-- After a commit, the index entries added with `--cacheinfo` carry no stat data, so the next
-  `git status` in the session re-hashes those files (read-only there). That is expected.
+  leave one; the next request's `read-tree --reset HEAD` then refuses with git's own `index.lock`
+  message, and the refusal reason appends: "an operator must delete <admin dir>/index.lock (the
+  daemon's git was killed mid-commit)", with `<admin dir>` the real absolute path of `W`
+  (`rev-parse --absolute-git-dir`). The one git-failure-text helper adds the sentence whenever
+  git's stderr contains `index.lock`. Do not add lock removal.
+- After a commit, only the paths a commit staged lose stat data (their index entries come from
+  `--cacheinfo`), so the next `git status` in the session re-hashes only those files (read-only
+  there). That is expected; every other entry keeps its stat data because step 5 resets with
+  `--reset`.
 - `CommitSite` borrows: in `apply`, copy `host.repo_root().to_path_buf()` first, as the `Handoff`
   arm does (`apply.rs:69-78`).
 - Keep `commit.rs` and `commit_read.rs` each under 400 lines and every function under 50. The
-  literal `"add"` must not appear in either file; acceptance checks it.
+  literal `"add"` must not appear in either file; acceptance checks it. That check misses
+  `update-index --add -- <path>` and `commit --only`, which make git lstat and then open the
+  worktree path; the argv test `the_daemon_never_hands_git_a_worktree_file` (section 8) guards
+  them.
 
 ## 6. Dispatch and the subagent rule (`inbox_drain/apply.rs`)
 
@@ -289,13 +319,16 @@ Traps:
   `if inbox_entry.agent == AgentRole::Subagent && inbox_entry.kind.is_control()` →
   `Err(format!("a '{}' request from a subagent is never applied: only the session's main agent makes it", inbox_entry.kind))`.
   The relay hook already drops these (`commands/hook/relay.rs:332-344`); this is the daemon's own
-  check, so a forged or future writer of `W/inbox` cannot skip it. The phrase `subagent` is pinned
-  by a contract.
+  check, so a forged or future writer of `<work_dir>/inbox` cannot skip it. The phrase `subagent`
+  is pinned by a contract.
 - Update the module doc of `apply.rs` for the new handler.
 
 ## 7. Drain fixtures and the section-5 matrix (`test_support.rs`, `tests_matrix.rs`)
 
-- `test_support.rs`: `payload_for(RequestKind::Commit)` returns
+- `test_support.rs`: keep the existing signatures of `fixture` and `payload_for`; every change
+  here is additive (a new match arm, a new method). capsule-policy's new
+  `inbox_drain/tests_sweep_cache.rs` imports both while this stage runs in parallel.
+  `payload_for(RequestKind::Commit)` returns
   `json!({"message": "test(relay): commit a.txt", "paths": ["a.txt"]})`. Add
   `Fixture::commit_worktree(&self, owner: &str) -> PathBuf`: calls
   `crate::verify::contracts::test_support::contract_worktree(&self.repo_root, STAGE)` (a repo on
@@ -328,14 +361,34 @@ refusal test also asserts the stage branch did not move and the index equals HEA
 - `a_path_escaping_the_worktree_is_refused_before_git_runs`
 - `a_control_root_path_is_refused` (`.loom/work/x`, `.claude/settings.json`, `.mcp.json`,
   `sub/.git/config`)
-- `a_head_off_the_stage_branch_is_refused` and `a_detached_head_is_refused`
+- `a_head_off_the_stage_branch_is_refused`
+- `a_detached_head_is_refused`
 - `a_stage_that_is_not_executing_is_refused`
 - `a_session_that_does_not_own_the_stage_is_refused`
-- `the_daemon_commit_ignores_repository_hooks_and_signing` (the repository config sets
-  `core.hooksPath` to a directory holding a failing `pre-commit`, `commit.gpgsign=true` and
-  `gpg.program=false`; the commit still lands)
+- `the_daemon_commit_ignores_repository_hooks_and_signing`: the plumbing the daemon runs
+  ignores `commit.gpgsign` and never runs `pre-commit`, so a failing `pre-commit` or a signing
+  setting alone cannot make this test fail. Plant a failing `reference-transaction` hook and a
+  `post-index-change` hook that writes a marker file (both mode 0755), once in `R/.git/hooks` and
+  once in a directory the repository's `core.hooksPath` names. Assert the request is Applied and
+  no marker exists. Signing stays as an extra check: the repository config also sets
+  `commit.gpgsign=true` and `gpg.program=false`, and the commit still lands.
 - `a_stale_index_lock_is_reported` (an `index.lock` created in the worktree's git directory
-  before the pass: Refused, the reason contains `index.lock`)
+  before the pass: Refused, the reason contains `index.lock` and `an operator must delete`)
+- `a_commit_keeps_the_index_stat_data_of_untouched_paths` (the fixture tracks at least two
+  files the request does not name and runs `git status` in the worktree first, so the index is
+  refreshed; apply one modified tracked path; then `git diff-index --name-only HEAD` in the
+  worktree prints exactly that path and no other: its entry comes from `--cacheinfo` and carries
+  no stat data, which is the expected limit in the traps above. Plain `read-tree HEAD` makes it
+  list every tracked file. Applying a deletion instead prints nothing)
+- `the_daemon_never_hands_git_a_worktree_file` (`#[serial]`). Capture every git argv the apply
+  runs: set `GIT_TRACE=<a file in the TempDir>` when the runner forwards it to git, otherwise
+  prepend `PATH` with a logging `git` wrapper script that execs the real git; restore the
+  environment afterwards. Commit a regular file, a symlink and a deletion. Assert that no logged
+  subcommand is `add`, `commit`, `status` or `stash`, that every `update-index` carries
+  `--cacheinfo` or `--force-remove`, and that every `hash-object` file operand lies under the
+  daemon's staging directory. Reason: the acceptance check that `"add"` never appears misses
+  `update-index --add -- <path>` and `commit --only`, which make git lstat and then open the
+  worktree path.
 - `a_control_request_from_a_subagent_is_never_applied` (an entry with `agent: Subagent`, built
   with `entry_for` then the field changed)
 - `a_replayed_commit_entry_is_applied_once` (after the first pass, change `a.txt` again, plant
@@ -352,12 +405,27 @@ refusal test also asserts the stage branch did not move and the index equals HEA
 - `a_directory_path_is_refused`
 - `a_path_inside_a_nested_repository_is_refused` (`sub` holds a `.git` directory whose config
   defines `filter.x.clean` touching a marker, and `sub/.gitattributes` says `* filter=x`: Refused,
-  the reason contains `nested repository`, no marker, no `160000` entry)
+  the reason contains `nested repository`, no marker, no `160000` entry). Prove the planted
+  filter fires before the drain: in the fixture run `git -C sub hash-object --path=a.txt a.txt`
+  (with `sub/a.txt` present), require the marker, delete it, then run the drain. Without that
+  control, "no marker" could mean the filter never worked. Trap: write the filter with
+  `git -C sub config filter.x.clean '<cmd>'`, never by editing the config file by hand: git parses
+  an unquoted `;` in a config value as a comment, so a hand-written `touch X; cat` silently breaks.
+- `a_fifo_gitattributes_does_not_stall_the_commit` (a FIFO at `<worktree>/.gitattributes`, commit
+  `a.txt`: the drain pass returns in under 5 s and the request is Applied. A watchdog thread
+  opens the FIFO for writing after 5 s, which releases a blocked reader, and records that the
+  timeout fired; the test fails when the timeout fired. Join the watchdog before the test ends)
 - `an_oversized_file_is_refused_unread` (a sparse file set to 65 MiB with `File::set_len`)
 - `an_executable_file_keeps_its_exec_bit` (mode `100755`)
 - `a_missing_untracked_path_is_refused`
 - `the_regular_leaf_open_refuses_a_symlink` (call the leaf-open helper directly on a symlink:
   `Err`, as when a regular file is swapped for a symlink between `fstatat` and `openat`)
+
+The plan pins these tests by exact module path with `--exact`; keep each name as written:
+`commit_tests::a_detached_head_is_refused`, `commit_tests::a_stale_index_lock_is_reported`,
+`commit_tests::nothing_staged_is_recorded_as_nothing_to_commit`,
+`commit_tests_files::an_oversized_file_is_refused_unread` and
+`commit_tests_files::a_directory_path_is_refused`.
 
 Git in tests: `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` at missing files and `GIT_CONFIG_NOSYSTEM=1`
 for the fixture's own git commands, as `src/verify/impact_tests_tests.rs` does.

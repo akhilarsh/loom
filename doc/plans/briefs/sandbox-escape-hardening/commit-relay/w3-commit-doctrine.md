@@ -21,6 +21,7 @@ with `contains`):
   `loom/src/orchestrator/signals/tests_commit_timing.rs`
 - `CLAUDE.md.template`, `skills/loom-orchestration/SKILL.md`, `skills/loom-usage/SKILL.md`,
   `skills/loom-git-workflow/SKILL.md`, `loom-hooks/_subagent-preamble.txt`
+- `loom/src/commands/stage/contracts/freeze.rs` (one string literal, section 8)
 
 Not yours: `signals/format/helpers.rs` and `signals/format/sandbox_section.rs`
 (`capsule-policy`), `loom-hooks/commit-guard.sh` (`host-git-integrity` writes its D1 message),
@@ -70,15 +71,16 @@ Also unchanged, because their sessions run in the main checkout: `signals/merge.
 `signals/merge_conflict.rs:97-98`. `signals/recovery_format.rs` reuses the prefixes and needs
 nothing.
 
-Size ceilings (`signals/tests_size.rs`): `generate_stable_prefix` at most 7,168 bytes (about
-6,050 at `3fc28031`), the standard-signal floor 10,240, `CLAUDE.md.template` 20,480. The
-template's 18,734 bytes were measured at `2908339a`, BEFORE PLAN-stage-exits-and-environment
-added its own doctrine to it. Measure it FIRST, before any edit (`wc -c < CLAUDE.md.template`
-from the repository root), compute the room left under 20,480, and keep your net addition to the
-template within that room with at least 200 bytes to spare; if the room is smaller than section
-3's text, cut your wording (the D1 sentence itself stays verbatim) and say what you cut in your
-report. Your change adds about 250 bytes to each worktree prefix. If a ceiling trips, shorten
-your own wording; never raise a ceiling.
+Size ceilings: read the current ceilings from `signals/tests_size.rs`
+(PLAN-stage-exits-and-environment's S3 raised `STABLE_PREFIX_MAX_BYTES` to 8,192) and measure
+before editing; never trust a number written here. They cover `generate_stable_prefix`, the
+standard-signal floor and `CLAUDE.md.template`. PLAN-stage-exits-and-environment adds its own
+doctrine to the template before this plan runs. Measure the template FIRST, before any edit
+(`wc -c < CLAUDE.md.template` from the repository root), compute the room left under its ceiling,
+and keep your net addition to the template within that room with at least 200 bytes to spare; if
+the room is smaller than section 3's text, cut your wording (the D1 sentence itself stays
+verbatim) and say what you cut in your report. Your change adds about 250 bytes to each worktree
+prefix. If a ceiling trips, shorten your own wording; never raise a ceiling.
 
 ## 2. Tests (`tests_commit_timing.rs`)
 
@@ -161,6 +163,20 @@ Rule 10's "Allowed: git in the current dir" stays (read-only git still works).
 In `SUBAGENT RESTRICTIONS`, the line "- NEVER run git commit - the main agent will commit your
 work" becomes "- NEVER run git commit or loom commit - the main agent will commit your work".
 Leave the first line exactly as it is (`spawn-guard.sh:73` matches it).
+
+## 8. `commands/stage/contracts/freeze.rs`
+
+The refusal text passed to `refuse(` (search `git checkout -- <path>`) tells a contract session
+to revert with git. Under D1 a contract session's git directory is read-only, so `git checkout`,
+`git restore` and `git stash` fail with "Unable to create '.../index.lock': Read-only file
+system" (measured under bwrap). Replace the sentence "Revert every other change (`git checkout
+-- <path>`, or delete the untracked file)" with:
+
+    Revert every other change (restore a tracked file with `git show HEAD:<path> > <path>`, or delete the untracked file)
+
+The edit stays inside the string literal and keeps its line count (the literal spans two lines
+with `\` continuations: keep the space before each `\`). No test asserts the old text (checked
+with `rg`).
 
 ## Sites checked and left as they are
 
