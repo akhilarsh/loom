@@ -116,12 +116,19 @@ Every stage description should carry a short MEMORY block reminding agents to re
 The mirror image costs just as much: a criterion that FAILS for a reason the stage's diff cannot
 touch is a PLANNING defect, not a code defect, and it is discovered at the last possible moment —
 by a finished stage that has already committed its work and cannot authorize its own bypass. A
-stage agent facing one is correct to stop and report rather than weaken the check — its sanctioned
-move is `loom stage dispute-criteria <stage-id> --criterion-index <n> --reason "..."`, which routes
-to adjudication and can amend the criterion through the audited amendment path; operator-side the
-same machinery is `loom stage amend`. Both are for IMPOSSIBLE criteria, never merely red ones. The
-plan is still where this outcome is prevented (the baseline rule in `verification-rules.md`, `sandbox.md`'s
-ungrantable-resource rule); a dispute is the recovery, not the design.
+stage agent facing one fixes what the stage can fix and never weakens, reverts or postpones correct
+work to avoid a dispute. A wrong criterion, wiring check, contract, review finding or test-integrity
+event gets a dispute: `loom stage dispute-criteria <stage-id> [--field acceptance|wiring|wiring-tests]
+--criterion-index <n> --reason "..."` (or `dispute-contract`, `dispute-findings`, `dispute-integrity`),
+which routes to adjudication and can amend the criterion through the audited amendment path;
+operator-side the same machinery is `loom stage amend`. Filing ends the session by design: the daemon
+starts a fresh session with the verdict, so waiting gains nothing. Disputes are for IMPOSSIBLE
+criteria, never merely red ones. A need only a person can meet (a credential, a host install, a
+network domain or path the plan does not grant) gets `loom stage block <stage-id> "<what is needed
+and why>"` from the stage's main agent: the daemon retires the session and shows the reason to the
+operator, who resumes with `loom stage retry`. The plan is still where this outcome is prevented (the
+baseline rule in `verification-rules.md`, `sandbox.md`'s ungrantable-resource rule and environment
+inventory in `SKILL.md` Section 8); a dispute or a block is the recovery, not the design.
 
 ## Section 10 — Merge vs. separate, sequential stages
 

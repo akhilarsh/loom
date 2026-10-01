@@ -105,9 +105,12 @@ For test-infra and migration plans, the ZEROTH claim is **"does it even import a
 A fresh worktree has no `node_modules` (ignored files are not checked out), so node module
 resolution walks up into the MAIN repo's `node_modules`, and any in-session test run then writes
 its caches there (vite: `node_modules/.vite-temp`) — denied by the sandbox with EROFS, and it
-would corrupt state shared across parallel stages if allowed. Any stage that runs JS/TS tests
-in-session must make its FIRST task an explicit dependency install in the worktree
-(`bun install`). The `setup:` field does not cover this: it only prefixes acceptance commands, so
+would corrupt state shared across parallel stages if allowed. The plan's `loom.provision` entry
+(`SKILL.md` Section 8, `sandbox.md`) is how a worktree gets `node_modules` before a session starts:
+the daemon installs on the host before every spawn, so the stage needs no install task. An
+in-session `bun install` is the fallback only when the daemon cannot provision; it needs
+`registry.npmjs.org` in `allowed_domains` plus a `node_modules` write grant, and it must be the
+stage's FIRST task. The `setup:` field does not cover this: it only prefixes acceptance commands, so
 it never runs as part of the session's own task work — and an acceptance command is NOT reliably a
 host-side command either. It runs wherever it is invoked from: the daemon verifies on the host, and
 `loom stage complete` runs the same list from inside the sandboxed session (`SKILL.md` Section 8).

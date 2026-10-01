@@ -410,7 +410,7 @@ Every stage description carries a short MEMORY block: record mistakes/decisions/
 
 ## 8. Sandbox & Execution Environment
 
-Ask the user: (1) network access + which domains? (2) sensitive paths to protect? (3) build tools/package managers agents need? Then run `loom repair`, merge with suggestions, and add a `sandbox` block. `knowledge`, `integration-verify`, and `knowledge-distill` stages auto-get write access to `doc/loom/knowledge/**`.
+Ask the user: (1) network access + which domains? (2) sensitive paths to protect? (3) build tools/package managers agents need? Then add a `sandbox` block. `loom init` prints domain suggestions for the project's package managers; `loom plan verify` errors on the registry, git-hook and JS-provision gaps it can see. `knowledge`, `integration-verify`, and `knowledge-distill` stages auto-get write access to `doc/loom/knowledge/**`.
 
 ```yaml
 loom:
@@ -429,13 +429,41 @@ loom:
 
 Per-stage `sandbox:` overrides are allowed. **Acceptance runs INSIDE the stage's sandbox** (`loom stage complete` runs it from the worktree session): a command confirmed at the repo root was confirmed in the wrong environment. A command needing something the sandbox cannot grant (a write escaping the worktree, a host daemon or socket, un-allowed network, the real `HOME`, a `loom` subcommand that opens shared `.loom/work` state) is NOT an acceptance criterion. Walking the writes, package-manager caches, and the four ungrantable classes: `references/sandbox.md`.
 
+**Environment inventory (REQUIRED).** Walk every stage across its whole life and list each need. Each need ends in exactly one of three states: allowed (a sandbox domain or path), provisioned (a `loom.provision` entry), or resolved with the user before `loom run`. A need left open surfaces mid-run as a block that needs a person. The list to walk:
+
+- Implementation fetches: `cargo add`, `bun add`, `uv add`, `go get` need their registry domains in the stage's `allowed_domains`.
+- Acceptance commands: `bunx`, `npx`, `cargo install` and the like fetch from a registry; `loom plan verify` errors when the stage's sandbox does not allow it.
+- Impact-selected test runners, one per package: a JS package needs `node_modules` in the worktree, so provision it.
+- The repository's git hooks: a pre-commit hook that runs `bunx` needs `registry.npmjs.org` in every sandboxed stage, because every stage commits.
+- Audit databases: `cargo audit` fetches from github.com unless run with `--no-fetch` against a host copy.
+- Credentials and tokens: a stage session never gets them; ask the user how the need is met.
+- Host tools: anything that must be installed on the host (compilers, `rg`, `fd`) is checked now, and the user installs what is missing.
+
+**`loom.provision` (`version: 2` only).** A list of `{ working_dir, command }` entries that give each stage worktree its dependencies before the session starts:
+
+```yaml
+loom:
+  provision:
+    - working_dir: "web"
+      command: "test ! -e .npmrc && test ! -L .npmrc && bun install --frozen-lockfile --ignore-scripts --backend=copyfile --config=/dev/null"
+```
+
+- Each time a stage session spawns in a worktree (first spawn, retry, handoff successor, requeue after a verdict; standard, integration-verify and knowledge-distill stages), the daemon runs the stage's `before_stage` checks first, then each provision command in order, in `<worktree>/<working_dir>`, 600 s each. `before_stage` checks therefore cannot need provisioned dependencies.
+- Commands must be idempotent, since every retry, handoff successor and verdict requeue runs them again: `bun install --frozen-lockfile`, `npm ci`, `uv sync --frozen --no-install-project` and `pnpm install --frozen-lockfile` are (`--no-install-project` keeps uv from building the local project through its build backend, which runs repository code).
+- Provision runs on the host, outside the sandbox, in a worktree whose files a stage can edit, so a command must not run repository-controlled code. Install with `--ignore-scripts` (package `postinstall` scripts never run). For bun, also pass `--backend=copyfile` (no hardlinks into the real bun cache) and `--config=/dev/null` (an agent-written `bunfig.toml` is ignored), and refuse to run while a `.npmrc` exists (`test ! -e .npmrc && test ! -L .npmrc && ...`), because bun still reads an agent-written `.npmrc` that redirects the registry. The example above is the hardened form; `npm ci --ignore-scripts` and `pnpm install --frozen-lockfile --ignore-scripts` are the other managers' equivalents.
+- Provision runs on the host, outside the sandbox, so its registry needs no `allowed_domains` entry. It may write only git-ignored files (`node_modules/`, `.venv/`); a new `git status` entry blocks the stage.
+- `loom init` copies the entries into the work directory's `config.toml` (`[plan_provision]`); the daemon runs that copy and never the plan file. To change entries mid-run, the operator edits `[plan_provision]` and runs `loom stage retry <id>`.
+- A repository with a JS package (this one has `web/`) needs a provision entry for it in every v2 plan; `loom plan verify` errors on a JS package with a test runner that no entry covers. Detail: `references/sandbox.md`.
+
 ---
 
 ## 9. Silent-Failure Awareness
 
 `loom plan verify` passing means STRUCTURE is valid — never that claims are TRUE. Exit code 0 ≠ success: sandbox blocks, dep-fetch failures, and write denials can all exit 0. Read stderr — "blocked", "denied", "connection refused", "failed to download" mean investigate.
 
-A criterion that FAILS for a reason the stage's diff cannot touch is a PLANNING defect, found by a finished, committed stage that cannot authorize its own bypass. Its sanctioned move is `loom stage dispute-criteria <stage-id> --criterion-index <n> --reason "..."` (operator-side, `loom stage amend`), for IMPOSSIBLE criteria only. In a `version: 2` plan a wrong contract, review finding or test-integrity event has its own dispute (`dispute-contract`, `dispute-findings`, `dispute-integrity`; `references/v2-contracts.md` Section 5). The plan is where this is prevented; a dispute is the recovery.
+A criterion that FAILS for a reason the stage's diff cannot touch is a PLANNING defect, found by a finished, committed stage that cannot authorize its own bypass. Its sanctioned move is `loom stage dispute-criteria <stage-id> [--field acceptance|wiring|wiring-tests] --criterion-index <n> --reason "..."` (operator-side, `loom stage amend`), for IMPOSSIBLE criteria only; `--field` picks the wiring or wiring-tests list, and `loom stage complete` labels a failure `[criterion n]`, `[wiring n]` or `[wiring_tests n]`. In a `version: 2` plan a wrong contract, review finding or test-integrity event has its own dispute (`dispute-contract`, `dispute-findings`, `dispute-integrity`; `references/v2-contracts.md` Section 5). Impact-selected tests have no dispute: a failure there is a regression to fix. Filing a dispute ends the stage session by design; the daemon starts a fresh session with the verdict, so the agent never waits on it. The plan is where this is prevented; a dispute is the recovery.
+
+A need only a person can meet (a credential, a host install, a network domain or path the plan does not grant) gets `loom stage block <stage-id> "<what is needed and why>"`. The daemon retires the session, the exit is not a crash, `loom status` shows the reason, and the operator resumes with `loom stage retry <stage-id>` after providing what was needed. Both commands belong to the stage's MAIN agent; a subagent reports the need to its orchestrator, because a block retires the stage session. The environment inventory in Section 8 exists so that few needs reach this point.
 
 ---
 
@@ -671,6 +699,7 @@ loom:
 □ Worker tables: Files owned cells hold paths only; no file overlap between subagents; shared types in a foundation step
 □ Acceptance commands: YAML single-quoted, rg not grep, paths relative to working_dir
 □ Sandbox configured; network is a struct; allow_write covers every path acceptance commands write
+□ Environment inventory done: every network, install, credential and host need of every stage allowed, provisioned or resolved with the user
 □ Self-consistency sweep done; every number appears with ONE value throughout
 □ loom plan verify --strict passes → tell the user → STOP (do not implement)
 ```
