@@ -10,7 +10,8 @@ start.
 You own `loom/src/orchestrator/adjudication/{prompt.rs, prompt/criterion.rs,
 prompt/criterion_entry.rs (new), prompt/tests.rs, prompt/tests_kinds.rs, prompt/tests_golden.rs,
 verdict.rs, verdict_tests.rs, plan_patch.rs, apply.rs, tests.rs, record_tests.rs, mod.rs,
-tests_criterion_field.rs (new)}` and `loom/src/verify/goal_backward/mod.rs`.
+tests_criterion_field.rs (new), closed_disputes.rs, feedback.rs}` and
+`loom/src/verify/goal_backward/mod.rs`.
 
 ## 1. Literal migration (mechanical)
 
@@ -83,10 +84,26 @@ handles `AmendmentField::WiringTests` (`plan/amendment_fields.rs`). Two resyncs 
   add `wiring_tests`.
 - `persist_verdict_result` (about lines 140-182) re-applies the verdict-owned `acceptance` and
   `wiring` onto the fresh stage; add `wiring_tests`, and update its doc comment.
-- `apply_reject`'s review reason says "the disputed acceptance criterion"; it has the stage and
-  dispute id, so read the request with `super::read_request` and name the entry
-  (`acceptance criterion 2`, `wiring check 1`, `wiring test 0`), falling back to "the disputed
-  criterion" when the request cannot be read.
+- `apply_reject`'s review reason reads "Adjudicator upheld the disputed acceptance criterion
+  (dispute {dispute_id}): ..."; two assertions nobody may edit match its words
+  (`tests/adjudication_e2e.rs:259` and `adjudication/tests_verdicts.rs:33` check
+  `contains("upheld the disputed acceptance criterion")`). Keep the prefix
+  `Adjudicator upheld the disputed` and follow it with the entry: `acceptance criterion`
+  (unchanged, so both assertions hold), `wiring check` or `wiring test`, or `criterion` when
+  the request cannot be read. Put the lookup in a helper
+  `fn disputed_entry(work_dir: &Path, stage_id: &str, dispute_id: u32) -> &'static str` that
+  reads the request with `super::read_request`; `apply_reject` is 37 lines and must stay under
+  50.
+- `feedback.rs` (the rejection feedback file the next session reads) says "The acceptance
+  criterion stands." for every rejected criterion dispute. Make it "The disputed check
+  stands." so a wiring or wiring-test rejection is not described as an acceptance criterion.
+  If an existing assertion line matches the old words, leave the old sentence for acceptance
+  disputes and use the new one only for wiring and wiring-tests disputes (the function has
+  the request kind or can read it).
+- `closed_disputes.rs::close_open_disputes`: its doc comment says it is "Called only once the
+  stage has been escalated to `NeedsHumanReview`", and its warning names escalation. G2 now
+  also calls it from `loom stage reset`: say both callers in the doc comment and make the
+  warning neutral ("could not close an open dispute").
 
 End-to-end test in a new `tests_criterion_field.rs`, declared in `mod.rs` beside the other
 `#[cfg(test)]` modules: `an_accepted_wiring_tests_verdict_amends_the_plan_and_the_stage`. It
@@ -104,7 +121,10 @@ asserts the plan file and the stage file both carry the new wiring test.
 `dispute-criteria --field ... --criterion-index` takes. Verify them entry by entry
 (`std::slice::from_ref(check)` into `verify_wiring` and `verify_wiring_tests`), and prefix each
 resulting gap's `description` with `[wiring <n>]` or `[wiring_tests <n>]` (0-based). Use
-`CriterionField::gap_label()` for the label text. Do not edit `wiring.rs`, `wiring_v2.rs` or
+`CriterionField::gap_label()` for the label text. `run_goal_backward_verification` is 49
+lines today: put the per-entry loop in a helper (for example
+`fn indexed_gaps(field: CriterionField, index: usize, gaps: Vec<..>) -> Vec<..>`) so the
+function stays under 50. Do not edit `wiring.rs`, `wiring_v2.rs` or
 `wiring_tests.rs` (`verify_wiring_tests` is ledgered at 111 lines). Inline test module in
 `mod.rs`: `gaps_name_their_wiring_and_wiring_tests_index` (exact name; acceptance runs
 `verify::goal_backward::tests::gaps_name_their_wiring_and_wiring_tests_index`): a stage with two
@@ -113,7 +133,10 @@ wiring checks, the second failing, and one failing wiring test (`false`) yields 
 
 ## Check
 
-`cargo test --lib orchestrator::adjudication::`, once, after all your edits.
+`cargo test --lib orchestrator::adjudication::`, once, after all your edits. It builds the
+whole library, including G1's, G2's and G4's unchecked wave-1 edits. When the build fails in a
+file you do not own, stop: do not edit it, and report each error with its file:line so the
+main agent can route it to a fresh worker.
 
 ## Contract your code must satisfy
 

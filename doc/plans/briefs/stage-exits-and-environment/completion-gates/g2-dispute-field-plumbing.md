@@ -82,7 +82,12 @@ bookkeeping gaps close with it: a refused filing leaves an open `request.md`, an
   acceptance, `wiring <n>` and `wiring-tests <n>` for the others. Leave the relay `end_turn`
   argument alone (stage `stage-exits` changes it).
 - `daemon/protocol.rs` `Request::DisputeCriteria`: add `field: CriterionField` after
-  `session_id`. `daemon/protocol_debug.rs::debug_dispute` prints it after `criterion_index`.
+  `session_id`. `daemon/protocol_debug.rs::debug_dispute` prints it after `criterion_index`
+  (its pattern ends in `..`, so leaving `field` out still compiles: add an inline
+  `#[cfg(test)] mod tests` to `protocol_debug.rs` with `dispute_criteria_debug_names_the_field`,
+  asserting the `Debug` output of a `WiringTests` request contains `field`). Do not add tests
+  to `daemon/wire_tests.rs`: it is 372 lines, and stage `stage-exits` adds one there later;
+  only its two `Request::DisputeCriteria` literals gain the field.
 - `fs/stage_request/types.rs` `StageRequest::Dispute`: add `field: CriterionField` (required)
   and update the variant's doc to `--field <f> --criterion-index N`.
 - `daemon/server/stage_control.rs`: `serve_dispute_criteria` and the `Request::DisputeCriteria`
@@ -136,8 +141,17 @@ by extracting helpers (the range check, the exhausted-budget refusal, the pre-wr
 check, the record build), then REMOVE that ledger line. That is the stage's one expected
 integrity event. Update the module doc comment's numbered steps to the new order.
 
-Unit tests in `dispute.rs`'s test module: migrate the existing calls (add
-`CriterionField::Acceptance`); add `wiring_index_is_checked_against_the_wiring_list`,
+`dispute.rs` is 384 lines and its tests are inline (`mod tests` at about line 146). Adding
+`CriterionField::Acceptance,` pushes nine of the ten `handle_dispute_criteria(` test calls
+past 100 columns, and rustfmt splits each over about nine lines, so the file would pass the
+400-line limit. FIRST move the inline `mod tests { .. }` body verbatim into a new
+`src/daemon/server/dispute_tests.rs`, and declare it in `dispute.rs` as
+`#[cfg(test)] #[path = "dispute_tests.rs"] mod tests;` (the pattern at the end of
+`dispute_kinds.rs`). The test path stays `daemon::server::dispute::tests::*`. `dispute.rs` is
+a production file to the integrity gate (it matches no test-file glob), so moving its tests
+raises no event; the new `_tests.rs` file only adds to the assertion totals. Then make every
+test edit in `dispute_tests.rs`: migrate the existing calls (add `CriterionField::Acceptance`);
+add `wiring_index_is_checked_against_the_wiring_list`,
 `wiring_tests_index_is_checked_against_the_wiring_tests_list`, and
 `a_refused_transition_writes_no_request_and_spends_no_budget` (stage `Completed`).
 
@@ -145,6 +159,8 @@ Unit tests in `dispute.rs`'s test module: migrate the existing calls (add
 `request.md`, then `update_stage` may refuse the transition): check the transition on a clone
 of the loaded stage right after `confirm` and the budget check, and refuse with
 `refused(format!("cannot dispute stage '{}': {error:#}", stage.id))` before `write_request`.
+The function is 43 lines: keep the new check to one `if let Err(error) = ..` block so it stays
+under 50.
 Add `a_refused_file_dispute_writes_no_request` to `dispute_kinds_tests.rs`. In that file's
 existing key-set test (about line 176), add `"field",` to the `expected` array between
 `"failure_output"` and `"fix_attempts_at_dispute"`; the `assert_eq!` lines stay unchanged.
@@ -158,7 +174,10 @@ stage lock is released, which is the order the filing path needs (dispute lock, 
 lock; `orchestrator/adjudication/apply.rs:175-180` states it). Say so in a one-line comment.
 Test in `commands/stage/state_tests.rs`: `reset_closes_open_disputes` (exact name; acceptance
 runs it): a stage with `disputes/<id>/1/` and no `applied.marker` gets a `closed.marker`
-after `reset_with`. `closed_disputes.rs` names the marker file `CLOSED_MARKER`; read it there.
+after `reset_with`. Assert on the literal file name, e.g.
+`work_dir.join("disputes/<id>/1/closed.marker").exists()`: the `CLOSED_MARKER` constant is
+private to `orchestrator/adjudication/closed_disputes.rs` (G3 owns that file and updates the
+doc comment of `close_open_disputes`, which today says it runs only after an escalation).
 
 ## 6. Dynamic completion for `--field`
 

@@ -54,13 +54,11 @@ unknown key breaks the page.
     Guidance { note: Some(format!("blocked: {reason}")), ..retry_guidance(stage) }
 
 The note says only "blocked", because the same state follows the stage agent's `loom stage
-block`, the operator's own `loom stage block` and `loom stage human-review --reject`.
-
-so the command stays `loom stage retry <id>` (or `loom stage retry <id> --force` at the retry
-limit, where this note replaces the "retry limit reached" note) and `automatic` stays `false`.
-A Blocked stage with `failure_info` keeps today's guidance. Note: the same state also comes from
-an operator's `loom stage block` and a `human-review --reject`; the wording is the one the plan
-settled.
+block`, the operator's own `loom stage block` and `loom stage human-review --reject`, so the
+command stays `loom stage retry <id>` (or `loom stage retry <id> --force` at the retry limit,
+where this note replaces the "retry limit reached" note) and `automatic` stays `false`. A
+Blocked stage with `failure_info` keeps today's guidance. Every block writer clears
+`failure_info` (S1 §0), so "no `failure_info`" reliably means one of those three.
 
 ## 3. Tests
 
@@ -72,11 +70,14 @@ settled.
 - `web/model_tests_stages.rs`: the browser snapshot has no `close_reason` key (mirror the
   merge-resolver test at about line 240).
 - `daemon/wire_tests.rs`: a `StageSummary` with `close_reason` round-trips through the wire
-  encoding.
+  encoding. The file is about 375 lines after stage `completion-gates` and the limit is 400:
+  set `close_reason` on one stage that `status_data()` already builds and add one test of at
+  most 15 lines.
 
 ## Check
 
-`cargo test --lib commands::status::render::attention_model`, once.
+`cargo test --lib commands::status::render::attention_model`, once. S1 and S3 edit the crate at
+the same time: a compile error in a file you do not own is not yours (`common.md`).
 
 ## Contracts your code must satisfy
 

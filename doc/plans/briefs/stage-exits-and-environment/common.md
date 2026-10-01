@@ -16,6 +16,12 @@ a brief and the plan differ.
   over your own files, once (a `cargo test --lib <your_module>::` filter), and
   skip it when your brief says the crate cannot compile until another worker
   finishes.
+- Workers of one wave edit one crate at the same time, so your check builds
+  their unfinished files too. A compile error in a file you do not own is not
+  yours: do not edit that file, and report each such error with its file:line.
+- Leave formatting to the main agent, who runs `cargo fmt --all` once after the
+  last wave; still keep every line you write under 100 columns, because the
+  maintainability counts below are taken after formatting.
 
 ## Anchors
 

@@ -32,11 +32,26 @@ yields, after `crate::testrun::recognize::strip_prefixes` (which removes `env`, 
 - `cargo fmt` with `--check` anywhere in its arguments (`cargo fmt --all -- --check`,
   `cargo fmt --check`);
 - `rustfmt --check`, `prettier --check` (or `-c`), `oxfmt --check`, `ruff format --check`,
-  `black --check`, `gofmt -l`;
+  `black --check`;
 - `biome format` and `biome check`, unless the arguments hold `--write`, `--fix` or `--apply`;
 - a `format:check` package script: `npm run format:check`, `bun run format:check`,
   `pnpm format:check`, `pnpm run format:check`, `yarn format:check`,
   `yarn run format:check`.
+
+`gofmt -l` is NOT recognised: it lists unformatted files and still exits 0, so running it can
+never produce a problem.
+
+A criterion is a formatter check only when `invocations(command, cwd)` yields at least one
+simple command and EVERY simple command it yields is one of the forms above. A compound
+criterion such as `cargo fmt --check && cargo clippy -- -D warnings`, or an `npm test` whose
+script mixes a formatter with other commands, is not a formatter check and is not run: the
+freeze runs while the contracts are red and uncompilable by design, so running the other half
+would fail every freeze with a "run the formatter" message nothing can clear.
+
+`strip_prefixes` removes `yarn` (and `yarn run`), but keeps `npm`, `bun` and `pnpm`. After it,
+`yarn format:check` and `yarn run format:check` read `["format:check"]`; match
+`["format:check"]`, `["npm" | "bun" | "pnpm", "run", "format:check"]` and
+`["pnpm", "format:check"]`.
 
 Use `recognize::command_args(argv, &["cargo", "fmt"])` and `recognize::has_flag(args, "--check")`
 style helpers rather than hand parsing; read `testrun/recognize.rs` first.
@@ -60,12 +75,15 @@ directory). Each failed or timed-out criterion gives the problem
     acceptance criterion `<command>` fails on the contract files: run the repository's formatter over them, then freeze again
 
 Read `verify/criteria/result.rs` for how `AcceptanceResult` reports failures. No recognised
-criterion means `Ok(vec![])` and runs nothing.
+criterion means `Ok(vec![])` and runs nothing. The runner applies its own timeouts: a Simple
+criterion gets `CriteriaConfig::default().command_timeout` (300 s), an Extended one 30 s
+(`verify/criteria/runner.rs`, `prepare_criterion`); keep both.
 
 Unit tests in the module: recognition of each listed form and of near-misses that must not
 match (`cargo fmt --all` without `--check`, `biome format --write`, `prettier --write`,
-`cargo test`); and `format_problems` over a TempDir crate with an unformatted `src/lib.rs`
-(`cargo fmt --check` gives one problem naming it; a formatted file gives none).
+`cargo test`, `gofmt -l .`, `cargo fmt --check && cargo test`); and `format_problems` over a
+TempDir crate with an unformatted `src/lib.rs` (`cargo fmt --check` gives one problem naming
+it; a formatted file gives none).
 
 ## 2. The freeze runs it
 
@@ -73,6 +91,9 @@ In `freeze.rs::checked_reports`, after the changed-paths refusal and before `run
 refuse on format problems through the existing `refuse(stage_id, problems, fix)` helper, with
 the fix text "Every contract file and harness file must pass the stage's formatter checks before
 it is frozen: run the repository's formatter over them (for Rust, `cargo fmt --all`), then".
+Keep that text as one string literal on one line of `freeze.rs` (break the surrounding call,
+not the literal): the stage's wiring check matches `must pass the stage's formatter checks
+before` there, which proves the freeze refuses on the gate's result.
 Compute the confinement once in `checked_reports`
 (`resolve_confinement(stage.sandbox.command_confinement, plan_confinement(&site.work_dir))`,
 as `run_contracts` does now) and pass it to both. A formatter check that already fails at the

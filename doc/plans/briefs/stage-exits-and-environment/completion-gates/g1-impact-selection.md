@@ -66,12 +66,20 @@ In `impact_tests.rs`:
   map the `BTreeSet<String>` to `PathBuf`s.
 - `pub fn run(stage, working_dir, criteria_config, target_branch: &str)`: resolve the worktree
   root with `crate::git::runner::run_git_checked(&["rev-parse", "--show-toplevel"], working_dir)`,
-  compute `stage_changes(&root, target_branch)`, and pass it to `run_with`.
+  compute `stage_changes(&root, target_branch)`, and pass it to `run_with`. When
+  `stage_changes` returns `Err` (a missing target ref, or a pinned-git lookup that fails inside
+  a stage sandbox: `local_git` pins git for a stage worktree, `git/worktree/pinned.rs`), do not
+  fail completion: fall back to `graph.changed` and insert the note
+  "the stage's changes since its merge base with `<target_branch>` could not be listed
+  (<error:#>); selection uses the files changed since the nearest published base". A test that
+  cannot be selected is a note, never a failure (the D14 rule in `complete_verification_v2.rs`).
 - `fn run_with(stage, working_dir, graph, changed: &[PathBuf], runner)` passes `changed`
   (not `graph.changed`) to `reached_test_nodes`.
-- Update the module doc comment (lines 1-11): the walk starts from every node in a file the
-  stage changed since its merge base; the graph itself is still layered on the nearest
-  published base.
+- Update the module doc comment (anchor by text, not line): change the sentence about the
+  changed files so the walk starts from every node in a file the stage changed since its merge
+  base (the graph itself is still layered on the nearest published base), and add "a JS package
+  without `node_modules`" and "a runner that exits 127" to the sentence listing what becomes a
+  note.
 - In `impact_tests_tests.rs`, `select_after_changing_add` passes `&graph.changed` as the new
   argument (that test changes one uncommitted file on `main`, so both sets are `src/lib.rs`).
   Its assertion lines stay as they are.
@@ -86,7 +94,9 @@ In `impact_tests/runs.rs`:
 
 - Before `select_command` in `run_group`, check readiness: when
   `adapter.language() == "javascript"` (exactly the vitest, jest, mocha, bun-test and node-test
-  adapters; every other adapter returns another language) and no directory named
+  adapters; every other adapter returns another language), the package's `package.json`
+  declares at least one entry in `dependencies` or `devDependencies` (a dependency-free
+  `node --test` or `bun test` package needs no install and still runs), and no directory named
   `node_modules` exists in the package directory or any ancestor up to and including the
   checkout root (`self.root`), insert the note
 
@@ -94,8 +104,12 @@ In `impact_tests/runs.rs`:
 
   and return without running anything. `<package>` is the package path relative to the
   checkout root as `group_targets` keys it (`web`), and `.` for the root package. Put the
-  lookup in `fn missing_node_modules(package_dir: &Path, root: &Path) -> bool`; it never walks
-  above `root`. A symlinked `node_modules` counts (use `Path::is_dir`, which follows it).
+  lookup in `fn missing_node_modules(package_dir: &Path, root: &Path) -> bool` (it reads
+  `package_dir/package.json`; an unreadable or unparsable manifest counts as declaring
+  dependencies); it never walks above `root`. A symlinked `node_modules` counts (use
+  `Path::is_dir`, which follows it). Add the unit test
+  `a_dependency_free_node_test_package_still_runs` (a `package.json` with no dependencies, the
+  node-test runner, no `node_modules`: the recorder receives a command).
 - In `judge`, before `classify`: a run whose `exit_code` is `Some(127)` (the shell's "command
   not found") inserts the note
 
@@ -114,6 +128,14 @@ running them; add a second recorder that answers exit 127 with empty output):
   repository root; the recorder receives a `vitest run` command.
 - `exit_127_is_a_note` (exact name; acceptance runs it): the 127 recorder yields that note and
   an empty `ran`, and `run_with` returns `Ok`.
+- `run_selects_the_committed_stage_diff` (exact name; acceptance runs it): a TempDir git repo
+  (isolated git config) on `main` commits `web/package.json` (`{"devDependencies":{"vitest":
+  "^3.2.0"}}`) and `web/src/a.test.ts` (a named function and a `test(..)` call); branch
+  `loom/s` commits an edit to `web/src/a.test.ts`; the tree is clean and there is no
+  `node_modules`. `run(&Stage::default(), root, &CriteriaConfig::default(), "main")` returns
+  `Ok` with a note containing "has no node_modules". This proves `run` feeds `stage_changes`
+  to the walk: with no published base, `graph.changed` is HEAD-relative and empty here, so a
+  `run` that still walks from `graph.changed` reaches no test and gives no note.
 
 A TypeScript test file needs at least one declaration (a named function) for the extractor
 to give it a node; a file holding only a `test(...)` call has none and is never reached.
@@ -124,7 +146,8 @@ to give it a node; a file holding only a `test(...)` call has none and is never 
 Add `"fixtures"` to `SKIP_DIRS` with a comment: fixture trees carry manifests (the labelled
 Rust and Go corpora) that are test data, not packages. Skipping the directory leaves out every
 package whose path has a component named `fixtures`; the scan root itself is never compared.
-Update the module or `SKIP_DIRS` doc so it says so.
+`SKIP_DIRS` has no doc comment today: add one that says so. A stage whose `working_dir` lies
+inside a `fixtures` directory loses its detected runner; that is accepted (plan Choice 6).
 
 Callers checked, for your report: `verify/contracts/mod.rs::detected_runner` (a contract's
 runner), `verify/impact_tests.rs`, `skills/recommend.rs` (skill routing),

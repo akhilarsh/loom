@@ -7,8 +7,8 @@ Stage `plan-environment`, wave 2, tier sonnet. Read `../common.md` first. P1 has
 You own `loom/src/plan/schema/validation/v2_lints/{mod.rs, registry_domains.rs (new),
 repo_hooks.rs (new), js_provision.rs (new), sandbox_capability.rs}`,
 `loom/src/plan/schema/tests/{mod.rs, v2_lint_environment_tests.rs (new)}`,
-`loom/src/commands/plan/verify.rs` and `loom/tests/fixtures/plans/v2-environment-lints.md`
-(new).
+`loom/src/commands/plan/verify.rs`, `loom/tests/fixtures/plans/v2-environment-lints.md`
+(new) and the header paragraph of `loom/tests/fixtures/plans/v2-valid.md`.
 
 ## Why
 
@@ -40,6 +40,18 @@ call line (about line 386) to
     let repo_root = find_repo_root(&std::path::absolute(path)?);
 
 and nothing else in the file.
+
+Consequence to record: with a real root, the repository-level lints (the pre-commit hook and
+the JS provision lint) judge the checkout the plan sits in. `tests/fixtures/plans/v2-valid.md`
+has no sandbox block and no `provision`, so `loom plan verify --strict` of it INSIDE this
+checkout now fails by design (the hook's `bunx`, and `web/` with no `provision`), although its
+header and `CONTRIBUTING.md` ("A plan-version-2 change ... is exercised by
+`loom/tests/fixtures/plans/v2-valid.md` under `loom plan verify --strict`") say it must pass.
+Rewrite the fixture's header sentence to: "`loom plan verify --strict` must accept it in a
+repository with no JS package and no registry-fetching git hook (a scratch git repository
+holding only this file); inside the loom checkout the repository-level lints fire by design."
+Do not change its YAML: the contracts copy it into scratch repositories. Knowledge-distill
+rewrites the `CONTRIBUTING.md` line.
 
 ## 1. Registry domains: `registry_domains.rs`
 
@@ -86,9 +98,20 @@ separate check.
 
 `pub(super) fn check(ctx, out)`, only when `ctx.repo_root` is `Some`:
 
-1. `crate::git::runner::run_git_checked(&["rev-parse", "--git-path", "hooks"], root)` gives
-   the hooks directory, honouring `core.hooksPath` (in this repository it prints
-   `loom/.githooks`). A relative answer is joined to `root`. A git failure means no finding.
+1. Find the hooks directory with SCOPED reads, the way
+   `orchestrator/core/merge_handler/merge_gate.rs::hooks_dir_prefix` does: the first of
+   `run_git_checked(&["config", scope, "--get", "core.hooksPath"], root)` for `--local`, then
+   `--global`, then `--system`, that returns a non-empty value (an error means unset at that
+   scope). A relative value is joined to `root`. When it is unset at every scope, use
+   `run_git_checked(&["rev-parse", "--git-common-dir"], root)` joined with `hooks` (joined to
+   `root` when relative). Never use `rev-parse --git-path hooks` or an unscoped
+   `config --get`: loom's git runner prepends `-c core.hooksPath=/dev/null` to every command
+   (`git/runner.rs::NO_HOOKS_ARGS`), which wins on precedence, so both always answer
+   `/dev/null` and the lint would silently find no hook
+   (`mistakes/sandbox-tooling-and-network.md`, "`-c core.hooksPath=/dev/null` Silently
+   Overrides a Scoped `core.hooksPath` Read"). In this checkout the local scope answers
+   `loom/.githooks` (set by hand per `CONTRIBUTING.md`; a clone without it has no hook to
+   lint). Any other git failure means no finding.
 2. Read `<hooks>/pre-commit` with `crate::fs::safe_read::read_to_string_bounded(&hooks_dir,
    Path::new("pre-commit"), 1 << 20)`; absent or unreadable means no finding.
 3. `visit_argvs` over the whole script and `registry_need` on each argv.
@@ -112,8 +135,8 @@ your tests must find `bunx` in that shape.
 - `crate::skills::project::ProjectProfile::discover(root)` and `package_details()`. A package
   whose `runner` names an adapter with `language() == "javascript"`
   (`crate::testrun::registry::by_name`) needs a provision entry whose `working_dir`, as a
-  path, equals the package path or is an ancestor of it (`.` and the empty path cover every
-  package). Fixture directories are not scanned (stage `completion-gates` adds that to
+  path, equals the package path or is an ancestor of it (`.` covers every package; P1 rejects
+  an empty `working_dir`). Fixture directories are not scanned (stage `completion-gates` adds that to
   detection); do not filter them here.
 - Each uncovered package is a plan-level error-in-v2 finding (`stage_id: None`):
 
@@ -125,7 +148,11 @@ your tests must find `bunx` in that shape.
 - Each provision entry whose `root.join(working_dir)` is not a directory is an error-in-v2
   finding: "provision entry #<n> working_dir `<dir>` does not exist in the repository".
 - A truncated scan (`profile.truncated`) returns the note "the package scan stopped at its
-  entry limit, so a JS package may be missing from the provision check".
+  depth or entry limit, so a JS package may be missing from the provision check". In this
+  checkout the scan is always truncated (the depth limit, `skills/project/scan.rs`), so this
+  note appears on every verify here.
+- The lint judges the repository, not the stages: a v2 plan in this repository that runs no
+  JS still needs a `provision` entry for `web`. That is the settled design (plan Choice 20).
 
 Register all three in `run`: `registry_domains::check(ctx, &mut out);`,
 `repo_hooks::check(ctx, &mut out);`, `notes.extend(js_provision::check(ctx, &mut out));`.
@@ -137,20 +164,25 @@ Use the helpers other lint test files use (read `v2_lint_repo_tests.rs` and
 `v2_lint_command_tests.rs`, and `tests/mod.rs`'s `create_valid_metadata_v2`). Cover: each row
 of the registry table and a near-miss (`npm test`, `cargo build`, `go test`), `xargs -0 bunx`,
 a wildcard and a bare `*`, a stage override that replaces the plan network, a disabled
-sandbox, `before_stage` skipped; the hook lint with `core.hooksPath` set in a TempDir repo,
-without it (a `.git/hooks/pre-commit`), and with no hook; the JS lint covered by an exact entry,
+sandbox, `before_stage` skipped; the hook lint with a relative `core.hooksPath` set in a TempDir repo,
+with an absolute one, without it (a `.git/hooks/pre-commit`), and with no hook, each through
+`check` itself (the production lookup, never a test-only path helper); the JS lint covered by an exact entry,
 by an ancestor entry, uncovered, a missing entry directory, and a v1 plan (no finding).
 
 ## 5. The fixture plan
 
 `loom/tests/fixtures/plans/v2-environment-lints.md`: a `version: 2` plan in the shape of
-`tests/fixtures/plans/v2-valid.md` (every stage with a `summary`), with plan-level
+`tests/fixtures/plans/v2-valid.md` with a `summary:` line added to every stage (v2-valid has
+none; `plan verify` warns on each), with plan-level
 `sandbox: { network: { allowed_domains: ["crates.io"] } }` and `bunx tsc --noEmit` added to the
 standard stage's acceptance. Verified from this repository (`web/` runs vitest; the pre-commit
 hook runs `bunx`), it must report all three lints: the stage's own wiring test runs
 `cargo run --quiet -- plan verify --json tests/fixtures/plans/v2-environment-lints.md` from
-`loom/` and expects exit 1 with `registry.npmjs.org`, `pre-commit` and `provision` in stdout.
-A header paragraph says what the fixture is for.
+`loom/` and expects exit 1 with `registry.npmjs.org`, `pre-commit hook` and `package`web``
+in stdout (one needle per lint: the registry lint's own message also says "provision", so
+"provision" alone would not prove the JS lint runs). A header paragraph says what the fixture
+is for, and that its hook finding depends on this checkout's local
+`core.hooksPath=loom/.githooks` (a clone without that setting reports no hook).
 
 ## Contracts your code must satisfy
 
@@ -159,4 +191,5 @@ A header paragraph says what the fixture is for.
 
 ## Check
 
-`cargo test --lib plan::schema::tests::v2_lint_environment_tests`, once.
+`cargo test --lib plan::schema::tests::v2_lint_environment_tests`, once. The main agent also
+runs `cargo test --test integration plan_verify` (26 tests of the `loom plan verify` binary).
