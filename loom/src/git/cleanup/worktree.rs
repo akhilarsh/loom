@@ -7,6 +7,7 @@ use std::path::Path;
 use crate::fs::memory::SPOOL_RELPATH as MEMORY_SPOOL_RELPATH;
 use crate::git::runner::run_git_checked;
 use crate::telemetry::TELEMETRY_SPOOL_RELPATH;
+use crate::verify::tool_artifacts::NAMES;
 
 /// Cap on how many blocking paths `refusal_error` lists verbatim. The
 /// message is persisted into stage frontmatter and shipped in every status
@@ -133,7 +134,7 @@ pub(crate) fn worktree_directory_exists(worktree_path: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Repo-relative `.claude`/`CLAUDE.md`/`.loom` paths git tracks in
+/// Repo-relative `.claude`/`CLAUDE.md`/`.loom` and sandbox-stub paths git tracks in
 /// `worktree_path`'s repository (`git ls-files -- .claude CLAUDE.md .loom`).
 /// Creation only plants scaffold when the checkout carries none of its own
 /// (`setup_claude_directory`, `setup_root_claude_md`), and the spool files
@@ -143,17 +144,16 @@ pub(crate) fn worktree_directory_exists(worktree_path: &Path) -> Result<bool> {
 /// `remove_worktree_scaffold` on plain temp dirs with no git repository at
 /// all.
 fn tracked_scaffold_paths(worktree_path: &Path) -> HashSet<String> {
-    run_git_checked(
-        &["ls-files", "-z", "--", ".claude", "CLAUDE.md", ".loom"],
-        worktree_path,
-    )
-    .map(|out| {
-        out.split('\0')
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect()
-    })
-    .unwrap_or_default()
+    let mut args = vec!["ls-files", "-z", "--", ".claude", "CLAUDE.md", ".loom"];
+    args.extend(NAMES);
+    run_git_checked(&args, worktree_path)
+        .map(|out| {
+            out.split('\0')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Remove only Loom-generated scaffold before non-forced Git removal.
@@ -198,6 +198,24 @@ pub(crate) fn remove_worktree_scaffold(worktree_path: &Path) -> Result<()> {
         TELEMETRY_SPOOL_RELPATH,
         "telemetry",
     )?;
+    remove_sandbox_stubs(worktree_path, &tracked)
+}
+
+/// Remove the zero-byte regular files a sandbox leaves at the worktree root
+/// under the `tool_artifacts::NAMES` names. Tracked names, absent paths, files
+/// with content, symlinks, directories and device nodes are left for
+/// `git worktree remove` (or `git status`) to judge.
+fn remove_sandbox_stubs(worktree_path: &Path, tracked: &HashSet<String>) -> Result<()> {
+    for name in NAMES {
+        if tracked.contains(name) {
+            continue;
+        }
+        let path = worktree_path.join(name);
+        if matches!(std::fs::symlink_metadata(&path), Ok(m) if m.is_file() && m.len() == 0) {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("Failed to remove sandbox stub {}", path.display()))?;
+        }
+    }
     Ok(())
 }
 

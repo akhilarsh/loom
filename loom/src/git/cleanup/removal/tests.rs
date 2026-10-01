@@ -195,3 +195,63 @@ fn destructive_cleanup_rejects_stage_id_path_traversal() {
     let error = cleanup_destructive_stage("../outside", &confirmation, root).unwrap_err();
     assert!(error.to_string().contains("Invalid stage ID"));
 }
+
+#[test]
+fn verified_cleanup_removes_worktree_holding_ignored_output() {
+    let temp = init_repo();
+    let root = temp.path();
+    fs::write(root.join(".gitignore"), "target/\n.claude/\n").unwrap();
+    git_ok(root, &["add", ".gitignore"]);
+    git_ok(root, &["commit", "-m", "ignore build output"]);
+    let (worktree, commit) = create_stage_worktree(root, "ignored");
+    merge_stage(root, "ignored");
+    fs::create_dir_all(worktree.join("target/debug")).unwrap();
+    fs::write(worktree.join("target/debug/app"), "bin").unwrap();
+    fs::create_dir_all(worktree.join("src/.claude/.cc-writes")).unwrap();
+    fs::write(worktree.join("src/.claude/.cc-writes/x"), "w").unwrap();
+
+    let result = cleanup_verified_stage("ignored", &commit, "main", root).unwrap();
+    assert!(result.worktree_removed);
+    assert!(!worktree.exists());
+    assert!(!branch_exists_strict("loom/ignored", root).unwrap());
+}
+
+#[test]
+fn verified_cleanup_discounts_untracked_loom_scaffold() {
+    let temp = init_repo();
+    let root = temp.path();
+    let (worktree, commit) = create_stage_worktree(root, "scaffold");
+    merge_stage(root, "scaffold");
+    fs::create_dir_all(worktree.join(".claude")).unwrap();
+    fs::write(worktree.join(".claude/settings.json"), "{}").unwrap();
+
+    cleanup_verified_stage("scaffold", &commit, "main", root).unwrap();
+    assert!(!worktree.exists());
+}
+
+#[test]
+fn verified_cleanup_removes_empty_sandbox_stubs() {
+    let temp = init_repo();
+    let root = temp.path();
+    let (worktree, commit) = create_stage_worktree(root, "stubs");
+    merge_stage(root, "stubs");
+    fs::write(worktree.join(".bashrc"), "").unwrap();
+    fs::write(worktree.join(".mcp.json"), "").unwrap();
+
+    cleanup_verified_stage("stubs", &commit, "main", root).unwrap();
+    assert!(!worktree.exists());
+}
+
+#[test]
+fn verified_cleanup_refuses_sandbox_stub_name_with_content() {
+    let temp = init_repo();
+    let root = temp.path();
+    let (worktree, commit) = create_stage_worktree(root, "stub-content");
+    merge_stage(root, "stub-content");
+    fs::write(worktree.join(".zshrc"), "alias x=y\n").unwrap();
+
+    let error = cleanup_verified_stage("stub-content", &commit, "main", root).unwrap_err();
+    assert!(error.to_string().contains(".zshrc"));
+    assert!(worktree.join(".zshrc").exists());
+    assert!(branch_exists_strict("loom/stub-content", root).unwrap());
+}

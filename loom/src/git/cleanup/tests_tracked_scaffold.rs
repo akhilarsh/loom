@@ -173,3 +173,58 @@ fn stage_resources_exist_is_true_for_a_lone_base_branch() {
     git_ok(temp_dir.path(), &["branch", "loom/_base/stage-1"]);
     assert!(stage_resources_exist("stage-1", temp_dir.path()).unwrap());
 }
+
+fn add_stage_worktree(root: &std::path::Path) -> std::path::PathBuf {
+    fs::create_dir_all(root.join(".worktrees")).unwrap();
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            ".worktrees/stage-1",
+            "-b",
+            "loom/stage-1",
+        ],
+    );
+    root.join(".worktrees/stage-1")
+}
+
+#[test]
+#[serial]
+fn empty_untracked_sandbox_stub_does_not_block_cleanup() {
+    let temp_dir = setup_git_repo();
+    let worktree = add_stage_worktree(temp_dir.path());
+    fs::write(worktree.join(".bashrc"), "").unwrap();
+
+    let result = cleanup_worktree("stage-1", temp_dir.path(), false);
+    assert!(result.is_ok(), "cleanup failed: {:?}", result.err());
+    assert!(result.unwrap());
+    assert!(!worktree.exists());
+}
+
+#[test]
+#[serial]
+fn tracked_empty_stub_name_survives_scaffold_removal() {
+    let temp_dir = setup_git_repo();
+    fs::write(temp_dir.path().join(".gitmodules"), "").unwrap();
+    git_ok(temp_dir.path(), &["add", ".gitmodules"]);
+    git_ok(temp_dir.path(), &["commit", "-m", "track empty gitmodules"]);
+    let worktree = add_stage_worktree(temp_dir.path());
+
+    remove_worktree_scaffold(&worktree).unwrap();
+    assert!(worktree.join(".gitmodules").exists());
+}
+
+#[test]
+#[serial]
+fn sandbox_stub_name_with_content_survives_scaffold_removal() {
+    let temp_dir = setup_git_repo();
+    let worktree = add_stage_worktree(temp_dir.path());
+    fs::write(worktree.join(".bashrc"), "export X=1\n").unwrap();
+
+    remove_worktree_scaffold(&worktree).unwrap();
+    assert_eq!(
+        fs::read_to_string(worktree.join(".bashrc")).unwrap(),
+        "export X=1\n"
+    );
+}

@@ -70,7 +70,8 @@ pub fn worktrees_dir() -> PathBuf {
 /// 1. A resolver session is spawned to resolve conflicts
 /// 2. The resolver merges `loom/<stage>`, resolves conflicts, and commits
 /// 3. The merge is complete but worktree/branch still exist
-/// 4. Run `loom worktree remove <stage>` to clean up
+/// 4. In relay mode the daemon removes them itself; run `loom worktree remove
+///    <stage>` only when they are still there (see the `RelayMode` handling below)
 ///
 /// Supports prefix matching: `loom worktree remove pref` will match `prefix-matching`
 /// if it's the only worktree starting with "pref".
