@@ -95,6 +95,37 @@ fn the_reason_cuts_each_line_to_300_characters() {
 }
 
 #[test]
+fn the_reason_carries_no_terminal_escape_from_the_output() {
+    let worktree = worktree_with_web();
+    let command = "printf '\\033]0;x\\007\\033[2Jboom\\r\\n' >&2; exit 1";
+
+    let reason = failure_of(&[entry(".", command)], &worktree);
+
+    assert!(!reason.contains(['\x1b', '\x07', '\r']), "{reason:?}");
+    assert!(reason.ends_with(" ]0;x  [2Jboom"), "{reason:?}");
+}
+
+#[test]
+fn the_reason_flattens_and_cuts_the_command_and_directory() {
+    let worktree = worktree_with_web();
+    let command = format!("exit 1 # \x1b]0;title\x07\n{}", "x".repeat(400));
+
+    let reason = failure_of(&[entry("we\x1b[2Jb", &command)], &worktree);
+
+    let shown: String = command
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .take(300)
+        .collect();
+    assert_eq!(
+        reason,
+        format!(
+            "provision `{shown}` in `we [2Jb` failed: the directory does not exist in the worktree"
+        )
+    );
+}
+
+#[test]
 fn a_missing_directory_runs_nothing() {
     let worktree = TempDir::new().unwrap();
 

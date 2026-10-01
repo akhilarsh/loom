@@ -295,3 +295,49 @@ fn a_merge_resolver_is_not_retired_by_a_block() {
 
     let _ = crate::process::terminate(resolver_pid);
 }
+
+/// A daemon restart re-emits `StageBlocked` for every Blocked stage. One with no
+/// `failure_info`, no session and no live agent has nothing to retire, so its
+/// stage file must not be rewritten (a rewrite bumps `updated_at`).
+#[test]
+fn a_block_with_nothing_to_retire_does_not_rewrite_the_stage_file() {
+    let temp = handoff_work_dir();
+    let work = temp.path().join(".loom").join("work");
+    executing_stage(&work);
+    block_directly(&work, None);
+    let file = crate::fs::stage_files::find_stage_file(&work.join("stages"), "test-stage")
+        .unwrap()
+        .unwrap();
+    let before = std::fs::read_to_string(&file).unwrap();
+    let updated_at = load_stage("test-stage", &work).unwrap().updated_at;
+    let mut orchestrator = orchestrator_for(&work, temp.path());
+
+    orchestrator.on_stage_blocked("test-stage").unwrap();
+
+    assert_eq!(
+        load_stage("test-stage", &work).unwrap().updated_at,
+        updated_at
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+}
+
+/// The block reason is free text a stage agent wrote: it reaches the daemon
+/// console as one flattened, bounded line.
+#[test]
+fn the_block_reason_is_flattened_before_it_reaches_the_console() {
+    let reason = format!(
+        "blocked\n\u{1b}]52;c;ZXZpbA==\u{7}\u{202E}tail`x{}",
+        "z".repeat(5_000)
+    );
+
+    let line = blocked_line("test-stage", &reason);
+
+    assert!(
+        line.starts_with("Stage 'test-stage' blocked: blocked ]52;c;ZXZpbA== tailˋxzzz"),
+        "line: {line}"
+    );
+    assert!(!line.contains(|c: char| c.is_control() || c == '\u{202E}' || c == '`'));
+    let prefix_len = "Stage 'test-stage' blocked: ".chars().count();
+    let max = prefix_len + crate::context::untrusted::MAX_INLINE_CHARS;
+    assert!(line.chars().count() <= max, "line is not bounded");
+}

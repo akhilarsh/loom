@@ -203,6 +203,43 @@ fn a_provision_that_leaves_an_unignored_file_blocks_the_stage() {
 }
 
 #[test]
+fn an_unignored_file_name_reaches_the_reason_without_its_escape_bytes() {
+    let repo = repo_ignoring_node_modules();
+
+    let (passed, stage) = gate(
+        &["touch \"$(printf 'evil\\033[2Jname')\""],
+        Vec::new(),
+        repo.path(),
+    );
+
+    assert!(!passed);
+    let reason = stage.close_reason.expect("the block records its reason");
+    assert!(reason.contains("worktree: evil [2Jname;"), "{reason:?}");
+    assert!(!reason.contains('\x1b'), "{reason:?}");
+    let info = stage.failure_info.expect("the block records failure info");
+    assert!(
+        info.evidence.iter().all(|line| !line.contains('\x1b')),
+        "{:?}",
+        info.evidence
+    );
+}
+
+/// Calling `run_provision` without the ticker thread writes no tick, so this fails.
+#[test]
+fn provisioning_stamps_the_daemon_tick() {
+    let work = TempDir::new().unwrap();
+    let worktree = TempDir::new().unwrap();
+    assert!(tick::read(work.path()).unwrap().is_none());
+
+    provision_worktree(work.path(), &[entry("true")], worktree.path()).unwrap();
+
+    let stamped = tick::read(work.path())
+        .unwrap()
+        .expect("provisioning stamps the daemon tick");
+    assert_eq!(stamped.phase, Some(Phase::Spawning));
+}
+
+#[test]
 fn a_provision_that_writes_only_ignored_files_spawns() {
     let repo = repo_ignoring_node_modules();
 
