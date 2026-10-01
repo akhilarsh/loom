@@ -147,3 +147,25 @@ fn placeholders_do_not_split_a_round_from_its_completion() -> Result<()> {
     assert_eq!(round.files.keys().collect::<Vec<_>>(), ["file.txt"]);
     Ok(())
 }
+
+/// The base is the merge base, not the target's tip: a commit that reached the
+/// target after the stage branched is not the stage's change.
+#[test]
+fn a_commit_on_the_target_after_the_branch_point_is_not_a_stage_change() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path();
+    repo_on_feature(root, &[("file.txt", "initial")])?;
+    std::fs::write(root.join("stage.txt"), b"from the stage")?;
+    git_ok(root, &["add", "stage.txt"])?;
+    git_ok(root, &["commit", "-m", "the stage's commit"])?;
+    git_ok(root, &["switch", "main"])?;
+    std::fs::write(root.join("landed.txt"), b"from another stage")?;
+    git_ok(root, &["add", "landed.txt"])?;
+    git_ok(root, &["commit", "-m", "landed on main"])?;
+    git_ok(root, &["switch", "feature"])?;
+
+    let fingerprint = compute(root, "main")?;
+
+    assert_eq!(fingerprint.files.keys().collect::<Vec<_>>(), ["stage.txt"]);
+    Ok(())
+}

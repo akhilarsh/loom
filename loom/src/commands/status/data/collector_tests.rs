@@ -358,3 +358,22 @@ fn a_merge_session_whose_process_died_is_not_the_live_resolver() {
     assert_eq!(with_dead.merge_resolver_session, None);
     assert_eq!(with_live.merge_resolver_session, Some(live.id));
 }
+
+#[test]
+fn stage_summary_carries_the_block_reason() {
+    let (_tmp, work_dir) = temp_work_dir();
+    let mut blocked = make_test_stage("stage-1", StageStatus::Blocked);
+    blocked.close_reason = Some("needs an upstream schema change".to_string());
+    let unblocked = make_test_stage("stage-2", StageStatus::Blocked);
+
+    let summary = build_stage_summary(&blocked, &[], &work_dir);
+
+    assert_eq!(
+        summary.close_reason,
+        Some("needs an upstream schema change".to_string())
+    );
+    assert_eq!(
+        build_stage_summary(&unblocked, &[], &work_dir).close_reason,
+        None
+    );
+}

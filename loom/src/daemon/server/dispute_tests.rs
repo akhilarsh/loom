@@ -41,14 +41,21 @@ fn file_acceptance(work_dir: &Path, stage_id: &str, index: usize, reason: &str) 
 
 /// Give `stage-disp` two wiring checks and two wiring tests.
 fn add_wiring_entries(work_dir: &Path) {
+    add_wiring_entries_sized(work_dir, 2, 2);
+}
+
+/// Give `stage-disp` `wiring` wiring checks and `tests` wiring tests.
+fn add_wiring_entries_sized(work_dir: &Path, wiring: usize, tests: usize) {
     update_stage("stage-disp", work_dir, |stage| {
-        for i in 0..2 {
+        for i in 0..wiring {
             stage.wiring.push(WiringCheck {
                 source: "src/lib.rs".to_string(),
                 pattern: format!("pub fn f{i}"),
                 description: format!("f{i} is exported"),
                 literal: true,
             });
+        }
+        for i in 0..tests {
             stage.wiring_tests.push(WiringTest {
                 name: format!("t{i}"),
                 command: "true".to_string(),
@@ -83,18 +90,7 @@ fn wiring_index_is_checked_against_the_wiring_list() {
     // for the acceptance list.
     let (_tmp, work_dir) = setup(StageStatus::Executing, 5);
     add_wiring_entries(&work_dir);
-    let dispute = |index| {
-        handle_dispute_criteria(
-            &work_dir,
-            "stage-disp",
-            CriterionField::Wiring,
-            index,
-            "wrong check".to_string(),
-            None,
-            None,
-        )
-        .unwrap()
-    };
+    let dispute = |index| dispute_field(&work_dir, CriterionField::Wiring, index);
 
     let message = refusal_message(dispute(3));
     assert!(message.contains("out of range"), "msg: {message}");
@@ -109,18 +105,7 @@ fn wiring_index_is_checked_against_the_wiring_list() {
 fn wiring_tests_index_is_checked_against_the_wiring_tests_list() {
     let (_tmp, work_dir) = setup(StageStatus::Executing, 5);
     add_wiring_entries(&work_dir);
-    let dispute = |index| {
-        handle_dispute_criteria(
-            &work_dir,
-            "stage-disp",
-            CriterionField::WiringTests,
-            index,
-            "wrong test".to_string(),
-            None,
-            None,
-        )
-        .unwrap()
-    };
+    let dispute = |index| dispute_field(&work_dir, CriterionField::WiringTests, index);
 
     let message = refusal_message(dispute(2));
     assert!(message.contains("out of range"), "msg: {message}");
@@ -129,6 +114,47 @@ fn wiring_tests_index_is_checked_against_the_wiring_tests_list() {
 
     assert!(matches!(dispute(0), Response::DisputeCreated { id: 1 }));
     assert_eq!(filed_field(&work_dir), "wiring-tests");
+}
+
+/// File a dispute against `field`'s entry `index` of `stage-disp`.
+fn dispute_field(work_dir: &Path, field: CriterionField, index: usize) -> Response {
+    handle_dispute_criteria(
+        work_dir,
+        "stage-disp",
+        field,
+        index,
+        "r".to_string(),
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+#[test]
+fn wiring_tests_range_is_the_wiring_tests_length_not_the_wiring_length() {
+    // Three wiring checks, one wiring test: index 2 exists only in `wiring`.
+    let (_tmp, work_dir) = setup(StageStatus::Executing, 5);
+    add_wiring_entries_sized(&work_dir, 3, 1);
+
+    let message = refusal_message(dispute_field(&work_dir, CriterionField::WiringTests, 2));
+    assert!(message.contains("--field wiring-tests"), "msg: {message}");
+    assert!(message.contains("stage has 1 entries"), "msg: {message}");
+    assert!(!work_dir.join("disputes/stage-disp/1").exists());
+
+    let filed = dispute_field(&work_dir, CriterionField::WiringTests, 0);
+    assert!(matches!(filed, Response::DisputeCreated { id: 1 }));
+    assert_eq!(filed_field(&work_dir), "wiring-tests");
+}
+
+#[test]
+fn a_wiring_index_past_the_wiring_tests_list_files_against_the_wiring_list() {
+    let (_tmp, work_dir) = setup(StageStatus::Executing, 5);
+    add_wiring_entries_sized(&work_dir, 3, 1);
+
+    let filed = dispute_field(&work_dir, CriterionField::Wiring, 2);
+
+    assert!(matches!(filed, Response::DisputeCreated { id: 1 }));
+    assert_eq!(filed_field(&work_dir), "wiring");
 }
 
 #[test]
