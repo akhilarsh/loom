@@ -111,10 +111,12 @@ Both are declared once as `CODEX_SANDBOX_WRITE_PATHS` (`loom/src/codex.rs`) and 
 `sandbox.filesystem.allowWrite` — additive, OS-enforced for child processes, and the mechanism the
 settings schema names for exactly this. `CODEX_SANDBOX_DOMAINS` does the same for the hosts codex
 reaches (no domain is pre-allowed by default, and an unlisted host raises a mid-run permission
-decision). Emitted from two places, deliberately: `sandbox/settings/policy.rs` (every stage worktree
-and `loom repair --fix`) and `fs/permissions/settings.rs::ensure_loom_hooks_local` (`loom init`,
-which never runs the sandbox generator). Sessions outside a loom repo need the same block in
-`~/.claude/settings.json` — loom does not own that file.
+decision). `sandbox/settings/policy.rs::filesystem_settings` emits them into a codex-licensed
+stage's settings (every stage worktree and `loom repair --fix`), and
+`sandbox/control_surfaces.rs::session_writable_roots` counts them among the session's writable
+roots, so no hook path or `LOOM_BIN` under them is accepted. `fs/permissions/settings.rs` emits no
+codex grant. Sessions outside a loom repo need the same block in `~/.claude/settings.json` — loom
+does not own that file.
 
 **This is Linux-specific in origin, not in fix.** macOS Seatbelt let these writes through, so the
 lane looked healthy there; the native bubblewrap sandbox enforces the allowlist and broke it.
