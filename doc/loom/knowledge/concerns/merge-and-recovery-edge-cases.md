@@ -59,14 +59,12 @@ and the daemon reads state from disk — but the caller observes a false negativ
 operation. If this is ever observed in the wild, split the response so callers can distinguish
 "completed, replay marker failed" from "not completed".
 
-## Merge Path Follow-Ups After the Silent-Unmerged Fix (2026-09-06)
+## Merge Path Follow-Ups After the Silent-Unmerged Fix
 
 Found while fixing the silent `Completed + !merged` outcome (`mistakes/phantom-merges.md`, last entry). Each is a separate change and was left as is.
 
-- `spawn_merge_resolution_sessions` (`orchestrator/core/merge_handler.rs`) still exempts probe failures from `MAX_MERGE_RESOLVER_ATTEMPTS`. A non-final stage now reaches `MergeBlocked` after a failed auto-merge, so a permanently dirty main checkout produces a "Failed to spawn merge resolution session" warning every 5 s until the daemon exits. The 2026-08-17 entry in phantom-merges.md already asks for a cap or an escalation path.
 - `loom stage merge` requires the cwd to be inside `.worktrees/` (`commands/stage/merge/preflight.rs::resolve_worktree_paths`). A stage whose worktree is gone but whose branch is unmerged has no loom command that merges it, and the hints printed by the daemon and `loom status` do not say to cd first.
 - `verify_merged_true_or_revert` (`orchestrator/core/recovery.rs`) treats a git error from `verify_merge_succeeded` as "not verified" (`unwrap_or(false)`) and reverts `merged` to false, so a transient git failure can flip a merged stage to unmerged.
-- `merge_stage` (`git/merge/mod.rs`) checks out the target branch in the operator's main checkout and, on success, leaves it there; only the failure paths restore the original branch.
 - `try_auto_merge` is 228 lines against the 50-line function cap and is ledgered at that size.
 
 ## A Retry Reset a Completed Stage's Branch, and the Stage Still Read `merged: true` (2026-09-19)
@@ -75,7 +73,7 @@ The `doctrine-surfaces` stage (`PLAN-loom-efficiency-and-acceptance`) committed 
 sandbox-setup-failure retry (stale installed hooks). The retry recreated `loom/doctrine-surfaces` at main's HEAD, and
 completion recorded `merged: true` with `completed_commit` equal to main's HEAD, so nothing merged and the daemon
 reported success. `git/worktree/operations.rs::create_worktree` reuses a branch with commits ahead of its base, so the
-reset happened on a path that guard does not cover (the retry recreation, or a merge probe that treats "no diff against
+reset happened on a path that guard does not cover (the retry recreation, or a check that treats "no diff against
 main" as merged). The root cause was NOT identified in this plan. Until it is, a stage that read `merged: true` must be
 checked with `git merge-base --is-ancestor <stage tip> <target>` before dependants trust it, and the stage tip is
 recoverable from `git fsck --no-reflogs` (see [phantom-merges](../mistakes/phantom-merges.md)). A retry that starts from
@@ -87,11 +85,30 @@ Gaps around the [Merge Resolver Spawn Loop](../patterns/merge-and-recovery.md#me
 
 - **No ancestry check before missing-branch routing.** `missing_branch_blocks_spawn` (`orchestrator/core/merge_handler/resolver_spawn.rs`) sends a stage whose `loom/<id>` branch is gone to review, even when its work already landed in the target. The outcome is safe against a phantom merge, but noisy; the manual step is `loom stage human-review <id> --force-complete`.
 - **An unreadable stage file keeps the watch-mode daemon up forever.** `all_stages_terminal` (`orchestrator/core/recovery.rs`) returns false on a stage-file load error, whatever that stage's status.
-- **The auto-merge conflict path spawns an uncounted resolver.** `attempt_auto_merge` (`orchestrator/auto_merge.rs`) calls `spawn_merge_session` without a `ReservedAttempt`, so that resolver is outside `MAX_MERGE_RESOLVER_ATTEMPTS`. It runs once per completion event, so it is bounded.
 - **Liveness is judged by raw PID.** `find_live_merge_session_for_stage` (`orchestrator/signals/merge.rs`) calls `is_process_alive` on the recorded PID, so a reused PID can hold a stage until that unrelated process exits.
 - **The gate stops resolvers before the guarded route.** `gate_holds_merge_stage` kills a live resolver, then routes the stage. A stage that moved on in between (for example, merged by `--resolved`) still loses its resolver. The window is narrow, and the branch is control-path-gated in any case.
 - **Merge signal writes are not atomic.** `write_signal_file` (`orchestrator/signals/helpers.rs`) uses `fs::write`. A torn signal with no session record routes the stage to review. Only the daemon writes merge signals while it runs.
-- **Transient spawn failures repeat a warning every tick.** While main stays dirty, the daemon logs a spawn-failure warning on every poll until the cause is fixed. This follows from the no-cap decision.
+- **Transient spawn failures repeat a warning every tick.** While a spawn keeps failing (tmux, lock timeout), the daemon logs a spawn-failure warning on every poll until the cause is fixed. This follows from the no-cap decision.
 - **A failed session save on the CLI resolver path can admit a second resolver.** `commands/stage/merge_resolver.rs` runs with no daemon and tracks nothing, so when its `save_session` fails the signal has no record, and the next liveness check reads it as stale. The daemon's paths, the spawn loop and `try_auto_merge`, keep a resolver whose record failed to save in `active_sessions`.
 - **A tracked resolver with no session record can stay tracked forever.** If it resolves the merge, the monitor never fires for it, so it stays in `active_sessions`: `all_stages_terminal` stays false and it occupies a parallel slot.
 - **Native window evidence needs wmctrl or xdotool on Linux** (`orchestrator/terminal/native/window_ops.rs`). Without them, a launched native resolver with no PID file reads as gone.
+
+## Attribution Code Has Nothing to Attribute
+
+`orchestrator/merge_attribution.rs` (`attribute_main_repo_merge`, `reconcile_main_repo_active_merge`, called from `orchestrator/core/recovery.rs`) and `commands/stage/complete.rs` `route_complete_conflict` rules 3-8 assume loom's merge leaves a `MERGE_HEAD` in the main checkout. Loom creates none now (`git/merge/mod.rs` `merge_stage` computes the merge with `merge-tree`), so for loom's own merges there is nothing to attribute. An operator's `MERGE_HEAD` attributes as `GlobalUnattributed`, which mutates nothing. The code is a removal candidate; its tests and the router arms go with it.
+
+## `ReapplyFailed` Leaves the Backup Ref Only in Logs and the Stash
+
+When the tracked-overlap reapply cannot pop the stash (`Blocked(ReapplyFailed { backup_ref })`, see [merge-checkout-state](../architecture/merge-checkout-state.md)), the target has already advanced. The next blocked retry therefore returns `AlreadyUpToDate`, completes the stage and clears `merge_block`. The backup ref `refs/loom/autostash/<id>-<unix-secs>` then survives only in the console line, the daemon log and the kept stash entry; no stage field records it.
+
+## Editor Saves Between the Stash and the Pop
+
+Accepted residual: the reapply stashes, fast-forwards, then pops. An editor that holds an affected file open can save stale content in that window and overwrite the popped result. The backup ref holds the pre-merge content.
+
+## CLI Merge Paths Skip the Merge Gate
+
+The merge gate (`orchestrator/core/merge_handler/merge_gate.rs`) runs before every daemon-side merge, but `loom stage merge`, the local `loom stage merge --resolved` and the progressive merge in `loom stage complete` / `human-review --approve` do not run it. A control-path change merged through those paths is not routed to review.
+
+## A Blocked Attempt Writes One Unreachable Commit per Changed Input Set
+
+`retry_blocked_merge` skips an attempt whose `blocked_merge_inputs` fingerprint is unchanged, but each attempt that does run writes a `commit-tree` commit (and, for a tracked overlap, `stash create` commits) before the block is found. A target or checkout that keeps changing while blocked accumulates unreachable objects; `git gc` reclaims them.

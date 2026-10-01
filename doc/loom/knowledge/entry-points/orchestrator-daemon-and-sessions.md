@@ -11,7 +11,7 @@
 - `orchestrator/core/event_handler.rs` - Dispatches StageCompleted, SessionCrashed, etc.
 - `orchestrator/core/crash_handler.rs` - Failure classification, exponential backoff
 - `orchestrator/core/completion_handler.rs` - Auto-merge BEFORE marking completed
-- `orchestrator/core/merge_handler.rs` - Conflict detection, merge session spawning
+- `orchestrator/core/merge_handler.rs` - Auto-merge, the resolver spawn loop (resolvers run in the stage worktree) and the blocked-merge retry (`merge_handler/blocked_retry.rs`)
 - `orchestrator/core/persistence.rs` - Load/save state to disk
 
 ## Data Models
@@ -52,7 +52,7 @@
 - `orchestrator/signals/types.rs` - EmbeddedContext, DependencyStatus, SandboxSummary
 - `orchestrator/signals/knowledge.rs` - generate_knowledge_signal() (knowledge stages)
 - `orchestrator/signals/crud.rs` - Signal file CRUD
-- `orchestrator/signals/merge.rs` - Merge conflict resolution signals
+- `orchestrator/signals/merge.rs` - Resolver signal: the resolver works in the stage worktree, never the main checkout
 - `orchestrator/signals/recovery.rs` - Recovery signal generation
 
 ## Signal Generation — Key Files and Line References
@@ -76,7 +76,7 @@
 
 - `commands/stage/complete.rs` - Top-level CLI completion entry; **`route_complete_for_conflicts` is the pure routing test seam** that decides Proceed vs ForceUnsafeAssumeMergedVerified vs SpawnResolver vs RevertAndSpawnResolver vs Refuse before any persistence.
 - `commands/stage/merge.rs` - `loom stage merge [--resolved]`; wires `merge_verify` for ancestry check.
-- `commands/stage/merge_resolver.rs` - CLI-side resolver spawn; uses `find_live_merge_session_for_stage` for single-resolver-per-stage guard.
+- `commands/stage/merge_resolver.rs` - CLI-side resolver spawn in the stage worktree; uses `find_live_merge_session_for_stage` for single-resolver-per-stage guard.
 - `commands/stage/merge_verify.rs` - `verify_or_derive_completed_commit` (read-only ancestry check shared by `--assume-merged` and `--resolved`).
 - `orchestrator/merge_attribution.rs` - `attribute_main_repo_merge` and `reconcile_main_repo_active_merge` (free functions; the daemon-recovery test seam — no `Orchestrator` instance required).
 

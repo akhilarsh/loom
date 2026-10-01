@@ -1,6 +1,6 @@
 # Sandbox And Confinement Gaps
 
-> Sandbox gaps: canary, credential reads, codex home
+> Sandbox gaps: canary, creds, codex home
 
 ## Sandbox Denial Has No End-to-End CI Canary
 

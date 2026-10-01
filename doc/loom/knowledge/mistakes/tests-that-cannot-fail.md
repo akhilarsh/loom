@@ -1,6 +1,6 @@
 # Tests That Cannot Fail
 
-> Tests that pass whether the bug is present
+> Tests that pass with the bug
 
 ## A Test Named for a Property Is Not Evidence the Property Is Pinned
 
@@ -272,3 +272,13 @@ so the test passed unchanged with the size cap removed entirely.
 **Prevention:** a negative test must isolate its cause. Feed input valid in every OTHER respect —
 here, valid receipt JSON padded with whitespace past `MAX_RECEIPT_BYTES` — and assert the specific
 error text (`"byte verification limit"`), not just `is_err()`.
+
+## A New Early Guard Made a Downstream Test Pass by the Wrong Route (2026-10-02)
+
+**What happened**: the merge-off-checkout work added `missing_worktree_blocks_spawn` to `spawn_resolver_if_due`, ahead of the resolver spawn. Three tests whose fixtures had no stage worktree failed and were fixed, but `merge_probe_failure_does_not_consume_resolver_attempt_budget` kept passing: it only asserted that no attempt was recorded, which the new guard also satisfies by routing the stage to review before the code under test runs.
+
+**Why**: a guard inserted early in a path changes which branch every downstream test exercises. The failing tests drew attention; the passing one went unread.
+
+**Prevention**: when a new guard makes some fixtures fail, read every test of that path that still passes and confirm it still reaches the code its name claims. Assert a marker of the intended branch (the stage status, the reason text), not only an absence.
+
+**Fix**: the test now gives the stage a worktree and an orphan branch so `merge_tree` itself fails, and asserts the stage stays `MergeConflict` with no attempt recorded.

@@ -1,6 +1,6 @@
 # Subagent Liveness And Watch
 
-> Subagent liveness detection; watch traps
+> Subagent liveness; watch traps
 
 ## A Missing Report Is Not a Missing Result
 

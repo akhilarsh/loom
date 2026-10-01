@@ -1,6 +1,6 @@
 # Knowledge Cli Invariants
 
-> Invariants live in the fs constructor
+> Invariants live in constructor
 
 ## A CLI Handler Is Rarely the Only Caller of the Constructor It Guards (2026-07-28)
 

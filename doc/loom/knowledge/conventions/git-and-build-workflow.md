@@ -9,13 +9,14 @@
 ```bash
 git worktree add .worktrees/{stage-id} -b loom/{stage-id}
 git worktree remove --force .worktrees/{stage-id}
-git merge --no-ff -m "Merge loom/{stage-id}" loom/{stage-id}
 git branch -D loom/{stage-id}   # Delete after merge
 ```
 
-**Active-merge guard rule (2026-04-27):** Helpers that mutate git merge state (`merge_stage`, `get_conflicting_files_from_status`) MUST refuse via `require_no_active_merge` when `MERGE_HEAD` is set on the repo path. Never silently `git merge --abort`. Defense in depth: even if attribution misses an active merge upstream, the guard surfaces an error instead of corrupting in-progress resolution.
+Loom never runs a three-way merge in the operator's main checkout; the only merge there is a `git merge --ff-only` when the target is checked out in it. `merge_stage` computes the merge with `merge-tree` and `commit-tree` and advances the target by `update-ref` or a guarded fast-forward ([merge-flow](../architecture/merge-flow.md)).
 
-**Phantom-merge revert logging (2026-04-27):** All phantom-merge reverts (sync-time merged=true revert, daemon `reconcile_main_repo_active_merge`, CLI `RevertAndSpawnResolver`) MUST log at `tracing::error!` level — not `warn` — so they show up in production logs. Reverts represent invariants violated; the noise is the point.
+**Operator-operation guard rule:** `merge_stage` returns `Blocked(OperatorOperation { marker })` when the main checkout has a `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge/` or `rebase-apply/` (`git/merge/in_progress.rs` is the single source for `MERGE_HEAD` detection). Never silently `git merge --abort` an operator's merge.
+
+**Phantom-merge revert logging:** All phantom-merge reverts (sync-time merged=true revert, daemon `reconcile_main_repo_active_merge`, CLI `RevertAndSpawnResolver`) MUST log at `tracing::error!` level — not `warn` — so they show up in production logs. Reverts represent invariants violated; the noise is the point.
 
 ## Formatting and Test Invocation in a Shared Worktree
 

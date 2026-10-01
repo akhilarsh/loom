@@ -1,6 +1,6 @@
 # Subagent Briefing
 
-> Briefs, wave sizing, file ownership
+> Briefs, wave sizing, ownership
 
 ## Never Hand Over a Proving Command You Have Not Run
 
@@ -283,3 +283,13 @@ only thing that proves it reaches the path. See [[tests-that-cannot-fail]].
 **Prevention:** when other sessions may be committing in the same checkout, never git add before committing; commit with an explicit pathspec (git commit -m ... -- <paths>), which builds the commit from those paths alone. If a commit fails after staging, run git restore --staged <own paths> before anything else.
 
 **Fix:** reported to the operator before rewriting the unpushed commit.
+
+## A Brief Forbade `git add` but Not `git rm` (2026-10-02)
+
+**What happened**: a worker brief said "no git add/commit/stash/reset"; the worker deleted two files with `git rm`, which staged the deletions in the operator's index before the orchestrator had verified anything.
+
+**Why**: the brief listed commands instead of the effect it forbade; `git rm` and `git mv` change the index as surely as `git add`.
+
+**Prevention**: forbid the effect and name the delete path: "no git command that changes the index, refs or working tree state (add, rm, mv, commit, stash, reset); delete files with plain rm".
+
+**Fix**: later briefs in the same session said exactly that; the staged deletions belonged to the unit and were committed with it.

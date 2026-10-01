@@ -1,6 +1,6 @@
 # Store Without Consumer
 
-> A store written but never read
+> Store written, never read
 
 ## What Happened
 

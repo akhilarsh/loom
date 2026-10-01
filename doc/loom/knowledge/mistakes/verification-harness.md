@@ -1,6 +1,6 @@
 # Verification Harness
 
-> When checks fail at once, suspect the harness
+> Simultaneous check failures: suspect harness
 
 ## A Harness That Redirects to a Hardcoded `/tmp` Path Reports False Failures (2026-07-28)
 

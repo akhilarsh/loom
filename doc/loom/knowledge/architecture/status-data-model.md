@@ -130,7 +130,7 @@ Each entry carries `command: Option<String>` (a shell command the operator shoul
 
 | Label | Guidance |
 | --- | --- |
-| MERGE CONFLICT, MERGE ERROR | automatic; the note names the live merge resolver or says one is awaited, with attempts used out of `MAX_MERGE_RESOLVER_ATTEMPTS` (`merge_guidance` :212) |
+| MERGE CONFLICT, MERGE ERROR | automatic; the note names the live merge resolver or says one is awaited, with attempts used out of `MAX_MERGE_RESOLVER_ATTEMPTS` (`merge_guidance` :212). A `MergeBlocked` stage with a `merge_block` carries the block sentence as `failure_info` evidence and is retried, not given a resolver |
 | BLOCKED | automatic auto-retry note when `should_auto_retry` holds (crash or timeout under the limit), else as ACCEPTANCE FAILED (`blocked_guidance` :225) |
 | ACCEPTANCE FAILED | `loom stage retry <id>`, plus `--force` and a limit note once `retry_count >= max_retries` (`retry_guidance` :240) |
 | NEEDS REVIEW | no command; `has_human_review_choices` makes every view print the three full `human_review_choices` commands (:102) |

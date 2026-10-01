@@ -1,6 +1,6 @@
 # Ci Toolchain And Cargo
 
-> CI clippy drift, offline cargo audit, install.sh
+> CI clippy drift, cargo audit, install.sh
 
 ## CI's Clippy Tracks Rustup `stable`, So a New Rust Release Breaks Main With No Code Change (2026-08-26)
 

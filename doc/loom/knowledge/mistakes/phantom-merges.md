@@ -68,7 +68,7 @@
 
 **What happened:** Stage `containment` sat in `merge-conflict` for hours with no resolver session. The daemon was trying every ~5s poll cycle and failing at the same place: `Failed to spawn merge resolution session for 'containment': merge probe infrastructure failure during cleanliness check: repository has uncommitted changes: ?? .codex ...`. The repo had 75 untracked files (plan drafts, scratch notes) and **zero** tracked modifications.
 
-**Why it broke:** `require_clean_repository` in `git/merge/probe.rs` ran `git status --porcelain=v1 --untracked-files=all` and rejected _any_ non-empty output. Untracked entries are `??` lines, so a repo that was clean in every way that matters to a probe still failed the gate. `spawn_merge_resolution_session` (`orchestrator/core/merge_handler.rs`) calls the probe to enumerate conflicting files for the signal, so the resolver could never be spawned at all.
+**Why it broke:** `require_clean_repository` in the conflict-probe module (since removed) ran `git status --porcelain=v1 --untracked-files=all` and rejected _any_ non-empty output. Untracked entries are `??` lines, so a repo that was clean in every way that matters to a probe still failed the gate. `spawn_merge_resolution_session` (`orchestrator/core/merge_handler.rs`) calls the probe to enumerate conflicting files for the signal, so the resolver could never be spawned at all.
 
 **Misleading signal:** The failure was classified `Infrastructure`, and `spawn_merge_resolution_sessions` deliberately does **not** count probe failures against `MAX_MERGE_RESOLVER_ATTEMPTS` — the reasoning being that probe failures are "transient operational errors, not failed resolver sessions." A dirty working tree is not transient. The stage therefore never escalated to `NeedsHumanReview` either; it just warned forever. A permanent precondition failure dressed as a transient one produces an infinite silent loop with no escalation path.
 
@@ -79,7 +79,7 @@
 - Symptom to recognise: the same `Warning:` line repeating in `.loom/work/orchestrator.log` at the poll interval, with a stage stuck in a non-terminal status and `session: null`.
 - A merge that _would_ overwrite an untracked file is still caught — git refuses and `run_probe` surfaces it as an `Infrastructure` error carrying git's stderr. No extra preflight is needed for that case.
 
-**Fix:** `git/merge/probe.rs` — `require_clean_repository` now uses `--untracked-files=no` and reports "uncommitted tracked changes"; regression test `untracked_files_do_not_block_the_probe` in `git/merge/probe/tests.rs`. The pre-existing test `dirty_repository_is_an_infrastructure_failure_without_mutation` had encoded the bug (it dirtied an _untracked_ `dirty.txt`) and now dirties the tracked `file.txt` instead.
+**Fix:** in the conflict-probe module (since removed), `require_clean_repository` now uses `--untracked-files=no` and reports "uncommitted tracked changes"; regression test `untracked_files_do_not_block_the_probe` in that module's tests. The pre-existing test `dirty_repository_is_an_infrastructure_failure_without_mutation` had encoded the bug (it dirtied an _untracked_ `dirty.txt`) and now dirties the tracked `file.txt` instead.
 
 **Diagnosis tip:** `git merge-tree --write-tree --name-only <target> <source>` probes a merge with zero mutation to the working tree or HEAD — safe to run while a daemon is live, unlike loom's own checkout-based probe.
 

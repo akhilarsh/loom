@@ -14,7 +14,7 @@
 | [conventions.md](conventions.md) | Coding conventions discovered in the codebase | 247 |
 | [mistakes.md](mistakes.md) | Mistakes made and lessons learned - what to avoid | 250 |
 | [stack.md](stack.md) | Dependencies, frameworks, and tooling used in the project | 125 |
-| [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 249 |
+| [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 247 |
 
 ## Tier 2 — Topics
 
@@ -40,7 +40,8 @@
 | [knowledge-bootstrap](architecture/knowledge-bootstrap.md) | Deterministic phase, digest, receipts | 86 |
 | [knowledge-hierarchy](architecture/knowledge-hierarchy.md) | fs/knowledge, INDEX.md, checks | 261 |
 | [memory-spool](architecture/memory-spool.md) | Read before touching loom memory | 188 |
-| [merge-flow](architecture/merge-flow.md) | How a completed stage reaches its target branch | 82 |
+| [merge-checkout-state](architecture/merge-checkout-state.md) | Guarded fast-forward; blocked retry | 23 |
+| [merge-flow](architecture/merge-flow.md) | How a completed stage reaches its target branch | 147 |
 | [orchestrator-loop](architecture/orchestrator-loop.md) | Tick order, Monitor, heartbeat liveness | 56 |
 | [owned-waits](architecture/owned-waits.md) | Worker-set waits: lease/engine, exit codes | 48 |
 | [plan-lifecycle-and-fields](architecture/plan-lifecycle-and-fields.md) | Plan fields v1/v2, checks, lints | 252 |
@@ -68,7 +69,7 @@
 | --- | --- | --- |
 | [cli-and-plan-pipeline](entry-points/cli-and-plan-pipeline.md) | CLI dispatch, plan pipeline | 192 |
 | [context-and-source-graph](entry-points/context-and-source-graph.md) | Context retrieval pipeline, source-graph channel | 79 |
-| [filesystem-and-integration-modules](entry-points/filesystem-and-integration-modules.md) | Git, fs, handoff, sandbox, remote | 121 |
+| [filesystem-and-integration-modules](entry-points/filesystem-and-integration-modules.md) | Git, fs, handoff, sandbox, remote | 123 |
 | [hooks](entry-points/hooks.md) | Hook scripts, their events, command matching | 146 |
 | [orchestrator-daemon-and-sessions](entry-points/orchestrator-daemon-and-sessions.md) | Orchestrator, daemon, signals, merges | 226 |
 | [remote-control](entry-points/remote-control.md) | Remote-control capability detection call sites | 99 |
@@ -80,7 +81,7 @@
 | [cli-process-and-conventions](patterns/cli-process-and-conventions.md) | CLI registration, TUI, errors, config | 249 |
 | [doctrine-cross-surface](patterns/doctrine-cross-surface.md) | Pinning multi-surface guidance | 135 |
 | [hook-content-stripping](patterns/hook-content-stripping.md) | How a hook decides what a Bash command invokes | 159 |
-| [merge-and-recovery](patterns/merge-and-recovery.md) | Progressive merge, conflict recovery | 114 |
+| [merge-and-recovery](patterns/merge-and-recovery.md) | Progressive merge, conflict recovery | 117 |
 | [orchestrator-daemon-loop](patterns/orchestrator-daemon-loop.md) | Signal gen, IPC, poll loop, spool drain | 107 |
 | [remote-control](patterns/remote-control.md) | Detect/preflight/resolve for external agents | 51 |
 | [security-sandbox-and-hooks](patterns/security-sandbox-and-hooks.md) | Hooks, input validation, sandbox config | 137 |
@@ -95,7 +96,7 @@
 | [code-style-and-structure](conventions/code-style-and-structure.md) | Rust naming, errors, size limits, docstrings | 273 |
 | [commits](conventions/commits.md) | Grouped Conventional Commits, no trailers | 25 |
 | [dispute-and-adjudication](conventions/dispute-and-adjudication.md) | Dispute authority, budgets | 119 |
-| [git-and-build-workflow](conventions/git-and-build-workflow.md) | Git/worktree ops, cargo, maintainability ledger | 210 |
+| [git-and-build-workflow](conventions/git-and-build-workflow.md) | Git/worktree ops, cargo, maintainability ledger | 211 |
 | [guidance-channels-and-plugin-scope](conventions/guidance-channels-and-plugin-scope.md) | Guidance channels, verification, plugin scope | 121 |
 | [model-and-effort-config](conventions/model-and-effort-config.md) | [pressure]/[models], precedence, value types | 103 |
 | [plan-yaml-and-hooks](conventions/plan-yaml-and-hooks.md) | Plan YAML schema, hook I/O, skill format | 168 |
@@ -105,58 +106,59 @@
 
 | Topic | Blurb | Lines |
 | --- | --- | --- |
-| [adjudication-autonomy-deadlock](mistakes/adjudication-autonomy-deadlock.md) | Accepted-verdict deadlock: adoption, requeue | 200 |
+| [adjudication-autonomy-deadlock](mistakes/adjudication-autonomy-deadlock.md) | Accepted-verdict deadlock | 200 |
 | [ambient-filesystem-trust](mistakes/ambient-filesystem-trust.md) | A .git dir is not evidence of a repo | 146 |
-| [briefs-and-bug-reports](mistakes/briefs-and-bug-reports.md) | Stage bug reports; guard flags in briefs | 116 |
-| [ci-toolchain-and-cargo](mistakes/ci-toolchain-and-cargo.md) | CI clippy drift, offline cargo audit, install.sh | 182 |
-| [codex-lane-rogue-wrapper](mistakes/codex-lane-rogue-wrapper.md) | A wrapper implemented instead of forwarding | 157 |
+| [briefs-and-bug-reports](mistakes/briefs-and-bug-reports.md) | Stage bug reports; brief guard flags | 116 |
+| [ci-toolchain-and-cargo](mistakes/ci-toolchain-and-cargo.md) | CI clippy drift, cargo audit, install.sh | 182 |
+| [codex-lane-rogue-wrapper](mistakes/codex-lane-rogue-wrapper.md) | Wrapper implemented, not forwarded | 157 |
 | [codex-navigation](mistakes/codex-navigation.md) | Forbidding reads instead of fixing a slow reader | 52 |
 | [codex-worker-briefing](mistakes/codex-worker-briefing.md) | Codex brief pitfalls | 70 |
-| [completion-broker-credential](mistakes/completion-broker-credential.md) | Completion broker fallback, dup naming, exit-0 | 179 |
-| [computed-values-and-hidden-couplings](mistakes/computed-values-and-hidden-couplings.md) | Values computed right but unread downstream | 235 |
+| [completion-broker-credential](mistakes/completion-broker-credential.md) | Broker fallback, dup naming, exit-0 | 179 |
+| [computed-values-and-hidden-couplings](mistakes/computed-values-and-hidden-couplings.md) | Computed values unread downstream | 235 |
 | [concurrency-and-locking](mistakes/concurrency-and-locking.md) | Locked-handle writes and read-mutate-save races | 36 |
 | [daemon-singleton](mistakes/daemon-singleton.md) | Two daemons shared .loom/work/; now flocked | 141 |
 | [detached-spawn-in-tests](mistakes/detached-spawn-in-tests.md) | No process may outlive its test | 45 |
-| [doctrine-and-acceptance](mistakes/doctrine-and-acceptance.md) | Doctrine drift, acceptance rules | 347 |
-| [hooks-shell-portability](mistakes/hooks-shell-portability.md) | gawk/bash portability, redirects, hook test env | 191 |
-| [knowledge-base-drift](mistakes/knowledge-base-drift.md) | How the knowledge base goes stale | 229 |
-| [knowledge-cli-invariants](mistakes/knowledge-cli-invariants.md) | Invariants live in the fs constructor | 139 |
+| [doctrine-and-acceptance](mistakes/doctrine-and-acceptance.md) | Doctrine drift, acceptance | 347 |
+| [hooks-shell-portability](mistakes/hooks-shell-portability.md) | gawk/bash portability, hook tests | 191 |
+| [knowledge-base-drift](mistakes/knowledge-base-drift.md) | How knowledge goes stale | 229 |
+| [knowledge-cli-invariants](mistakes/knowledge-cli-invariants.md) | Invariants live in constructor | 139 |
 | [knowledge-write-channel](mistakes/knowledge-write-channel.md) | Why distillation cannot write directly | 100 |
 | [ledger-tui-rendering](mistakes/ledger-tui-rendering.md) | Ledger TUI padding, fan-out, panics | 83 |
 | [live-state-pollution](mistakes/live-state-pollution.md) | Tests rewrote live .loom/work and real HOME | 43 |
 | [memory-relay-drain-gap](mistakes/memory-relay-drain-gap.md) | Relay tickets leaked past the hook | 34 |
 | [merge-cleanup-boundary](mistakes/merge-cleanup-boundary.md) | A cleanup-boundary bug and its fix | 171 |
+| [merge-in-operator-checkout](mistakes/merge-in-operator-checkout.md) | Git in operator checkout; plan errors | 29 |
 | [parallel-worktree-shared-state](mistakes/parallel-worktree-shared-state.md) | Cross-worktree state races | 203 |
 | [phantom-merges](mistakes/phantom-merges.md) | Merge lessons: merged=true unverified | 181 |
-| [pinned-literals-ledgers-and-wiring](mistakes/pinned-literals-ledgers-and-wiring.md) | Ledger exact-match, wiring pinning | 303 |
+| [pinned-literals-ledgers-and-wiring](mistakes/pinned-literals-ledgers-and-wiring.md) | Ledger exact-match, wiring pins | 303 |
 | [pre-commit-hardening](mistakes/pre-commit-hardening.md) | Partial-staging guard decisions and edge cases | 53 |
-| [refactor-stragglers](mistakes/refactor-stragglers.md) | What a large rename leaves behind | 136 |
+| [refactor-stragglers](mistakes/refactor-stragglers.md) | What a rename leaves behind | 136 |
 | [sandbox-and-settings](mistakes/sandbox-and-settings.md) | Sandbox path rules, permission sync | 293 |
 | [sandbox-protected-hooks-dir](mistakes/sandbox-protected-hooks-dir.md) | hooks/ dir is sandbox-protected | 37 |
-| [sandbox-state-channels](mistakes/sandbox-state-channels.md) | Sandboxed callers vs .loom/work state | 298 |
-| [sandbox-tooling-and-network](mistakes/sandbox-tooling-and-network.md) | Sandbox tool failures: sccache, audit | 247 |
+| [sandbox-state-channels](mistakes/sandbox-state-channels.md) | Sandboxed callers vs work state | 298 |
+| [sandbox-tooling-and-network](mistakes/sandbox-tooling-and-network.md) | Sandbox tool failures | 247 |
 | [sandbox-write-rules-inert](mistakes/sandbox-write-rules-inert.md) | Only Edit(path) rules are enforced | 57 |
 | [schema-reuse-and-silent-skips](mistakes/schema-reuse-and-silent-skips.md) | deny_unknown_fields, two sources | 130 |
 | [session-identity-env](mistakes/session-identity-env.md) | LOOM_* wrapper exports contract | 104 |
-| [sessions-and-liveness](mistakes/sessions-and-liveness.md) | Session identity, liveness routing, coverage | 347 |
-| [shell-command-matchers](mistakes/shell-command-matchers.md) | Glued separators; forgeable lookups | 246 |
-| [source-graph-delivery](mistakes/source-graph-delivery.md) | Resolver, cache, wiring, eval mistakes | 172 |
+| [sessions-and-liveness](mistakes/sessions-and-liveness.md) | Session identity, liveness, coverage | 347 |
+| [shell-command-matchers](mistakes/shell-command-matchers.md) | Glued separators, forgeable lookups | 246 |
+| [source-graph-delivery](mistakes/source-graph-delivery.md) | Resolver, cache, wiring, eval | 172 |
 | [spurious-waiting-for-input](mistakes/spurious-waiting-for-input.md) | Stages flipped to waiting-for-input | 35 |
-| [status-broadcast-hardening](mistakes/status-broadcast-hardening.md) | Frame overflow, read-timeout desync | 74 |
-| [store-without-consumer](mistakes/store-without-consumer.md) | A store written but never read | 94 |
-| [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, file ownership | 285 |
-| [subagent-liveness-and-watch](mistakes/subagent-liveness-and-watch.md) | Subagent liveness detection; watch traps | 327 |
+| [status-broadcast-hardening](mistakes/status-broadcast-hardening.md) | Frame overflow, read desync | 74 |
+| [store-without-consumer](mistakes/store-without-consumer.md) | Store written, never read | 94 |
+| [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, ownership | 295 |
+| [subagent-liveness-and-watch](mistakes/subagent-liveness-and-watch.md) | Subagent liveness; watch traps | 327 |
 | [subagent-orchestration](mistakes/subagent-orchestration.md) | Delegation model, defect reports, gotchas | 120 |
 | [test-concurrency-and-fixtures](mistakes/test-concurrency-and-fixtures.md) | Racy tests: fds, ETXTBSY, stdin | 217 |
 | [testing-and-lint](mistakes/testing-and-lint.md) | Lint/test discipline | 336 |
-| [tests-that-cannot-fail](mistakes/tests-that-cannot-fail.md) | Tests that pass whether the bug is present | 274 |
+| [tests-that-cannot-fail](mistakes/tests-that-cannot-fail.md) | Tests that pass with the bug | 284 |
 | [tmux-backend](mistakes/tmux-backend.md) | tmux spawn-failure exits, cleanup-on-error | 136 |
 | [typed-config-values-process](mistakes/typed-config-values-process.md) | Brief, dev-server, plan-prose gotchas | 43 |
-| [untrusted-value-boundaries](mistakes/untrusted-value-boundaries.md) | Enumerate every producer of a rendered field | 188 |
-| [verification-harness](mistakes/verification-harness.md) | When checks fail at once, suspect the harness | 369 |
-| [verification-v2-delivery](mistakes/verification-v2-delivery.md) | Wave, gate and proof misses in v2 | 247 |
+| [untrusted-value-boundaries](mistakes/untrusted-value-boundaries.md) | Producers of a rendered field | 188 |
+| [verification-harness](mistakes/verification-harness.md) | Simultaneous check failures: suspect harness | 369 |
+| [verification-v2-delivery](mistakes/verification-v2-delivery.md) | Wave, gate, proof misses in v2 | 247 |
 | [visibility-and-reachability](mistakes/visibility-and-reachability.md) | pub(crate) visibility is capped by path | 123 |
-| [web-dashboard-server](mistakes/web-dashboard-server.md) | Dashboard server: concurrency, security, tests | 316 |
+| [web-dashboard-server](mistakes/web-dashboard-server.md) | Dashboard server: concurrency, security | 316 |
 | [writer-reader-address](mistakes/writer-reader-address.md) | A layer written under a key its reader ignores | 73 |
 
 ### concerns
@@ -165,13 +167,13 @@
 | --- | --- | --- |
 | [agent-rule-bending-hardening](concerns/agent-rule-bending-hardening.md) | Bendable checks, hardening backlog | 249 |
 | [automatic-knowledge-source-graph-followups](concerns/automatic-knowledge-source-graph-followups.md) | Knowledge-plan followups | 51 |
-| [code-quality-and-hook-debt](concerns/code-quality-and-hook-debt.md) | Oversized units, duplicated tables, hook debt | 197 |
+| [code-quality-and-hook-debt](concerns/code-quality-and-hook-debt.md) | Oversized units, duplicated tables, hook debt | 191 |
 | [codex-heartbeat-starvation](concerns/codex-heartbeat-starvation.md) | Heartbeat starvation from long codex runs | 73 |
 | [iterm2-window-teardown](concerns/iterm2-window-teardown.md) | iTerm2 window never named | 48 |
 | [knowledge-cli-gaps](concerns/knowledge-cli-gaps.md) | Knowledge CLI gaps and housekeeping | 105 |
-| [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 97 |
+| [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 114 |
 | [runtime-and-session-safety](concerns/runtime-and-session-safety.md) | Runtime edge cases: tmux, orphan adoption | 150 |
-| [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: canary, credential reads, codex home | 260 |
+| [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: canary, creds, codex home | 260 |
 | [source-graph-known-gaps](concerns/source-graph-known-gaps.md) | Language limits, open decisions | 79 |
 | [source-graph-review-backlog](concerns/source-graph-review-backlog.md) | Unimplemented reviewer suggestions | 242 |
 | [state-confinement-gaps](concerns/state-confinement-gaps.md) | Shared package caches session-writable | 17 |

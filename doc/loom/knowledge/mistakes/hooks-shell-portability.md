@@ -2,7 +2,7 @@
 ---
 # Hooks Shell Portability
 
-> gawk/bash portability, redirects, hook test env
+> gawk/bash portability, hook tests
 
 ## gawk vs POSIX awk (2026-03-31)
 

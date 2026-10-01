@@ -36,7 +36,7 @@ Full `loom/src/` module tree, `.loom/work/` state layout, repo-root asset direct
 
 ## Merge Flow (post-completion auto-merge) [DETAILED]
 
-→ [Merge Flow](architecture/merge-flow.md)
+→ [Merge Flow](architecture/merge-flow.md), [Merge Checkout State](architecture/merge-checkout-state.md)
 
 ## Skills Module (loom/src/skills/)
 

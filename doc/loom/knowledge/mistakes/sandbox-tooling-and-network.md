@@ -1,6 +1,6 @@
 # Sandbox Tooling And Network
 
-> Sandbox tool failures: sccache, audit
+> Sandbox tool failures
 
 ## The Sandbox's AF_UNIX Denial Also Kills sccache, Breaking Every Cargo Command (2026-09-04)
 

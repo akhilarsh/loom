@@ -28,7 +28,7 @@ Memory is placed in the signal's recitation section for maximum LLM attention. T
 
 Application and orchestration boundaries use `anyhow::Result<T>` with `.context()` or
 `.with_context()`. Domain operations use typed errors when a caller must distinguish outcomes, such
-as `BaseBranchError`, `MergeProbeError`, and `ProcessTimeoutError`; adapters such as Clap validators
+as `BaseBranchError` and `ProcessTimeoutError`; adapters such as Clap validators
 may return strings because their interface requires display text. Do not stringify a domain error
 before a caller has finished matching it, and do not add a second general-purpose error framework.
 Graceful degradation is explicit and limited to operations whose callers do not require recovery

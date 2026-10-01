@@ -147,15 +147,13 @@ tree that cannot clear it yet; none is needed while `--strict` stays green.
 
 Four issues reviewed and deliberately left unchanged in `loom/src/commands/status/web/`: a mutex-poisoning cascade risk, a cosmetic `GET /ws` status-code mismatch, an inherited partial-frame truncation risk shared with the TUI, and a left-in-place bundle-size warning. Detail: [concerns/web-dashboard-latent-issues.md](concerns/web-dashboard-latent-issues.md).
 
-## Merge Path Follow-Ups After the Silent-Unmerged Fix (2026-09-06)
+## Merge Path Follow-Ups After the Silent-Unmerged Fix
 
-Found while fixing the silent `Completed + !merged` outcome (`mistakes/phantom-merges.md`, last
-entry): a probe-failure exemption from `MAX_MERGE_RESOLVER_ATTEMPTS`, `loom stage merge`'s
-worktree-cwd requirement, a git-error-as-unverified revert path, and `merge_stage`'s
-success-only branch restore. This entry now also covers the wider merge/recovery cluster: the
-`BranchMissing` phantom-merge risk, the heuristic `BaseConflict` carve-out, `retry --force` racing
-orphan-recovery, `started_at` not resetting on retry, and the completion-broker's
-post-transition nonce-burn ordering.
+The merge/recovery edge cases: `loom stage merge`'s worktree-cwd requirement, a git-error-as-unverified
+revert path, the `BranchMissing` phantom-merge risk, the heuristic `BaseConflict` carve-out,
+`retry --force` racing orphan-recovery, `started_at` not resetting on retry, the completion-broker's
+post-transition nonce-burn ordering, the attribution code that has nothing left to attribute, the
+`ReapplyFailed` backup ref living only in logs, and the CLI merge paths skipping the merge gate.
 
 → [Merge and Recovery Edge Cases](concerns/merge-and-recovery-edge-cases.md)
 

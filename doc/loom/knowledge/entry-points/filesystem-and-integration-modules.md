@@ -9,7 +9,9 @@
 - `git/worktree/operations.rs` - Create/remove worktrees at `.worktrees/{stage-id}/`
 - `git/worktree/base.rs` - Base branch resolution for dependencies
 - `git/worktree/settings.rs` - Worktree symlinks (.loom/work, .claude/CLAUDE.md, CLAUDE.md)
-- `git/merge/mod.rs` - Merge automation, conflict handling; `require_no_active_merge` guard
+- `git/merge/mod.rs` - `merge_stage`: `merge-tree` + `commit-tree`, never git in the operator's checkout; `MergeResult`, `MergeBlock`
+- `git/merge/tree.rs` - `merge_tree`, `commit_merge`, `advance_target`; `checkout_apply.rs` (`advance_in_checkout`) and `checkout_state.rs` (`classify`) guard the fast-forward into the operator's checkout
+- `git/merge/resolved.rs` - `check_resolved_worktree`: validates a resolver's worktree before landing; `inputs.rs` - `blocked_merge_inputs` fingerprint for the blocked retry
 - `git/merge/in_progress.rs` - Single source of truth for `MERGE_HEAD` detection (handles `.git`-as-file, relative gitdirs, octopus merges)
 - `git/merge/lock.rs` - Stable-inode OS lock that serializes concurrent merges without stale-file reclamation races
 - `git/merge/status.rs` - `check_merge_state` (Merged | Pending | Conflict | BranchMissing | Unknown)

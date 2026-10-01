@@ -132,7 +132,7 @@ A plan is a markdown file holding a list of stages, each with its dependencies a
 2. **Schedule.** `loom run` starts a daemon and an orchestrator. Every stage whose dependencies are met gets its own worktree (`.worktrees/<stage-id>`, branch `loom/<stage-id>`) and its own Claude Code session, briefed by a signal file: the assignment, the relevant knowledge, and the memory of earlier sessions.
 3. **Work.** The session's main agent decomposes the stage, delegates implementation to cheaper subagents, and records what it learns with `loom memory`.
 4. **Verify.** `loom stage complete` runs the stage's acceptance criteria and the goal-backward checks. A failure leaves the stage `Executing`, and the agent has to fix the work and try again.
-5. **Merge.** A verified stage merges back to the target branch, which frees the stages that depend on it. A real conflict gets a dedicated resolution session.
+5. **Merge.** A verified stage merges back to the target branch, which frees the stages that depend on it. A real conflict gets a dedicated resolution session that works in the stage's own worktree; loom lands the merge without touching your checkout's uncommitted work unless it overlaps.
 6. **Integrate.** Once the implementation stages have merged, an `integration-verify` stage reviews the combined work and runs the full suite against it.
 7. **Distill.** The plan's final `knowledge-distill` stage curates every stage's memory into `doc/loom/knowledge/`, which the next plan's sessions read first.
 
@@ -146,17 +146,17 @@ WaitingForDeps → Queued → Executing → Completed
 
 Everything else is an explicit, inspectable outcome rather than a hang:
 
-| State                   | Meaning                                                                |
-| ----------------------- | ---------------------------------------------------------------------- |
-| `Blocked`               | A `before_stage` check or an explicit block stopped the stage          |
-| `NeedsHandoff`          | Context ceiling reached; a handoff was written                         |
-| `WaitingForInput`       | The agent asked a question (raised automatically by the AskUser hooks) |
-| `MergeConflict`         | Auto-merge hit a real conflict; a resolution session is spawned        |
-| `MergeBlocked`          | Merge cannot proceed (e.g. another merge is in progress)               |
-| `CompletedWithFailures` | Work finished but acceptance did not pass                              |
-| `NeedsHumanReview`      | Escalated to a person                                                  |
-| `NeedsAdjudication`     | A disputed acceptance criterion is awaiting a verdict                  |
-| `Skipped`               | Explicitly skipped                                                     |
+| State                   | Meaning                                                                                                                                                                          |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Blocked`               | A `before_stage` check or an explicit block stopped the stage                                                                                                                    |
+| `NeedsHandoff`          | Context ceiling reached; a handoff was written                                                                                                                                   |
+| `WaitingForInput`       | The agent asked a question (raised automatically by the AskUser hooks)                                                                                                           |
+| `MergeConflict`         | Auto-merge hit a real conflict; a resolution session works on it in the stage's worktree                                                                                         |
+| `MergeBlocked`          | Merge cannot proceed: an operation in progress in your checkout, the target checked out in another worktree, or uncommitted changes overlapping the merge; retried automatically |
+| `CompletedWithFailures` | Work finished but acceptance did not pass                                                                                                                                        |
+| `NeedsHumanReview`      | Escalated to a person                                                                                                                                                            |
+| `NeedsAdjudication`     | A disputed acceptance criterion is awaiting a verdict                                                                                                                            |
+| `Skipped`               | Explicitly skipped                                                                                                                                                               |
 
 ## Feature Tour
 
@@ -326,7 +326,7 @@ Per-stage `model`, `reasoning_effort`, and `ultracode` fields let you override a
 
 ### Parallel execution and progressive merge
 
-Stages form a dependency DAG; everything independent runs at once, each in its own worktree (`.worktrees/<stage-id>`, branch `loom/<stage-id>`). Completed stages merge back progressively under a file lock, and a real conflict spawns a dedicated resolution session rather than stalling the run.
+Stages form a dependency DAG; everything independent runs at once, each in its own worktree (`.worktrees/<stage-id>`, branch `loom/<stage-id>`). Completed stages merge back progressively under a file lock, and a real conflict spawns a dedicated resolution session in the stage's worktree rather than stalling the run. Loom never merges inside your checkout: it computes the merge off to the side and only fast-forwards the target branch, keeping your uncommitted changes unless they overlap what the merge touches.
 
 ### Crash recovery and liveness
 
@@ -351,7 +351,7 @@ Loom is under active development. Signed binaries are published for Linux x86_64
 | Tool                       | Needed for                                                        | Required?                                                                               |
 | -------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Rust toolchain (`cargo`)   | building the `loom` binary                                        | only when building from source                                                          |
-| `git`                      | worktrees, merges, crash reports                                  | yes                                                                                     |
+| `git`                      | worktrees, merges, crash reports                                  | yes, 2.40 or newer; `loom run` refuses older versions                                   |
 | `claude` (Claude Code CLI) | every orchestrated session                                        | yes                                                                                     |
 | `jq`                       | every loom hook parses the Claude Code hook payload with it       | yes; `install.sh` and `loom run` refuse to proceed without it, `loom repair` reports it |
 | `rg` (ripgrep) and `fd`    | the installed CLAUDE.md steers agents to these over `grep`/`find` | recommended; `install.sh` and `loom run` warn when missing                              |
