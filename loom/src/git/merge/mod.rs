@@ -3,6 +3,7 @@
 mod checkout_apply;
 mod checkout_state;
 pub mod in_progress;
+mod inputs;
 pub mod lock;
 mod resolved;
 mod status;
@@ -21,6 +22,7 @@ pub use in_progress::{
     detect_in_progress_merge_at, detect_in_progress_merge_at_worktree, detect_in_progress_merges,
     git_dir_for_repo_path, merge_head_exists, ActiveMergeState, InProgressMerge, MergeLocation,
 };
+pub use inputs::blocked_merge_inputs;
 pub use resolved::check_resolved_worktree;
 pub use status::{build_merge_report, check_merge_state, MergeState, MergeStatusReport};
 pub use tree::{advance_target, commit_merge, merge_tree, Advance, MergeBlock, TreeMerge};

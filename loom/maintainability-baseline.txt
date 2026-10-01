@@ -123,7 +123,7 @@ function src/models/stage/transitions.rs valid_transitions 57
 function src/orchestrator/core/event_handler.rs handle_one_event 116
 function src/orchestrator/core/merge_handler.rs read_plan_level_auto_merge 61
 function src/orchestrator/core/merge_handler.rs verify_and_finalize_merge 65
-function src/orchestrator/core/orchestrator.rs new 67
+function src/orchestrator/core/orchestrator.rs new 56
 function src/orchestrator/core/recovery.rs orphan_with_commits_ahead_signals_handoff_input 64
 function src/orchestrator/core/recovery.rs recover_orphaned_sessions 160
 function src/orchestrator/core/recovery.rs recovery_commit_and_merge_reconciliation_preserve_each_other 57

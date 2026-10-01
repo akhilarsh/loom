@@ -138,6 +138,10 @@ pub struct Orchestrator {
     /// In-memory only: a daemon restart is a fresh scheduling attempt, so
     /// resetting the clock is the honest reading.
     pub(super) queued_since: HashMap<String, DateTime<Utc>>,
+    /// The inputs a stage's blocked merge was last retried with, so a retry
+    /// is skipped while nothing it depends on changed. In memory only: a
+    /// daemon restart retries once.
+    pub(super) blocked_merge_inputs: HashMap<String, u64>,
     /// Injectable Remote Control probe, so crash classification is unit
     /// testable without depending on the host's own claude install.
     pub(super) remote_control_active: fn(&Path) -> bool,
@@ -177,19 +181,7 @@ impl Orchestrator {
         // a failure escalates the dispute it was for rather than the run.
         let adjudicators = AdjudicatorRegistry::new();
 
-        // Reconcile any orphaned plan-amendment snapshots from a prior
-        // crash. This is cheap (no I/O when no snapshots exist) and must
-        // happen BEFORE the first poll tick reads stage acceptance arrays.
-        if let Err(e) = crate::plan::amendment::verify_plan_versions_consistency(
-            &resolve_plan_path_for_startup(&config.work_dir).unwrap_or_default(),
-            &config.work_dir,
-        ) {
-            tracing::warn!(
-                target: "loom::adjudication",
-                error = %e,
-                "plan-amendment consistency check failed at startup",
-            );
-        }
+        Self::reconcile_plan_amendments(&config);
 
         Ok(Self {
             config,
@@ -209,8 +201,25 @@ impl Orchestrator {
             adjudicators,
             spawn_blocks: HashMap::new(),
             queued_since: HashMap::new(),
+            blocked_merge_inputs: HashMap::new(),
             remote_control_active: crate::remote_control::resolve,
         })
+    }
+
+    /// Reconcile any orphaned plan-amendment snapshots from a prior crash.
+    /// This is cheap (no I/O when no snapshots exist) and must happen BEFORE
+    /// the first poll tick reads stage acceptance arrays.
+    fn reconcile_plan_amendments(config: &OrchestratorConfig) {
+        if let Err(e) = crate::plan::amendment::verify_plan_versions_consistency(
+            &resolve_plan_path_for_startup(&config.work_dir).unwrap_or_default(),
+            &config.work_dir,
+        ) {
+            tracing::warn!(
+                target: "loom::adjudication",
+                error = %e,
+                "plan-amendment consistency check failed at startup",
+            );
+        }
     }
 
     /// Load the skill index from the configured or default directory

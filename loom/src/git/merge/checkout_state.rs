@@ -80,6 +80,18 @@ pub fn classify(
     }
 }
 
+/// Every path `status --porcelain=v2 -z` names: tracked changes (a rename's
+/// original path too), unmerged entries and untracked files.
+pub(super) fn status_paths(status_v2_z: &str) -> Vec<String> {
+    let status = parse_status(status_v2_z);
+    status
+        .tracked
+        .into_iter()
+        .chain(status.unmerged)
+        .chain(status.untracked)
+        .collect()
+}
+
 /// Paths from `status --porcelain=v2 -z`. Fixed field counts with `splitn`
 /// keep paths containing spaces intact; a rename (`2`) carries its original
 /// path in the next NUL field, and both count as tracked changes.

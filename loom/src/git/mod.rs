@@ -25,8 +25,9 @@ pub use worktree::{
 };
 
 pub use merge::{
-    build_merge_report, check_merge_state, check_resolved_worktree, get_conflicting_files,
-    merge_stage, verify_merge_succeeded, MergeBlock, MergeResult, MergeState, MergeStatusReport,
+    blocked_merge_inputs, build_merge_report, check_merge_state, check_resolved_worktree,
+    get_conflicting_files, merge_stage, verify_merge_succeeded, MergeBlock, MergeResult,
+    MergeState, MergeStatusReport,
 };
 
 pub use repository::{ensure_repo_ready_for_worktrees, RepoBootstrapResult};
