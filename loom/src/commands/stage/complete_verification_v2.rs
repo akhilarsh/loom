@@ -38,7 +38,7 @@ pub(super) fn run_v2(checks: &VerificationChecks<'_>, target_branch: &str) -> Re
         integrity::check(stage, work_dir, worktree_root, target_branch)?;
     }
     if standard {
-        run_impact_tests(checks)?;
+        run_impact_tests(checks, target_branch)?;
     }
     if integration {
         reverify_reachable(checks)?;
@@ -62,15 +62,16 @@ fn worktree<'a>(checks: &VerificationChecks<'a>, purpose: &str) -> Result<&'a Pa
         .with_context(|| format!("Stage '{}': no worktree to {purpose}", checks.stage.id))
 }
 
-/// DESIGN D14: the tests that reach the stage's changes pass. A test that
-/// cannot be selected or run is a note, never a failure.
-fn run_impact_tests(checks: &VerificationChecks<'_>) -> Result<()> {
+/// DESIGN D14: the tests that reach what the stage changed since its merge
+/// base with `target_branch` pass. A test that cannot be selected or run is a
+/// note, never a failure.
+fn run_impact_tests(checks: &VerificationChecks<'_>, target_branch: &str) -> Result<()> {
     println!("Running impact-selected tests...");
     let working_dir = checks.acceptance_dir.unwrap_or(Path::new("."));
     let config = CriteriaConfig::default()
         .with_plan_confinement(plan_confinement(checks.work_dir))
         .with_cache_dir(checks.work_dir);
-    let outcome = impact_tests::run(checks.stage, working_dir, &config)?;
+    let outcome = impact_tests::run(checks.stage, working_dir, &config, target_branch)?;
     for note in &outcome.notes {
         println!("  Note: {note}");
     }

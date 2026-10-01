@@ -6,6 +6,7 @@ use super::{markers, ProjectProfile, ProjectType};
 
 const MAX_DEPTH: usize = 8;
 const MAX_ENTRIES: usize = 20_000;
+/// Directory names the scan never enters, matched by name at any depth.
 const SKIP_DIRS: &[&str] = &[
     ".git",
     ".loom",
@@ -25,6 +26,9 @@ const SKIP_DIRS: &[&str] = &[
     ".claude",
     ".agents",
     ".terraform",
+    // Fixture trees carry manifests (the labelled Rust and Go corpora) that are
+    // test data, not packages.
+    "fixtures",
 ];
 
 /// This marker is only a traversal boundary; it grants no repository authority.

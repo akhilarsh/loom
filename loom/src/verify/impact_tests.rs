@@ -3,11 +3,14 @@
 //! A v2 `standard` stage runs the tests that reach what it changed, so a
 //! regression outside its contracts shows before integration-verify runs the
 //! full suite. Every node in a changed file is walked backwards through the
-//! worktree graph; the nodes met in test files, and the changed test nodes
-//! themselves, become runner targets grouped by the runner detected for their
-//! package. `runs` runs each runner's selection through the
+//! worktree graph, starting from every node in a file the stage changed since
+//! its merge base with the target branch (the graph itself is still layered on
+//! the nearest published base); the nodes met in test files, and the changed
+//! test nodes themselves, become runner targets grouped by the runner detected
+//! for their package. `runs` runs each runner's selection through the
 //! acceptance-criteria runner, so an identical earlier run is reused from the
-//! certified cache. A runner that cannot select, a timeout, or no reached test
+//! certified cache. A runner that cannot select, a JS package without
+//! `node_modules`, a runner that exits 127, a timeout, or no reached test
 //! leaves a note: the full suite still runs in integration-verify.
 
 mod libtest;
@@ -22,12 +25,14 @@ use crate::context::graph_store::ResolvedGraph;
 use crate::context::resolve::{impact_with, ImpactOptions};
 use crate::context::source_graph::{file_node_id, SourceNode, SourceNodeKind};
 use crate::context::worktree_graph::{build_for_worktree, WorktreeGraph};
+use crate::git::runner::run_git_checked;
 use crate::models::stage::Stage;
 use crate::skills::project::ProjectProfile;
 use crate::testrun::{languages, registry, TestRunnerAdapter, TestTarget};
 use crate::verify::contracts::{normalize, owning_package};
 use crate::verify::criteria::{CriteriaConfig, CriteriaProbe, ProbeRunner};
 use crate::verify::goal_backward::reachable::REACHABLE_KINDS;
+use crate::verify::review::fingerprint::{changes_since_merge_base, local_git};
 
 use libtest::LibtestPaths;
 use runs::Selection;
@@ -46,17 +51,41 @@ pub struct ImpactOutcome {
     pub notes: Vec<String>,
 }
 
-/// Run the tests that reach what the stage changed in the worktree holding
-/// `working_dir`. Fails naming each selection that fails or does not build;
-/// the caller gates this on a v2 `standard` stage.
+/// Worktree-relative paths the stage changed since `git merge-base HEAD <target_branch>`,
+/// sorted: committed, staged, unstaged and untracked-not-ignored.
+pub fn stage_changes(worktree: &Path, target_branch: &str) -> Result<Vec<PathBuf>> {
+    let (_, paths) = changes_since_merge_base(&local_git(worktree)?, target_branch)?;
+    Ok(paths.into_iter().map(PathBuf::from).collect())
+}
+
+/// Run the tests that reach what the stage changed since its merge base with
+/// `target_branch`, in the worktree holding `working_dir`. Fails naming each
+/// selection that fails or does not build; the caller gates this on a v2
+/// `standard` stage.
 /// Each selection always runs with its own 300 s timeout, whatever `criteria_config` sets.
 pub fn run(
     stage: &Stage,
     working_dir: &Path,
     criteria_config: &CriteriaConfig,
+    target_branch: &str,
 ) -> Result<ImpactOutcome> {
     let graph =
         build_for_worktree(working_dir).context("failed to build the worktree source graph")?;
+    let root = PathBuf::from(
+        run_git_checked(&["rev-parse", "--show-toplevel"], working_dir)
+            .context("failed to find the worktree root")?,
+    );
+    let (changed, listing_note) = match stage_changes(&root, target_branch) {
+        Ok(changed) => (changed, None),
+        Err(error) => (
+            graph.changed.clone(),
+            Some(format!(
+                "the stage's changes since its merge base with `{target_branch}` could not be \
+                 listed ({error:#}); selection uses the files changed since the nearest \
+                 published base"
+            )),
+        ),
+    };
     let runner = CriteriaProbe {
         stage,
         config: CriteriaConfig {
@@ -64,18 +93,24 @@ pub fn run(
             ..criteria_config.clone()
         },
     };
-    run_with(stage, working_dir, &graph, &runner)
+    let mut outcome = run_with(stage, working_dir, &graph, &changed, &runner)?;
+    if let Some(note) = listing_note {
+        outcome.notes.push(note);
+        outcome.notes.sort();
+    }
+    Ok(outcome)
 }
 
 fn run_with(
     stage: &Stage,
     working_dir: &Path,
     graph: &WorktreeGraph,
+    changed: &[PathBuf],
     runner: &dyn ProbeRunner,
 ) -> Result<ImpactOutcome> {
     let profile = ProjectProfile::discover(working_dir);
     let contracts = contract_files(stage, working_dir, &profile.root)?;
-    let reached = reached_test_nodes(&graph.graph, &graph.changed, &contracts);
+    let reached = reached_test_nodes(&graph.graph, changed, &contracts);
     let mut notes: BTreeSet<String> = graph
         .degraded
         .iter()
