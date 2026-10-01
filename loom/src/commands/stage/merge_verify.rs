@@ -59,8 +59,8 @@ pub fn verify_or_derive_completed_commit(
         bail!(
             "Stage '{}' commit {} is not an ancestor of {}. \
              The merge has not actually happened. Either resolve the merge first \
-             (loom stage merge {} --resolved after fixing conflicts) or omit this \
-             completion path.",
+             (merge the target into the stage worktree, resolve, commit, then run \
+             `loom stage merge {} --resolved`) or omit this completion path.",
             stage.id,
             commit,
             target_branch,

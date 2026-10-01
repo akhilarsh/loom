@@ -44,9 +44,9 @@ pub(super) fn record_conflict_and_report(
 }
 
 /// Record the conflict on the fresh on-disk stage: `MergeConflict` with
-/// `merge_conflict` set, and `failure_info` cleared (no conflict path records
-/// one, and the error an earlier `MergeBlocked` stored would misdescribe the
-/// stage).
+/// `merge_conflict` set, and `failure_info` and `merge_block` cleared (no
+/// conflict path records one, and the error an earlier `MergeBlocked` stored
+/// would misdescribe the stage).
 ///
 /// A `Completed` stage that was never merged (its plan disables auto-merge)
 /// is left untouched: no edge leads from `Completed` to `MergeConflict`, and
@@ -56,6 +56,7 @@ fn mark_conflict(stage: &mut Stage) -> Result<()> {
         return Ok(());
     }
     stage.try_mark_merge_conflict()?;
+    stage.clear_merge_block();
     stage.failure_info = None;
     Ok(())
 }
@@ -69,8 +70,9 @@ fn print_manual_options(stage: &Stage) {
         println!();
         print_fix_limit_options(stage_id);
     } else {
-        println!("To resolve by hand, resolve the conflicts above, then run:");
-        println!("  loom stage merge {stage_id}");
+        println!("To resolve by hand, in .worktrees/{stage_id}: merge the target branch into it,");
+        println!("resolve the conflicts, commit, then run:");
+        println!("  loom stage merge {stage_id} --resolved");
         println!();
         println!(
             "Remaining attempts: {}/{max_attempts}",
@@ -82,6 +84,7 @@ fn print_manual_options(stage: &Stage) {
 #[cfg(test)]
 mod tests {
     use super::mark_conflict;
+    use crate::git::MergeBlock;
     use crate::models::failure::{FailureInfo, FailureType};
     use crate::models::stage::{Stage, StageStatus};
 
@@ -105,10 +108,12 @@ mod tests {
     fn a_merge_blocked_stage_becomes_merge_conflict_without_its_old_error() {
         let mut stage = stage_with(StageStatus::MergeBlocked);
         stage.failure_info = Some(infrastructure_failure());
+        stage.merge_block = Some(MergeBlock::TargetMoved);
         mark_conflict(&mut stage).unwrap();
         assert_eq!(stage.status, StageStatus::MergeConflict);
         assert!(stage.merge_conflict);
         assert!(stage.failure_info.is_none());
+        assert!(stage.merge_block.is_none());
     }
 
     #[test]

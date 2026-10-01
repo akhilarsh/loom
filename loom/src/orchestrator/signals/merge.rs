@@ -41,9 +41,9 @@ pub fn generate_merge_signal(
 /// checks PID liveness. If alive -> returns `Some(session_id)`. If dead (or
 /// the record is missing) -> removes the stale signal file and continues
 /// scanning. A signal outlives its record in ordinary operation: a failed
-/// resolver spawn in `attempt_auto_merge` or `spawn_merge_resolver` leaves
-/// its signal with no record, and orphan recovery and `loom sessions kill`
-/// remove a record before its signal. A record that exists but cannot be read
+/// resolver spawn in `spawn_merge_resolver` leaves its signal with no record,
+/// and orphan recovery and `loom sessions kill` remove a record before its
+/// signal. A record that exists but cannot be read
 /// leaves liveness unknown, so its error is returned.
 ///
 /// A signal that cannot be read is attributed through its filename, which is

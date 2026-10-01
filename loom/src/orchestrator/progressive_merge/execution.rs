@@ -25,9 +25,9 @@ use super::ProgressiveMergeResult;
 ///
 /// # Returns
 /// * `Ok(ProgressiveMergeResult::Success)` - Branch merged successfully
-/// * `Ok(ProgressiveMergeResult::FastForward)` - Fast-forward merge completed
 /// * `Ok(ProgressiveMergeResult::AlreadyMerged)` - No changes to merge
 /// * `Ok(ProgressiveMergeResult::Conflict)` - Conflicts detected, stage needs resolution
+/// * `Ok(ProgressiveMergeResult::Blocked)` - The merge did not advance for an operator-clearable reason
 /// * `Ok(ProgressiveMergeResult::NoBranch)` - Branch doesn't exist (already cleaned up)
 /// * `Err(_)` - Unexpected error during merge
 pub fn merge_completed_stage(
@@ -54,16 +54,15 @@ pub fn merge_completed_stage(
 
     // Convert git::merge::MergeResult to ProgressiveMergeResult
     let progressive_result = match result {
-        MergeResult::Success { files_changed, .. } => {
-            ProgressiveMergeResult::Success { files_changed }
-        }
-        MergeResult::Blocked(block) => {
-            return Err(anyhow::anyhow!(
-                "Merge of stage {} into {} blocked: {block}",
-                stage.id,
-                merge_point
-            ))
-        }
+        MergeResult::Success {
+            files_changed,
+            backup_ref,
+            ..
+        } => ProgressiveMergeResult::Success {
+            files_changed,
+            backup_ref,
+        },
+        MergeResult::Blocked(block) => ProgressiveMergeResult::Blocked(block),
         MergeResult::AlreadyUpToDate => ProgressiveMergeResult::AlreadyMerged,
         MergeResult::Conflict { conflicting_files } => {
             ProgressiveMergeResult::Conflict { conflicting_files }

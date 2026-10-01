@@ -11,15 +11,22 @@ pub mod execution;
 
 pub use crate::fs::get_merge_point;
 pub use crate::git::merge::lock::MergeLock;
+use crate::git::merge::MergeBlock;
 pub use execution::merge_completed_stage;
 
 /// Result of a progressive merge attempt
 #[derive(Debug, Clone)]
 pub enum ProgressiveMergeResult {
-    /// Merge completed successfully with changes
-    Success { files_changed: u32 },
-    /// Fast-forward merge completed (no merge commit needed)
-    FastForward,
+    /// Merge completed successfully with changes. `backup_ref` names the ref
+    /// holding the operator's uncommitted tracked changes when they were
+    /// stashed and reapplied around the merge.
+    Success {
+        files_changed: u32,
+        backup_ref: Option<String>,
+    },
+    /// The merge was not attempted or not advanced for a reason the operator
+    /// can clear (a merge in progress, an overlapping uncommitted edit, ...)
+    Blocked(MergeBlock),
     /// Branch was already merged or up to date
     AlreadyMerged,
     /// Conflicts detected that need resolution
@@ -40,9 +47,7 @@ impl ProgressiveMergeResult {
     pub fn is_success(&self) -> bool {
         matches!(
             self,
-            ProgressiveMergeResult::Success { .. }
-                | ProgressiveMergeResult::FastForward
-                | ProgressiveMergeResult::AlreadyMerged
+            ProgressiveMergeResult::Success { .. } | ProgressiveMergeResult::AlreadyMerged
         )
     }
 
@@ -74,8 +79,12 @@ mod tests {
 
     #[test]
     fn test_progressive_merge_result_is_success() {
-        assert!(ProgressiveMergeResult::Success { files_changed: 5 }.is_success());
-        assert!(ProgressiveMergeResult::FastForward.is_success());
+        assert!(ProgressiveMergeResult::Success {
+            files_changed: 5,
+            backup_ref: None
+        }
+        .is_success());
+        assert!(!ProgressiveMergeResult::Blocked(MergeBlock::TargetMoved).is_success());
         assert!(ProgressiveMergeResult::AlreadyMerged.is_success());
         // NoBranch is NOT success: a missing branch means the work was never
         // committed, not that it merged (phantom-merge prevention, A-3/O-2).
@@ -96,9 +105,12 @@ mod tests {
             Some(&["a.rs".to_string(), "b.rs".to_string()][..])
         );
 
-        assert!(ProgressiveMergeResult::Success { files_changed: 1 }
-            .conflicting_files()
-            .is_none());
+        assert!(ProgressiveMergeResult::Success {
+            files_changed: 1,
+            backup_ref: None
+        }
+        .conflicting_files()
+        .is_none());
     }
 
     #[test]

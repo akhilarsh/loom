@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::git::branch::branch_name_for_stage;
 use crate::git::cleanup::CleanupConfig;
 use crate::git::get_branch_head;
+use crate::git::merge::MergeBlock;
 use crate::models::stage::Stage;
 use crate::orchestrator::merge_lifecycle::{CleanupOutcome, MergeLifecycle};
 use crate::orchestrator::{get_merge_point, merge_completed_stage, ProgressiveMergeResult};
@@ -53,25 +54,16 @@ pub fn attempt_progressive_merge(
 ) -> Result<MergeOutcome> {
     let merge_point = get_merge_point(work_dir)?;
 
-    // Capture the completed commit SHA from the stage branch HEAD.
-    // Only assign when get_branch_head succeeds — overwriting a previously
-    // persisted completed_commit with None would lose the ancestry proof.
-    let branch_name = branch_name_for_stage(&stage.id);
-    if let Ok(commit) = get_branch_head(&branch_name, repo_root) {
-        stage.completed_commit = Some(commit);
-    }
-    // Snapshot the commit to re-apply onto the fresh on-disk stage below.
-    let completed_commit = stage.completed_commit.clone();
+    let completed_commit = capture_completed_commit(stage, repo_root);
 
     println!("Attempting progressive merge into '{merge_point}'...");
     match merge_completed_stage(stage, repo_root, &merge_point) {
-        Ok(ProgressiveMergeResult::Success { files_changed }) => {
+        Ok(ProgressiveMergeResult::Success {
+            files_changed,
+            backup_ref,
+        }) => {
             println!("  ✓ Merged {files_changed} file(s) into '{merge_point}'");
-            stage.merged = true;
-            Ok(MergeOutcome::Success)
-        }
-        Ok(ProgressiveMergeResult::FastForward) => {
-            println!("  ✓ Fast-forward merge into '{merge_point}'");
+            report_backup_ref(backup_ref.as_deref());
             stage.merged = true;
             Ok(MergeOutcome::Success)
         }
@@ -81,80 +73,172 @@ pub fn attempt_progressive_merge(
             Ok(MergeOutcome::Success)
         }
         Ok(ProgressiveMergeResult::NoBranch) => {
-            tracing::error!(
-                stage_id = %stage.id,
-                "Progressive merge: branch missing — cannot verify merge succeeded"
-            );
-            stage.try_mark_merge_blocked()?;
-            // Re-apply only the merge-block transition onto the fresh on-disk
-            // stage (A-5). completed_commit is preserved if it was captured.
-            update_stage(&stage.id, work_dir, |s| {
-                s.completed_commit = completed_commit.clone();
-                s.try_mark_merge_blocked()
-            })?;
-            Ok(MergeOutcome::Blocked)
+            block_missing_branch(stage, work_dir, completed_commit)
+        }
+        Ok(ProgressiveMergeResult::Blocked(block)) => {
+            hold_blocked_merge(stage, work_dir, completed_commit, block)
         }
         Ok(ProgressiveMergeResult::Conflict { conflicting_files }) => {
-            println!("  ✗ Merge conflict detected!");
-            println!("    Conflicting files:");
-            for file in &conflicting_files {
-                println!("      - {file}");
-            }
-            println!();
-            println!("    Stage transitioning to MergeConflict status.");
-            stage.try_mark_merge_conflict()?;
-            // Re-apply only the merge-conflict transition + commit onto the fresh
-            // on-disk stage (A-5).
-            update_stage(&stage.id, work_dir, |s| {
-                s.completed_commit = completed_commit.clone();
-                s.try_mark_merge_conflict()
-            })?;
-
-            // Try to auto-spawn a merge resolver session. merge_stage computes
-            // the merge without touching the checkout, so the resolver starts
-            // from a clean stage worktree.
-            use super::merge_resolver::MergeResolverResult;
-            match super::merge_resolver::spawn_merge_resolver(
-                stage,
-                &conflicting_files,
-                &merge_point,
+            let at = ConflictTarget {
+                merge_point: &merge_point,
                 repo_root,
                 work_dir,
-            ) {
-                Ok(MergeResolverResult::DaemonManaged) => {
-                    println!(
-                        "    Daemon is running - merge resolution will be handled automatically."
-                    );
-                }
-                Ok(MergeResolverResult::Spawned(id)) => {
-                    println!("    Spawned merge resolver session: {id}");
-                }
-                Ok(MergeResolverResult::AlreadyRunning { session_id }) => {
-                    println!("    Merge resolver session '{session_id}' is already running.");
-                }
-                Err(e) => {
-                    eprintln!("    Failed to spawn merge resolver: {e}");
-                    println!(
-                        "    Resolve conflicts manually and run: loom stage merge {} --resolved",
-                        stage.id
-                    );
-                }
-            }
-
-            Ok(MergeOutcome::Conflict)
+            };
+            record_conflict(stage, &conflicting_files, completed_commit, &at)
         }
         Err(e) => {
             eprintln!("Progressive merge failed: {e}");
-            stage.try_mark_merge_blocked()?;
-            // Re-apply only the merge-block transition onto the fresh on-disk
-            // stage (A-5).
-            update_stage(&stage.id, work_dir, |s| {
-                s.completed_commit = completed_commit.clone();
-                s.try_mark_merge_blocked()
-            })?;
+            let outcome = mark_blocked(stage, work_dir, completed_commit)?;
             eprintln!("Stage '{}' marked as MergeBlocked", stage.id);
             eprintln!("  Fix the issue and run: loom stage retry {}", stage.id);
-            Ok(MergeOutcome::Blocked)
+            Ok(outcome)
+        }
+    }
+}
+
+/// Capture the completed commit SHA from the stage branch HEAD and return the
+/// commit to re-apply onto the fresh on-disk stage. The stage is only updated
+/// when `get_branch_head` succeeds: overwriting a previously persisted
+/// `completed_commit` with `None` would lose the ancestry proof.
+fn capture_completed_commit(stage: &mut Stage, repo_root: &Path) -> Option<String> {
+    if let Ok(commit) = get_branch_head(&branch_name_for_stage(&stage.id), repo_root) {
+        stage.completed_commit = Some(commit);
+    }
+    stage.completed_commit.clone()
+}
+
+/// A missing stage branch cannot prove anything landed: block the merge
+/// instead of recording it as merged.
+fn block_missing_branch(
+    stage: &mut Stage,
+    work_dir: &Path,
+    completed_commit: Option<String>,
+) -> Result<MergeOutcome> {
+    tracing::error!(
+        stage_id = %stage.id,
+        "Progressive merge: branch missing — cannot verify merge succeeded"
+    );
+    mark_blocked(stage, work_dir, completed_commit)
+}
+
+/// Re-apply only the merge-block transition and the captured commit onto the
+/// fresh on-disk stage (A-5).
+fn mark_blocked(
+    stage: &mut Stage,
+    work_dir: &Path,
+    completed_commit: Option<String>,
+) -> Result<MergeOutcome> {
+    stage.try_mark_merge_blocked()?;
+    update_stage(&stage.id, work_dir, |s| {
+        s.completed_commit = completed_commit.clone();
+        s.try_mark_merge_blocked()
+    })?;
+    Ok(MergeOutcome::Blocked)
+}
+
+/// Tell the operator their uncommitted tracked changes were stashed and
+/// reapplied around the merge, and where the backup lives.
+pub(super) fn report_backup_ref(backup_ref: Option<&str>) {
+    if let Some(backup) = backup_ref {
+        println!(
+            "  Uncommitted changes in the main checkout were stashed and reapplied; backup at {backup}"
+        );
+    }
+}
+
+/// Print why the merge is blocked and who retries it.
+pub(super) fn report_merge_block(stage_id: &str, block: &MergeBlock) {
+    println!("  Merge blocked: {block}");
+    println!(
+        "  A running daemon retries the merge every tick; otherwise run `loom stage merge {stage_id}`"
+    );
+}
+
+/// Persist a typed merge block on the fresh on-disk stage (A-5) together with
+/// the captured commit, and report it. The merge was not attempted past the
+/// block, so the checkout is untouched.
+fn hold_blocked_merge(
+    stage: &mut Stage,
+    work_dir: &Path,
+    completed_commit: Option<String>,
+    block: MergeBlock,
+) -> Result<MergeOutcome> {
+    stage.block_merge(block.clone());
+    let persisted = block.clone();
+    update_stage(&stage.id, work_dir, |s| {
+        s.completed_commit = completed_commit.clone();
+        s.block_merge(persisted.clone());
+        Ok(())
+    })?;
+    report_merge_block(&stage.id, &block);
+    Ok(MergeOutcome::Blocked)
+}
+
+/// Where a conflicting merge was attempted.
+struct ConflictTarget<'a> {
+    merge_point: &'a str,
+    repo_root: &'a Path,
+    work_dir: &'a Path,
+}
+
+/// Persist `MergeConflict` with the captured commit (A-5), report the
+/// conflicting files, and start a merge resolver for the stage.
+fn record_conflict(
+    stage: &mut Stage,
+    conflicting_files: &[String],
+    completed_commit: Option<String>,
+    target: &ConflictTarget<'_>,
+) -> Result<MergeOutcome> {
+    println!("  ✗ Merge conflict detected!");
+    println!("    Conflicting files:");
+    for file in conflicting_files {
+        println!("      - {file}");
+    }
+    println!();
+    println!("    Stage transitioning to MergeConflict status.");
+    stage.try_mark_merge_conflict()?;
+    // Re-apply only the merge-conflict transition + commit onto the fresh
+    // on-disk stage (A-5).
+    update_stage(&stage.id, target.work_dir, |s| {
+        s.completed_commit = completed_commit.clone();
+        s.clear_merge_block();
+        s.try_mark_merge_conflict()
+    })?;
+    spawn_resolver_and_report(stage, conflicting_files, target);
+    Ok(MergeOutcome::Conflict)
+}
+
+/// Try to auto-spawn a merge resolver session. `merge_stage` computes the
+/// merge without touching the checkout, so the resolver starts from a clean
+/// stage worktree.
+fn spawn_resolver_and_report(
+    stage: &Stage,
+    conflicting_files: &[String],
+    target: &ConflictTarget<'_>,
+) {
+    use super::merge_resolver::MergeResolverResult;
+    match super::merge_resolver::spawn_merge_resolver(
+        stage,
+        conflicting_files,
+        target.merge_point,
+        target.repo_root,
+        target.work_dir,
+    ) {
+        Ok(MergeResolverResult::DaemonManaged) => {
+            println!("    Daemon is running - merge resolution will be handled automatically.");
+        }
+        Ok(MergeResolverResult::Spawned(id)) => {
+            println!("    Spawned merge resolver session: {id}");
+        }
+        Ok(MergeResolverResult::AlreadyRunning { session_id }) => {
+            println!("    Merge resolver session '{session_id}' is already running.");
+        }
+        Err(e) => {
+            eprintln!("    Failed to spawn merge resolver: {e}");
+            println!(
+                "    Resolve conflicts manually and run: loom stage merge {} --resolved",
+                stage.id
+            );
         }
     }
 }

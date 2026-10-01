@@ -4,26 +4,28 @@
 //! Default: re-attempt merge to main from a worktree.
 //! --resolved: complete manual merge resolution.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 use std::path::Path;
 
 use crate::commands::common::detect_stage_id;
 use crate::git::branch::branch_name_for_stage;
-use crate::git::merge::merge_head_exists;
-use crate::git::{get_conflicting_files, merge_stage, MergeResult};
+use crate::git::merge::check_resolved_worktree;
+use crate::git::{merge_stage, MergeResult};
 use crate::models::stage::StageStatus;
-use crate::orchestrator::merge_lifecycle::CleanupOutcome;
-use crate::verify::transitions::{load_stage, trigger_dependents, update_stage};
+use crate::verify::transitions::{load_stage, update_stage};
 
 mod conflict;
 mod finish;
+mod landing;
 mod next_step;
 mod preflight;
 mod relay;
 use conflict::record_conflict_and_report;
-use finish::finish_merge_and_report;
+use landing::{complete_resolved_merge, complete_retried_merge, main_repo_root, record_block};
 use next_step::{print_fix_limit_options, report_merge_error};
 use preflight::{retry_preflight, RetryPreflight};
+
+use super::progressive_complete::report_backup_ref;
 
 /// Unified merge command entry point.
 ///
@@ -38,14 +40,17 @@ pub fn merge(stage_id: Option<String>, resolved: bool) -> Result<()> {
     }
 }
 
-/// Complete merge resolution for a stage after manual conflict resolution.
+/// Land the merge a resolver (or the operator) prepared in the stage worktree.
 ///
 /// This path:
 /// 1. Resolves stage ID (provided or auto-detected from branch)
 /// 2. Verifies the stage is in MergeConflict or MergeBlocked status
-/// 3. Checks that git working tree is clean (no unmerged files)
-/// 4. Transitions stage to Completed with merged=true
-/// 5. Triggers dependent stages
+/// 3. Checks the stage worktree (`check_resolved_worktree`): target merged in,
+///    committed, no unmerged path
+/// 4. Merges the stage into the target with `merge_stage`, which leaves the
+///    operator's main checkout alone apart from a fast-forward
+/// 5. After ancestry proves the commit landed, marks the stage merged,
+///    triggers dependent stages and cleans up
 fn merge_resolved(stage_id: Option<String>) -> Result<()> {
     let work_dir_buf = crate::commands::common::work_dir_path()?;
     let work_dir: &Path = &work_dir_buf;
@@ -65,66 +70,28 @@ fn merge_resolved(stage_id: Option<String>) -> Result<()> {
         );
     }
 
-    // Check git status for unmerged files
-    let repo_root = std::env::current_dir().context("Failed to get current directory")?;
-    if !get_conflicting_files(&repo_root)?.is_empty() {
-        bail!(
-            "There are still unmerged files in the repository. \
-             Please resolve all conflicts before running this command.\n\
-             Run `git status` to see remaining conflicts."
-        );
-    }
+    // The resolver runs inside the stage worktree, so the repository root is
+    // the main repository the state directory belongs to, not the cwd.
+    let repo_root = main_repo_root(work_dir)?;
+    let target = crate::fs::resolve_target_branch_from_config(work_dir, &repo_root)?;
+    check_resolved_worktree(&repo_root, &stage_id, &target)
+        .map_err(|reason| anyhow!("The stage worktree is not ready to merge: {reason}"))?;
 
-    // Check if we're in the middle of a merge
-    if merge_head_exists(&repo_root)? {
-        bail!(
-            "A merge is still in progress. \
-             Please complete the merge with `git commit` before running this command."
-        );
-    }
-
-    // Verify ancestry: derive completed_commit if missing, then check that the
-    // commit is in the target branch's history. Without this guard,
-    // `--resolved` could be invoked after a partial resolution and silently
-    // satisfy downstream dependency checks even though the commit never landed.
-    let target_branch = crate::fs::resolve_target_branch_from_config(work_dir, &repo_root)?;
-    let verified = crate::commands::stage::merge_verify::verify_or_derive_completed_commit(
-        &stage,
-        &target_branch,
-        &repo_root,
-    )?;
-
-    // Apply the derived commit (if any) and the merge-completion transition in a
-    // single locked read-modify-write on the FRESH on-disk stage (A-5). The
-    // ancestry verification above already established that `completed_commit` is
-    // in the target branch's history, so `try_complete_merge`'s `merged=true`
-    // write does NOT violate the phantom-merge invariant. `try_complete_merge`
-    // also re-validates the Completed transition against the current on-disk
-    // status. Only the merge-completion-owned fields are touched here.
-    let persist_commit = verified.persist_commit.clone();
-    update_stage(&stage_id, work_dir, |s| {
-        if let Some(commit) = persist_commit.clone() {
-            s.completed_commit = Some(commit);
+    match merge_stage(&stage_id, &target, &repo_root, work_dir)? {
+        MergeResult::Success { backup_ref, .. } => {
+            report_backup_ref(backup_ref.as_deref());
+            complete_resolved_merge(&stage, work_dir, &repo_root, &target)
         }
-        s.try_complete_merge()
-    })?;
-
-    println!("Stage '{stage_id}' merge conflict resolution complete!");
-    println!("  Status: Completed (merged: true)");
-
-    // Trigger dependent stages
-    trigger_and_report(&stage_id, work_dir, &repo_root, &target_branch)?;
-
-    let cleanup_root = find_repo_root(&repo_root).unwrap_or_else(|_| repo_root.clone()); // not cwd
-    let outcome = finish_merge_and_report(&stage_id, &cleanup_root, work_dir, &target_branch);
-    if !matches!(
-        outcome,
-        CleanupOutcome::Done(_) | CleanupOutcome::NothingToDo
-    ) {
-        println!("\nConsider cleaning up the worktree:\n  loom worktree remove {stage_id}");
+        MergeResult::AlreadyUpToDate => {
+            complete_resolved_merge(&stage, work_dir, &repo_root, &target)
+        }
+        MergeResult::Conflict { conflicting_files } => bail!(
+            "'{target}' moved and conflicts again in {}: merge it into this worktree again, \
+             resolve, commit, then rerun --resolved",
+            conflicting_files.join(", ")
+        ),
+        MergeResult::Blocked(block) => record_block(&stage_id, work_dir, block),
     }
-
-    Ok(())
 }
 
 /// Re-attempt merge for a stage in MergeConflict or MergeBlocked status.
@@ -189,60 +156,26 @@ fn merge_retry(stage_id: Option<String>) -> Result<()> {
     println!("Merging {branch_name} into {target_branch}...");
 
     // Attempt the merge
-    let merge_result = merge_stage(&stage_id, &target_branch, &repo_root, work_dir);
-
-    match merge_result {
+    match merge_stage(&stage_id, &target_branch, &repo_root, work_dir) {
         Ok(MergeResult::Success {
             files_changed,
             insertions,
             deletions,
-            ..
+            backup_ref,
         }) => {
             println!("Merge successful!");
             println!("  {files_changed} files changed, +{insertions} -{deletions}");
-
-            // Clear merge conflict flag and mark as completed+merged on the fresh
-            // on-disk stage (A-5). The real merge above already landed the commit
-            // in the target branch, so try_complete_merge's merged=true is a
-            // verified-merge success, not a phantom merge.
-            update_stage(&stage_id, work_dir, |s| {
-                s.merge_conflict = false;
-                s.try_complete_merge()
-            })?;
-
-            println!();
-            println!("Stage '{stage_id}' merge complete! (Completed, merged: true)");
-
-            // Trigger dependent stages
-            trigger_and_report(&stage_id, work_dir, &repo_root, &target_branch)?;
-
-            let outcome = finish_merge_and_report(&stage_id, &repo_root, work_dir, &target_branch);
-            if !matches!(outcome, CleanupOutcome::Done(_)) {
-                println!("\nNext: run 'loom stage complete {stage_id}' if not already done,");
-                println!("or clean up the worktree: loom worktree remove {stage_id}");
-            }
+            report_backup_ref(backup_ref.as_deref());
+            let done = format!("Stage '{stage_id}' merge complete! (Completed, merged: true)");
+            complete_retried_merge(&stage_id, work_dir, &repo_root, &target_branch, &done)?;
         }
 
-        Ok(MergeResult::Blocked(block)) => report_merge_error(
-            &stage,
-            work_dir,
-            &repo_root,
-            &anyhow::anyhow!("Merge blocked: {block}"),
-        ),
+        Ok(MergeResult::Blocked(block)) => record_block(&stage_id, work_dir, block)?,
 
         Ok(MergeResult::AlreadyUpToDate) => {
             println!("Branch is already up to date with {target_branch}.");
-
-            update_stage(&stage_id, work_dir, |s| {
-                s.merge_conflict = false;
-                s.try_complete_merge()
-            })?;
-
-            println!("Stage '{stage_id}' marked as merged.");
-
-            trigger_and_report(&stage_id, work_dir, &repo_root, &target_branch)?;
-
-            finish_merge_and_report(&stage_id, &repo_root, work_dir, &target_branch);
+            let done = format!("Stage '{stage_id}' marked as merged.");
+            complete_retried_merge(&stage_id, work_dir, &repo_root, &target_branch, &done)?;
         }
 
         Ok(MergeResult::Conflict { conflicting_files }) => {
@@ -255,25 +188,6 @@ fn merge_retry(stage_id: Option<String>) -> Result<()> {
         }
     }
 
-    Ok(())
-}
-
-/// Trigger dependent stages and print which ones started, if any. Shared by
-/// every merge-completion path so the reporting stays identical across them.
-fn trigger_and_report(
-    stage_id: &str,
-    work_dir: &Path,
-    repo_root: &Path,
-    target_branch: &str,
-) -> Result<()> {
-    let triggered = trigger_dependents(stage_id, work_dir, repo_root, target_branch)
-        .context("Failed to trigger dependent stages")?;
-    if !triggered.is_empty() {
-        println!("Triggered {} dependent stage(s):", triggered.len());
-        for dep_id in &triggered {
-            println!("  -> {dep_id}");
-        }
-    }
     Ok(())
 }
 
@@ -326,6 +240,8 @@ fn find_repo_root(cwd: &Path) -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::get_conflicting_files;
+    use crate::git::merge::merge_head_exists;
     use crate::models::stage::Stage;
     use std::process::Command;
     use tempfile::TempDir;

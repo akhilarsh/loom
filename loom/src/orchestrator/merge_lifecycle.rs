@@ -3,10 +3,10 @@
 //!
 //! Loom's costliest recurring defect is the *phantom merge*: recording a stage
 //! as merged, or destroying its branch, without proving in git that its commits
-//! landed. `auto_merge::attempt_auto_merge` used to run cleanup inside its own
-//! success arms, deleting the worktree and branch *before* its caller could
-//! verify ancestry — and the caller derives a missing `completed_commit` from
-//! exactly that branch. This module makes the ordering structural:
+//! landed. Cleanup inside a merge's own success arms would delete the worktree
+//! and branch *before* the caller could verify ancestry — and the caller
+//! derives a missing `completed_commit` from exactly that branch. This module
+//! makes the ordering structural:
 //!
 //! ```text
 //! overlay reconcile -> merge attempt -> verify merged ancestry

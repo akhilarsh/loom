@@ -1,5 +1,5 @@
 //! Post-merge base-reconcile + cleanup tail shared by `merge`'s success
-//! paths (`merge_resolved` and `merge_retry`'s three success arms).
+//! paths (`merge_resolved` and `merge_retry`).
 
 use std::path::Path;
 
@@ -8,9 +8,8 @@ use crate::git::cleanup::CleanupConfig;
 use crate::orchestrator::merge_lifecycle::{self, CleanupOutcome};
 
 /// Run the primitive's post-merge base-reconcile + cleanup for a stage whose
-/// merge was already verified, and print what cleanup actually did. Returns
-/// the outcome so callers can decide whether to add their own hint for the
-/// non-`Done` cases.
+/// merge was already verified, and print what cleanup actually did. Every case
+/// where cleanup did not finish prints its own reason.
 ///
 /// `result.warnings` is not surfaced here: `MergeLifecycle::cleanup` reaches
 /// `CleanupOutcome::Done` only via `cleanup_after_merge`, which always
@@ -21,7 +20,7 @@ pub(super) fn finish_merge_and_report(
     repo_root: &Path,
     work_dir: &Path,
     target_branch: &str,
-) -> CleanupOutcome {
+) {
     let outcome = merge_lifecycle::finish_verified_merge(
         stage_id,
         repo_root,
@@ -37,5 +36,54 @@ pub(super) fn finish_merge_and_report(
             println!("Deleted branch: {}", branch_name_for_stage(stage_id));
         }
     }
-    outcome
+    if let Some(message) = unfinished_cleanup_message(stage_id, &outcome) {
+        println!("{message}");
+    }
+}
+
+/// What to tell the operator when cleanup did not finish, so a deferred or
+/// failed cleanup is never silent. `None` when cleanup ran or had nothing to do.
+fn unfinished_cleanup_message(stage_id: &str, outcome: &CleanupOutcome) -> Option<String> {
+    match outcome {
+        CleanupOutcome::Refused { reason } => Some(format!("Worktree cleanup refused: {reason}")),
+        CleanupOutcome::Failed(error) => Some(format!("Worktree cleanup failed: {error}")),
+        CleanupOutcome::Deferred => Some(format!(
+            "Worktree cleanup deferred: run from inside .worktrees/{stage_id}; it runs once \
+             that directory is no longer in use (or run `loom worktree remove {stage_id}`)"
+        )),
+        CleanupOutcome::Done(_) | CleanupOutcome::NothingToDo => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refused_and_failed_cleanup_name_their_reason() {
+        let refused = CleanupOutcome::Refused {
+            reason: "unmerged commits".to_string(),
+        };
+        assert_eq!(
+            unfinished_cleanup_message("s", &refused).unwrap(),
+            "Worktree cleanup refused: unmerged commits"
+        );
+        let failed = CleanupOutcome::Failed("disk full".to_string());
+        assert_eq!(
+            unfinished_cleanup_message("s", &failed).unwrap(),
+            "Worktree cleanup failed: disk full"
+        );
+    }
+
+    #[test]
+    fn deferred_cleanup_names_the_worktree_and_the_manual_command() {
+        let message = unfinished_cleanup_message("s", &CleanupOutcome::Deferred).unwrap();
+        assert!(message.contains(".worktrees/s"));
+        assert!(message.contains("loom worktree remove s"));
+    }
+
+    #[test]
+    fn finished_cleanup_prints_nothing_extra() {
+        assert!(unfinished_cleanup_message("s", &CleanupOutcome::NothingToDo).is_none());
+    }
 }

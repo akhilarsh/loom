@@ -11,7 +11,6 @@ file src/commands/graph/tests.rs 425
 file src/commands/init/tests.rs 449
 file src/commands/plan/verify.rs 555
 file src/commands/stage/complete.rs 743
-file src/commands/stage/merge.rs 483
 file src/commands/stage/tests/complete.rs 534
 file src/fs/permissions/hooks.rs 446
 file src/fs/permissions/settings.rs 422
@@ -80,9 +79,7 @@ function src/commands/stage/complete.rs complete 169
 function src/commands/stage/complete.rs route_complete_for_conflicts 157
 function src/commands/stage/complete.rs run_verification_phase 99
 function src/commands/stage/knowledge_complete.rs complete_knowledge_stage 122
-function src/commands/stage/merge.rs merge_resolved 80
-function src/commands/stage/merge.rs merge_retry 119
-function src/commands/stage/progressive_complete.rs attempt_progressive_merge 112
+function src/commands/stage/merge.rs merge_retry 85
 function src/commands/stage/progressive_complete.rs complete_with_merge 80
 function src/commands/stage/skip_retry.rs retry 214
 function src/commands/status.rs execute_static 81
