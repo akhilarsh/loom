@@ -73,3 +73,15 @@ fn contract_signal_carries_contracts_rules_and_freeze_command() {
         "the stage's completion is not the contract writer's job"
     );
 }
+
+#[test]
+fn contract_rules_name_the_formatter_and_size_limits() {
+    let mut content = String::new();
+    append_rules(&mut content, "s1");
+
+    assert!(content.contains("6. Before freezing, run the repository's formatter"));
+    assert!(content.contains("`cargo fmt --all`"));
+    assert!(content.contains("every test function under 50 lines and every file under 400"));
+    assert!(content.contains("7. Finish with `loom stage contracts freeze s1`"));
+    assert!(content.contains("8. After a successful freeze, stop"));
+}

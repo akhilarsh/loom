@@ -17,6 +17,7 @@ use crate::relay::emit::{mode, EnvSnapshot, RelayMode, StdSink};
 use crate::relay::RequestKind;
 use crate::testrun::{classify, RunOutcome, RunOutput, RunSummary, TestRunnerAdapter};
 use crate::verify::contracts::changes::{changed_paths, stage_base};
+use crate::verify::contracts::format_gate::format_problems;
 use crate::verify::contracts::{
     contract_command, is_contract_or_harness, refusal, resolve_adapter,
 };
@@ -168,7 +169,23 @@ fn checked_reports(stage_id: &str) -> Result<Vec<ContractRunReport>> {
          untracked file), then",
     )?;
 
-    run_contracts(&site)
+    let confinement = resolve_confinement(
+        stage.sandbox.command_confinement,
+        plan_confinement(&site.work_dir),
+    );
+    let unformatted = format_problems(
+        &stage.acceptance,
+        &stage.setup,
+        &site.working_dir,
+        confinement,
+    )?;
+    refuse(
+        stage_id,
+        unformatted,
+        "Every contract file and harness file must pass the stage's formatter checks before it is frozen: run the repository's formatter over them (for Rust, `cargo fmt --all`), then",
+    )?;
+
+    run_contracts(&site, confinement)
 }
 
 /// Leave this attempt's outcome where the Stop hook looks once the writer
@@ -225,12 +242,11 @@ fn refuse(stage_id: &str, problems: Vec<String>, fix: &str) -> Result<()> {
 }
 
 /// Run every contract with the criteria executor and judge each run.
-fn run_contracts(site: &ContractSite) -> Result<Vec<ContractRunReport>> {
+fn run_contracts(
+    site: &ContractSite,
+    confinement: CommandConfinement,
+) -> Result<Vec<ContractRunReport>> {
     let stage = &site.stage;
-    let confinement = resolve_confinement(
-        stage.sandbox.command_confinement,
-        plan_confinement(&site.work_dir),
-    );
     let (mut reports, mut problems) = (Vec::new(), Vec::new());
     for contract in &stage.contracts {
         match run_contract(site, contract, confinement)? {

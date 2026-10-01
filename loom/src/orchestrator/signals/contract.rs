@@ -242,13 +242,17 @@ fn append_rules(content: &mut String, stage_id: &str) {
          4. Do not commit and do not run `loom stage complete`: the stage belongs to the \
          implementation session after you.\n\
          5. Record mistakes, decisions and surprises with `loom memory note` and \
-         `loom memory decision`, as any stage does.\n",
+         `loom memory decision`, as any stage does.\n\
+         6. Before freezing, run the repository's formatter over every file you wrote (for \
+         Rust, `cargo fmt --all`), and keep every test function under 50 lines and every \
+         file under 400 (CLAUDE.md Rule 17): the freeze runs the stage's formatter checks, \
+         and a frozen file cannot change afterwards.\n",
     );
     content.push_str(&format!(
-        "6. Finish with `loom stage contracts freeze {stage_id}`. It checks that you changed \
+        "7. Finish with `loom stage contracts freeze {stage_id}`. It checks that you changed \
          only contract and harness files, runs every contract, and records them. If it \
          refuses, fix what it names and run it again.\n\
-         7. After a successful freeze, stop. Loom ends this session and starts the \
+         8. After a successful freeze, stop. Loom ends this session and starts the \
          implementation session.\n\n"
     ));
     content.push_str("- Stay inside this worktree.\n");
