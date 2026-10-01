@@ -17,7 +17,8 @@ use tempfile::TempDir;
 use crate::fs::work_dir::write_terminal_config;
 use crate::models::failure::{FailureInfo, FailureType};
 use crate::models::session::{SessionBackendKind, TerminalConfig};
-use crate::orchestrator::core::OrchestratorConfig;
+use crate::orchestrator::core::merge_handler::resolver_attempts::{attempts_dir, attempts_file};
+use crate::orchestrator::core::{OrchestratorConfig, MAX_MERGE_RESOLVER_ATTEMPTS};
 use crate::plan::schema::StageDefinition;
 use crate::plan::ExecutionGraph;
 use crate::verify::transitions::save_stage;
@@ -52,9 +53,7 @@ fn always_terminal_statuses() {
     for status in [
         StageStatus::Completed,
         StageStatus::Skipped,
-        StageStatus::MergeConflict,
         StageStatus::CompletedWithFailures,
-        StageStatus::MergeBlocked,
         StageStatus::NeedsHumanReview,
     ] {
         assert!(
@@ -67,6 +66,8 @@ fn always_terminal_statuses() {
 #[test]
 fn never_terminal_statuses() {
     for status in [
+        StageStatus::MergeConflict,
+        StageStatus::MergeBlocked,
         StageStatus::NeedsAdjudication,
         StageStatus::Executing,
         StageStatus::WaitingForInput,
@@ -183,5 +184,29 @@ fn needs_human_review_file_is_terminal() {
         ..Stage::default()
     };
     let (orchestrator, _temp) = orchestrator_with_one_node(StageStatus::NeedsHumanReview, stage);
+    assert!(orchestrator.all_stages_terminal());
+}
+
+/// A merge-state stage keeps the daemon up even with its resolver budget spent:
+/// the next spawn-loop pass escalates it to `NeedsHumanReview`, and only then
+/// may the daemon exit, so it never leaves the stage unescalated.
+#[test]
+fn an_at_cap_merge_stage_is_escalated_before_the_daemon_exits() {
+    let stage = Stage {
+        id: "alpha".to_string(),
+        status: StageStatus::MergeConflict,
+        ..Stage::default()
+    };
+    let (mut orchestrator, temp) = orchestrator_with_one_node(StageStatus::MergeConflict, stage);
+    std::fs::create_dir_all(attempts_dir(temp.path())).unwrap();
+    let cap = MAX_MERGE_RESOLVER_ATTEMPTS.to_string();
+    std::fs::write(attempts_file(temp.path(), "alpha"), cap).unwrap();
+    assert!(!orchestrator.all_stages_terminal());
+
+    assert_eq!(orchestrator.spawn_merge_resolution_sessions().unwrap(), 0);
+    let escalated = orchestrator.load_stage("alpha").unwrap();
+    assert_eq!(escalated.status, StageStatus::NeedsHumanReview);
+    let reason = escalated.review_reason.unwrap_or_default();
+    assert!(reason.contains("gave up after"), "{reason}");
     assert!(orchestrator.all_stages_terminal());
 }

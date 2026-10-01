@@ -153,29 +153,27 @@ fn check_retry_eligibility(stage: &Stage) -> bool {
 /// watch-mode daemon alive. Pure and exhaustive over `StageStatus` so a new
 /// variant fails to compile here instead of silently defaulting either way.
 ///
-/// - `Completed`/`Skipped`/`MergeConflict`/`CompletedWithFailures`/
-///   `MergeBlocked`/`NeedsHumanReview` are always terminal.
-/// - `Blocked` is terminal unless a crash auto-retry is still pending
-///   (retryable failure type + retry budget remaining), regardless of
-///   whether the backoff has elapsed — the daemon must not shut down before
-///   that retry fires (O-1).
-/// - `Queued`/`WaitingForDeps` are terminal only when the stage is held;
-///   otherwise the daemon still needs to spawn or wait on them.
-/// - `NeedsAdjudication`/`Executing`/`WaitingForInput`/`NeedsHandoff` are
-///   never terminal: each still needs the daemon alive to spawn, watch, or
-///   close out a session (an adjudicator judge, in `NeedsAdjudication`'s
-///   case).
+/// - `Completed`/`Skipped`/`CompletedWithFailures`/`NeedsHumanReview` are terminal.
+/// - `MergeConflict`/`MergeBlocked` are never terminal: each tick the resolver spawn
+///   loop (`spawn_resolver_if_due`) leaves a resolver running, retries a transient
+///   failure, or routes the stage to `NeedsHumanReview`, which is how a spent resolver
+///   budget, a held or missing branch, or an unrecordable attempt ends the wait.
+/// - `Blocked` is terminal unless a crash auto-retry is pending (retryable failure
+///   type + retry budget left), whether or not its backoff has elapsed (O-1).
+/// - `Queued`/`WaitingForDeps` are terminal only when the stage is held.
+/// - `NeedsAdjudication`/`Executing`/`WaitingForInput`/`NeedsHandoff` are never
+///   terminal: each still needs the daemon to spawn, watch, or close out a session.
 fn stage_file_is_terminal(stage: &Stage) -> bool {
     match stage.status {
         StageStatus::Completed
         | StageStatus::Skipped
-        | StageStatus::MergeConflict
         | StageStatus::CompletedWithFailures
-        | StageStatus::MergeBlocked
         | StageStatus::NeedsHumanReview => true,
         StageStatus::Blocked => !is_retry_pending(stage),
         StageStatus::Queued | StageStatus::WaitingForDeps => stage.held,
-        StageStatus::NeedsAdjudication
+        StageStatus::MergeConflict
+        | StageStatus::MergeBlocked
+        | StageStatus::NeedsAdjudication
         | StageStatus::Executing
         | StageStatus::WaitingForInput
         | StageStatus::NeedsHandoff => false,

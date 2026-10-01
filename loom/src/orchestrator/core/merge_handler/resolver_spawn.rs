@@ -1,0 +1,186 @@
+//! One pass of the daemon's merge-resolver spawn loop over a single
+//! `MergeConflict`/`MergeBlocked` stage. Such a stage never counts as
+//! terminal for the watch-mode exit (`recovery.rs::stage_file_is_terminal`),
+//! so each pass leaves a resolver running, retries a transient failure, or
+//! routes the stage to `NeedsHumanReview`. The stage copy a pass works from
+//! can go stale while it runs git, so every routing is guarded
+//! (`route_merge_stage_to_review`) and the stage is re-read before a resolver
+//! is reserved. Relocated out of `merge_handler.rs` to keep it within its
+//! maintainability-ledger line budget.
+
+use crate::git::branch::{branch_name_for_stage, resolve_target_branch};
+use crate::git::cleanup::branch_exists_strict;
+use crate::models::stage::Stage;
+use crate::orchestrator::core::persistence::Persistence;
+use crate::orchestrator::core::{clear_status_line, Orchestrator};
+use crate::orchestrator::signals::find_live_merge_session_for_stage;
+
+use super::resolver_attempts::{
+    merge_resolver_attempts, ReservedAttempt, MAX_MERGE_RESOLVER_ATTEMPTS,
+};
+use super::review_route::awaits_merge;
+
+impl Orchestrator {
+    /// Spawn a merge resolver for `stage` when one is due; returns whether one
+    /// spawned.
+    ///
+    /// The merge gate holds a control-path branch for human review, stopping
+    /// any resolver running on it, and a live resolver (tracked, or found
+    /// through its signal) is left to finish. Otherwise a missing stage or
+    /// target branch, a spent resolver budget, or an attempt the counter
+    /// cannot record routes the stage to human review, and a stage that left
+    /// its merge state meanwhile gets no resolver. The resolver then spawns
+    /// with its attempt recorded first; a failed spawn gives the attempt back
+    /// and is retried next tick, unless `report_merge_spawn_failure` routes it
+    /// to review.
+    pub(super) fn spawn_resolver_if_due(&mut self, stage: &Stage) -> bool {
+        let stage_id = stage.id.as_str();
+        let branch = branch_name_for_stage(stage_id);
+        let target_branch = resolve_target_branch(&self.config.base_branch, &self.config.repo_root);
+        if self.gate_holds_merge_stage(stage_id, &branch, &target_branch)
+            || self.cleanup_stale_merge_session(stage_id)
+            || self.signalled_resolver_blocks_spawn(stage_id)
+            || self.missing_branch_blocks_spawn(stage_id, &branch, &target_branch)
+        {
+            return false;
+        }
+        let attempts = merge_resolver_attempts(&self.config.work_dir, stage_id);
+        if attempts >= MAX_MERGE_RESOLVER_ATTEMPTS {
+            self.escalate_merge_resolver_exhausted(stage_id, attempts);
+            return false;
+        }
+        if !self.stage_still_awaits_merge(stage_id) {
+            return false;
+        }
+        let Some(attempt) = self.reserve_resolver_attempt(stage_id, attempts) else {
+            return false;
+        };
+        match self.spawn_merge_resolution_session(stage, attempt) {
+            Ok(()) => true,
+            Err(error) => {
+                self.report_merge_spawn_failure(stage_id, error);
+                false
+            }
+        }
+    }
+
+    /// Returns true — after stopping any resolver running for `stage_id` and
+    /// routing the stage to `NeedsHumanReview` — when the merge gate holds
+    /// `branch`. A stopped resolver ran in the main checkout, so the reason
+    /// says so and names the way out.
+    fn gate_holds_merge_stage(&mut self, stage_id: &str, branch: &str, target: &str) -> bool {
+        let Some(mut reason) = self.merge_gate_reason(stage_id, branch, target) else {
+            return false;
+        };
+        if let Some(stopped) = self.stop_gated_resolvers(stage_id) {
+            clear_status_line();
+            eprintln!("Stage '{stage_id}': branch {branch} touches a control path; {stopped}");
+            reason = format!("{reason}. {stopped}");
+        }
+        self.route_merge_stage_to_review(stage_id, reason, None);
+        true
+    }
+
+    /// Returns true when a merge signal names a live resolver for `stage_id`,
+    /// or — after routing the stage to `NeedsHumanReview` — when a merge
+    /// signal that cannot be read cannot be attributed to a stage either. It
+    /// is then unknown whether a resolver is running: spawning could put a
+    /// second one in the main checkout, and waiting would never end, since
+    /// only the daemon writes merge signals while it runs and nothing repairs
+    /// a broken one.
+    fn signalled_resolver_blocks_spawn(&mut self, stage_id: &str) -> bool {
+        let error = match find_live_merge_session_for_stage(stage_id, &self.config.work_dir) {
+            Ok(live) => return live.is_some(),
+            Err(error) => error,
+        };
+        let steps = self.manual_merge_steps(stage_id);
+        let reason = format!(
+            "merge resolver not spawned; {steps}. Could not tell whether one is already \
+             running: {error:#}"
+        );
+        self.route_merge_stage_to_review(stage_id, reason, None);
+        true
+    }
+
+    /// Returns true — after routing `stage_id` to `NeedsHumanReview` — when
+    /// the stage branch `branch` or the target branch `target` does not
+    /// exist: no resolver can merge it, and no retry brings it back. A missing
+    /// stage branch is never taken as merged; that is the phantom-merge risk
+    /// `MergeState::BranchMissing` guards against. A check that fails falls
+    /// through to the spawn, whose git failures are retried each tick.
+    fn missing_branch_blocks_spawn(&mut self, stage_id: &str, branch: &str, target: &str) -> bool {
+        for (role, name) in [("branch", branch), ("target branch", target)] {
+            match branch_exists_strict(name, &self.config.repo_root) {
+                Ok(true) => {}
+                Ok(false) => {
+                    let steps = self.manual_merge_steps(stage_id);
+                    let reason = format!("{role} {name} is missing; restore it, then {steps}");
+                    self.route_merge_stage_to_review(stage_id, reason, None);
+                    return true;
+                }
+                Err(error) => tracing::warn!(
+                    stage_id = %stage_id,
+                    branch = %name,
+                    %error,
+                    "Failed to check that a merge branch exists; attempting the resolver spawn"
+                ),
+            }
+        }
+        false
+    }
+
+    /// Whether the fresh on-disk `stage_id` is still `MergeConflict` or
+    /// `MergeBlocked`. A stage merged while the pass ran (by `loom stage
+    /// merge`, say) must get no resolver; one that cannot be re-read is
+    /// retried next tick.
+    fn stage_still_awaits_merge(&self, stage_id: &str) -> bool {
+        match self.load_stage(stage_id) {
+            Ok(stage) if awaits_merge(&stage.status) => true,
+            Ok(stage) => {
+                tracing::info!(
+                    stage_id = %stage_id,
+                    status = %stage.status,
+                    "Stage left its merge state meanwhile; spawning no merge resolver"
+                );
+                false
+            }
+            Err(error) => {
+                tracing::warn!(
+                    stage_id = %stage_id,
+                    error = %format!("{error:#}"),
+                    "Failed to re-read stage before reserving a merge resolver; retrying next tick"
+                );
+                false
+            }
+        }
+    }
+
+    /// Record the attempt of the resolver about to spawn for `stage_id`, whose
+    /// counter read `attempts`. When the counter cannot be written, no resolver
+    /// spawns and the stage goes to `NeedsHumanReview`: an uncounted resolver
+    /// could respawn without bound.
+    fn reserve_resolver_attempt(
+        &mut self,
+        stage_id: &str,
+        attempts: u32,
+    ) -> Option<ReservedAttempt> {
+        let error = match ReservedAttempt::record(&self.config.work_dir, stage_id, attempts) {
+            Ok(attempt) => return Some(attempt),
+            Err(error) => error,
+        };
+        let steps = self.manual_merge_steps(stage_id);
+        let reason = format!(
+            "merge resolver not spawned; {steps}. Its attempt could not be recorded: {error}"
+        );
+        self.route_merge_stage_to_review(stage_id, reason, None);
+        None
+    }
+}
+
+#[cfg(test)]
+#[path = "spawn_test_fixtures.rs"]
+pub(super) mod test_fixtures;
+
+#[cfg(test)]
+#[path = "spawn_loop_tests.rs"]
+mod tests;

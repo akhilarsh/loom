@@ -14,9 +14,7 @@ use crate::models::session::Session;
 use crate::models::stage::StageStatus;
 use crate::orchestrator::auto_merge::{attempt_auto_merge, is_auto_merge_enabled, AutoMergeResult};
 use crate::orchestrator::merge_lifecycle::{self, CleanupOutcome, MergeLifecycle};
-use crate::orchestrator::signals::{
-    find_live_merge_session_for_stage, generate_merge_signal, remove_signal,
-};
+use crate::orchestrator::signals::{generate_merge_signal, remove_signal};
 use crate::verify::transitions::load_stage;
 
 use super::persistence::Persistence;
@@ -24,11 +22,13 @@ use super::{clear_status_line, Orchestrator};
 
 mod merge_gate;
 pub(super) mod resolver_attempts;
+mod resolver_spawn;
+mod resolver_stop;
+mod review_route;
 mod spawn_failure;
 
-use resolver_attempts::{
-    attempts_dir, attempts_file, merge_resolver_attempts, MAX_MERGE_RESOLVER_ATTEMPTS,
-};
+use resolver_attempts::{attempts_file, ReservedAttempt};
+use review_route::awaits_merge;
 
 impl Orchestrator {
     pub(super) fn handle_merge_session_completed(
@@ -466,7 +466,7 @@ impl Orchestrator {
             let _ = self.graph.mark_status(stage_id, StageStatus::MergeBlocked);
             clear_status_line();
             eprintln!("Stage '{stage_id}' auto-merge failed: {first_line}");
-            eprintln!("  Then run from the stage worktree: loom stage merge {stage_id}");
+            eprintln!("{}", self.merge_blocked_hint(stage_id));
         }
     }
 
@@ -656,9 +656,9 @@ impl Orchestrator {
                     .insert(stage_id.to_string(), session.clone());
                 if let Err(e) = self.save_session(&session) {
                     eprintln!("Warning: Failed to save merge session: {e}");
-                    // Remove from active_sessions to avoid tracking a session
-                    // that the monitor can't reload from disk after restart
-                    self.active_sessions.remove(stage_id);
+                    // Keep it tracked: with no record on disk, the tracked session is
+                    // what holds the stage against a second resolver while it lives
+                    // (`cleanup_stale_merge_session`).
                 }
 
                 clear_status_line();
@@ -815,8 +815,8 @@ impl Orchestrator {
 
     /// Spawn merge resolution sessions for stages in MergeConflict or MergeBlocked status.
     ///
-    /// Called during the main loop to detect stages that need merge resolution
-    /// and spawn Claude Code sessions to resolve them.
+    /// Called during the main loop to detect stages that need merge resolution;
+    /// `spawn_resolver_if_due` decides each one.
     pub fn spawn_merge_resolution_sessions(&mut self) -> Result<usize> {
         let stages_dir = self.config.work_dir.join("stages");
         if !stages_dir.exists() {
@@ -846,94 +846,16 @@ impl Orchestrator {
             };
 
             // Only handle MergeConflict and MergeBlocked statuses
-            if !matches!(
-                stage.status,
-                StageStatus::MergeConflict | StageStatus::MergeBlocked
-            ) {
+            if !awaits_merge(&stage.status) {
                 continue;
             }
 
-            // Merge gate: a control-path-touching branch is routed to human
-            // review instead of getting a resolver session (owner decision 9),
-            // covering a stage that reached MergeConflict/MergeBlocked some
-            // other way than `try_auto_merge` (e.g. `loom stage complete`).
-            let target_branch = crate::git::branch::resolve_target_branch(
-                &self.config.base_branch,
-                &self.config.repo_root,
-            );
-            if self.merge_gate_blocks(&stage_id, &branch_name_for_stage(&stage_id), &target_branch)
-            {
-                continue;
-            }
-
-            // Skip an active merge session, cleaning up a stale/dead one (see
-            // `cleanup_stale_merge_session` for the fall-through rationale).
-            if self.cleanup_stale_merge_session(&stage_id) {
-                continue;
-            }
-
-            // Use the shared helper that checks signal + PID liveness and
-            // cleans up stale signals atomically.
-            match find_live_merge_session_for_stage(&stage_id, &self.config.work_dir) {
-                Ok(Some(_)) => continue, // Live resolver already running — skip
-                Ok(None) => { /* fall through to spawn */ }
-                Err(e) => {
-                    tracing::warn!(
-                        stage_id = %stage_id,
-                        error = %e,
-                        "Failed to check for existing merge signal; skipping spawn"
-                    );
-                    continue;
-                }
-            }
-
-            // O-3: bound merge-resolver respawning. Reaching this point means no
-            // live resolver exists for a stage still in MergeConflict/MergeBlocked
-            // — i.e. the previous resolver (if any) died without resolving. The
-            // kept signal file is NOT a respawn guard (it was just deleted by
-            // find_live_merge_session_for_stage when its PID was found dead), so
-            // without a cap this loop respawns a fresh resolver every poll cycle.
-            // Count only successfully spawned resolvers. Probe and spawn
-            // failures are transient operational errors, not failed resolver
-            // sessions, so they must leave the retry budget intact.
-            let attempts = merge_resolver_attempts(&self.config.work_dir, &stage_id);
-            if attempts >= MAX_MERGE_RESOLVER_ATTEMPTS {
-                self.escalate_merge_resolver_exhausted(&stage_id, attempts);
-                continue;
-            }
-
-            // Spawn a merge resolution session.
-            if let Err(e) = self.spawn_merge_resolution_session(&stage) {
-                self.report_merge_spawn_failure(&stage_id, e);
-            } else {
+            if self.spawn_resolver_if_due(&stage) {
                 spawned += 1;
             }
         }
 
         Ok(spawned)
-    }
-
-    /// Record a resolver only after its session successfully spawned.
-    fn next_merge_resolver_attempt(&self, stage_id: &str) -> u32 {
-        let dir = attempts_dir(&self.config.work_dir);
-        let path = attempts_file(&self.config.work_dir, stage_id);
-        let next = merge_resolver_attempts(&self.config.work_dir, stage_id).saturating_add(1);
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            tracing::warn!(
-                stage_id = %stage_id,
-                error = %e,
-                "Failed to create merge-resolver-attempts dir; proceeding without persisting count"
-            );
-            return next;
-        }
-        if let Err(e) = std::fs::write(&path, next.to_string()) {
-            tracing::warn!(
-                stage_id = %stage_id,
-                error = %e,
-                "Failed to persist merge-resolver attempt count; proceeding"
-            );
-        }
-        next
     }
 
     /// Clear the persisted merge-resolver attempt counter for `stage_id`.
@@ -953,82 +875,15 @@ impl Orchestrator {
         }
     }
 
-    /// Persist `NeedsHumanReview` with `reason`, mirrored into the graph;
-    /// records `failure_type` as `failure_info` when given. Returns success.
-    fn route_to_human_review(
-        &mut self,
-        stage_id: &str,
-        reason: String,
-        failure_type: Option<FailureType>,
-    ) -> bool {
-        let updated = self.update_stage(stage_id, |stage| {
-            stage.force_status_with_reason(StageStatus::NeedsHumanReview, &reason);
-            stage.review_reason = Some(reason.clone());
-            if let Some(failure_type) = failure_type {
-                stage.failure_info = Some(FailureInfo {
-                    failure_type,
-                    detected_at: Utc::now(),
-                    evidence: vec![reason.clone()],
-                });
-            }
-            Ok(())
-        });
-        if let Err(error) = updated {
-            tracing::warn!(
-                stage_id = %stage_id,
-                %error,
-                "Failed to save stage after routing to human review"
-            );
-            return false;
-        }
-        if let Err(e) = self
-            .graph
-            .mark_status(stage_id, StageStatus::NeedsHumanReview)
-        {
-            tracing::warn!(
-                stage_id = %stage_id,
-                error = %e,
-                "Failed to mark stage NeedsHumanReview in graph after routing to human review"
-            );
-        }
-        true
-    }
-
-    /// Route a stage whose merge-resolver budget is exhausted to
-    /// `NeedsHumanReview` and persist it.
-    ///
-    /// `MergeConflict`/`MergeBlocked -> NeedsHumanReview` is not a legal edge, so
-    /// this uses the sanctioned forced-assignment path. After escalation the
-    /// stage is no longer in MergeConflict/MergeBlocked, so the spawn loop stops
-    /// considering it and respawning ceases.
-    fn escalate_merge_resolver_exhausted(&mut self, stage_id: &str, failed_attempts: u32) {
-        let steps = self.manual_merge_steps(stage_id);
-        let reason = format!("merge resolver gave up after {failed_attempts} attempt(s): {steps}");
-        tracing::error!(
-            stage_id = %stage_id,
-            failed_attempts = %failed_attempts,
-            "Merge-resolver attempt cap reached; routing stage to NeedsHumanReview"
-        );
-        if !self.route_to_human_review(stage_id, reason, None) {
-            return;
-        }
-
-        // Remove any lingering active session and clear the counter so a future
-        // manual re-merge starts fresh.
-        self.active_sessions.remove(stage_id);
-        self.clear_merge_resolver_attempts(stage_id);
-
-        clear_status_line();
-        eprintln!(
-            "Stage '{stage_id}' needs human review: merge resolution failed after \
-             {failed_attempts} attempt(s). To finish it, {steps}."
-        );
-    }
-
     /// Spawn a merge resolution session for a stage with merge issues.
+    /// `attempt` is kept once the backend spawns the session; any failure
+    /// before that gives it back, and `launch_resolver` settles a backend
+    /// failure. A spawned resolver stays tracked when its record cannot be
+    /// saved: its signal then reads as stale, and only tracking holds the stage.
     fn spawn_merge_resolution_session(
         &mut self,
         stage: &crate::models::stage::Stage,
+        attempt: ReservedAttempt,
     ) -> Result<()> {
         let source_branch = branch_name_for_stage(&stage.id);
 
@@ -1058,10 +913,8 @@ impl Orchestrator {
         let session = Session::new_merge(source_branch.clone(), target_branch.clone());
 
         // Detect any active merge in the main repo so the signal can branch
-        // between "start a fresh merge" and "continue the existing one".
-        // If MERGE_HEAD is set, get_conflicting_files_from_status will refuse
-        // (helper-level guard); fall back to reading the active merge's
-        // unmerged paths directly.
+        // between "start a fresh merge" and "continue the existing one", and
+        // so its unmerged paths stand in when the probe above was skipped.
         let in_progress = crate::git::merge::detect_in_progress_merge_at(&self.config.repo_root)?;
         let conflicting_files = if conflicting_files.is_empty() {
             match in_progress.as_ref().map(|m| &m.state) {
@@ -1083,12 +936,7 @@ impl Orchestrator {
         )
         .context("Failed to generate merge signal")?;
 
-        let spawned_session = self
-            .backend
-            .spawn_merge_session(stage, session, &signal_path, &self.config.repo_root)
-            .context("Failed to spawn merge resolution session")?;
-
-        self.next_merge_resolver_attempt(&stage.id);
+        let spawned_session = self.launch_resolver(stage, session, &signal_path, attempt)?;
 
         clear_status_line();
         eprintln!(
@@ -1105,9 +953,9 @@ impl Orchestrator {
 
         self.active_sessions
             .insert(stage.id.clone(), spawned_session.clone());
-
-        self.save_session(&spawned_session)?;
-
+        if let Err(error) = self.save_session(&spawned_session) {
+            eprintln!("Warning: Failed to save the merge resolver's session record: {error:#}");
+        }
         Ok(())
     }
 }

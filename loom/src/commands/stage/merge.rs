@@ -15,10 +15,14 @@ use crate::models::stage::StageStatus;
 use crate::orchestrator::merge_lifecycle::CleanupOutcome;
 use crate::verify::transitions::{load_stage, trigger_dependents, update_stage};
 
+mod conflict;
 mod finish;
+mod next_step;
 mod preflight;
 mod relay;
+use conflict::record_conflict_and_report;
 use finish::finish_merge_and_report;
+use next_step::{print_fix_limit_options, report_merge_error};
 use preflight::{retry_preflight, RetryPreflight};
 
 /// Unified merge command entry point.
@@ -131,8 +135,9 @@ fn merge_resolved(stage_id: Option<String>) -> Result<()> {
 /// 3. Increments fix_attempts on the stage
 /// 4. Attempts the merge to the default branch using existing merge logic
 /// 5. On success: marks stage as completed+merged, triggers dependents
-/// 6. On failure: prints detailed error with conflicting files
-/// 7. If at fix limit: suggests dispute-criteria or human-review
+/// 6. On conflict or error: says what the daemon does with the stage next
+///    (`conflict::record_conflict_and_report`, `next_step::report_merge_error`)
+/// 7. If at fix limit: suggests manual resolution, human-review, or skip
 fn merge_retry(stage_id: Option<String>) -> Result<()> {
     let work_dir_buf = crate::commands::common::work_dir_path()?;
     let work_dir: &Path = &work_dir_buf;
@@ -159,12 +164,7 @@ fn merge_retry(stage_id: Option<String>) -> Result<()> {
             stage_id, stage.fix_attempts, max_attempts
         );
         println!();
-        println!("Options:");
-        println!("  - Resolve conflicts manually then:  loom stage merge {stage_id} --resolved");
-        println!("  - Request human review:             loom stage human-review {stage_id}");
-        println!(
-            "  - Skip this stage:                  loom stage skip {stage_id} --reason \"merge too complex\""
-        );
+        print_fix_limit_options(&stage_id);
         return Ok(());
     }
 
@@ -256,56 +256,12 @@ fn merge_retry(stage_id: Option<String>) -> Result<()> {
         }
 
         Ok(MergeResult::Conflict { conflicting_files }) => {
-            // fix_attempts was already persisted by the locked increment above.
-
-            println!();
-            println!("Merge conflict persists.");
-            println!();
-            println!("Conflicting files:");
-            for file in &conflicting_files {
-                println!("  - {file}");
-            }
-            println!();
-
-            if attempts >= max_attempts {
-                println!("Fix attempt limit reached ({attempts}/{max_attempts}).");
-                println!();
-                println!("Options:");
-                println!("  - Resolve manually then:  loom stage merge {stage_id} --resolved");
-                println!("  - Request human review:   loom stage human-review {stage_id}");
-                println!("  - Skip this stage:        loom stage skip {stage_id} --reason \"unresolvable conflicts\"");
-            } else {
-                println!("Resolve the conflicts above, then run:");
-                println!("  loom stage merge {stage_id}");
-                println!();
-                println!(
-                    "Remaining attempts: {}/{max_attempts}",
-                    max_attempts - attempts
-                );
-            }
+            record_conflict_and_report(&stage, work_dir, &repo_root, &conflicting_files)?;
         }
 
         Err(e) => {
             // fix_attempts was already persisted by the locked increment above.
-
-            println!();
-            println!("Merge failed with error:");
-            println!("  {e}");
-            println!();
-
-            if attempts >= max_attempts {
-                println!("Fix attempt limit reached ({attempts}/{max_attempts}).");
-                println!();
-                println!("Options:");
-                println!("  - Request human review:  loom stage human-review {stage_id}");
-                println!("  - Skip this stage:       loom stage skip {stage_id} --reason \"merge error\"");
-            } else {
-                println!(
-                    "Remaining attempts: {}/{max_attempts}",
-                    max_attempts - attempts
-                );
-                println!("Investigate the error and try again: loom stage merge {stage_id}");
-            }
+            report_merge_error(&stage, work_dir, &repo_root, &e);
         }
     }
 

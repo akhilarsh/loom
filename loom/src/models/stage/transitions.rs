@@ -14,7 +14,7 @@ impl StageStatus {
     /// - `WaitingForInput` -> `Executing` (when input provided)
     /// - `MergeConflict` -> `Completed` | `Blocked` (when conflicts resolved or resolution fails)
     /// - `CompletedWithFailures` -> `Queued` | `Executing` | `Completed` | `MergeConflict` | `MergeBlocked` | `NeedsAdjudication` | `NeedsHumanReview` (for retry, re-verify, progressive-merge conflict/error after a fixed stage, dispute, or dispute-budget escalation)
-    /// - `MergeBlocked` -> `Queued` | `Executing` (for retry)
+    /// - `MergeBlocked` -> `Queued` | `Executing` | `Completed` | `MergeConflict` (retry, merge completed, or a retried merge hit a conflict)
     /// - `NeedsHumanReview` -> `Queued` | `Executing` | `Completed` | `Blocked` (approve queues a fresh session; force-complete steps through `Executing`; reject blocks)
     /// - `NeedsAdjudication` -> `Queued` | `NeedsAdjudication` | `NeedsHumanReview` (verdict applied, evidence loop, or escalation)
     /// - `Completed` is a terminal state
@@ -55,32 +55,31 @@ impl StageStatus {
             ),
             StageStatus::WaitingForInput => matches!(new_status, StageStatus::Executing),
             StageStatus::Completed => false, // Terminal state
-            StageStatus::Blocked => {
-                matches!(
-                    new_status,
-                    StageStatus::Queued | StageStatus::Skipped | StageStatus::NeedsHandoff
-                )
-            }
+            StageStatus::Blocked => matches!(
+                new_status,
+                StageStatus::Queued | StageStatus::Skipped | StageStatus::NeedsHandoff
+            ),
             StageStatus::NeedsHandoff => matches!(new_status, StageStatus::Queued),
             StageStatus::Skipped => false, // Terminal state
             StageStatus::MergeConflict => {
                 matches!(new_status, StageStatus::Completed | StageStatus::Blocked)
             }
-            StageStatus::CompletedWithFailures => {
-                matches!(
-                    new_status,
-                    StageStatus::Queued
-                        | StageStatus::Executing
-                        | StageStatus::Completed
-                        | StageStatus::MergeConflict
-                        | StageStatus::MergeBlocked
-                        | StageStatus::NeedsAdjudication
-                        | StageStatus::NeedsHumanReview
-                )
-            }
+            StageStatus::CompletedWithFailures => matches!(
+                new_status,
+                StageStatus::Queued
+                    | StageStatus::Executing
+                    | StageStatus::Completed
+                    | StageStatus::MergeConflict
+                    | StageStatus::MergeBlocked
+                    | StageStatus::NeedsAdjudication
+                    | StageStatus::NeedsHumanReview
+            ),
             StageStatus::MergeBlocked => matches!(
                 new_status,
-                StageStatus::Queued | StageStatus::Executing | StageStatus::Completed
+                StageStatus::Queued
+                    | StageStatus::Executing
+                    | StageStatus::Completed
+                    | StageStatus::MergeConflict
             ),
             StageStatus::NeedsHumanReview => matches!(
                 new_status,
@@ -145,21 +144,20 @@ impl StageStatus {
             StageStatus::NeedsHandoff => vec![StageStatus::Queued],
             StageStatus::Skipped => vec![], // Terminal state
             StageStatus::MergeConflict => vec![StageStatus::Completed, StageStatus::Blocked],
-            StageStatus::CompletedWithFailures => {
-                vec![
-                    StageStatus::Queued,
-                    StageStatus::Executing,
-                    StageStatus::Completed,
-                    StageStatus::MergeConflict,
-                    StageStatus::MergeBlocked,
-                    StageStatus::NeedsAdjudication,
-                    StageStatus::NeedsHumanReview,
-                ]
-            }
+            StageStatus::CompletedWithFailures => vec![
+                StageStatus::Queued,
+                StageStatus::Executing,
+                StageStatus::Completed,
+                StageStatus::MergeConflict,
+                StageStatus::MergeBlocked,
+                StageStatus::NeedsAdjudication,
+                StageStatus::NeedsHumanReview,
+            ],
             StageStatus::MergeBlocked => vec![
                 StageStatus::Queued,
                 StageStatus::Executing,
                 StageStatus::Completed,
+                StageStatus::MergeConflict,
             ],
             StageStatus::NeedsHumanReview => vec![
                 StageStatus::Executing,

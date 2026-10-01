@@ -11,7 +11,7 @@ file src/commands/graph/tests.rs 425
 file src/commands/init/tests.rs 449
 file src/commands/plan/verify.rs 555
 file src/commands/stage/complete.rs 759
-file src/commands/stage/merge.rs 537
+file src/commands/stage/merge.rs 493
 file src/commands/stage/tests/complete.rs 534
 file src/fs/permissions/hooks.rs 446
 file src/fs/permissions/settings.rs 422
@@ -22,8 +22,8 @@ file src/git/worktree/base.rs 469
 file src/git/worktree/settings.rs 462
 file src/models/stage/methods.rs 677
 file src/models/stage/types.rs 1015
-file src/orchestrator/core/merge_handler.rs 1267
-file src/orchestrator/core/recovery.rs 1464
+file src/orchestrator/core/merge_handler.rs 1115
+file src/orchestrator/core/recovery.rs 1462
 file src/orchestrator/core/stage_executor.rs 597
 file src/orchestrator/merge_attribution.rs 543
 file src/orchestrator/signals/cache.rs 524
@@ -81,7 +81,7 @@ function src/commands/stage/complete.rs route_complete_for_conflicts 159
 function src/commands/stage/complete.rs run_verification_phase 99
 function src/commands/stage/knowledge_complete.rs complete_knowledge_stage 122
 function src/commands/stage/merge.rs merge_resolved 80
-function src/commands/stage/merge.rs merge_retry 178
+function src/commands/stage/merge.rs merge_retry 129
 function src/commands/stage/merge_resolver.rs spawn_merge_resolver 64
 function src/commands/stage/progressive_complete.rs attempt_progressive_merge 113
 function src/commands/stage/progressive_complete.rs complete_with_merge 80
@@ -124,15 +124,14 @@ function src/git/worktree/tests_settings_env.rs test_worktree_gitignore_actually
 function src/handoff/generator/formatter.rs format_handoff_markdown 112
 function src/models/stage/defaults.rs default 76
 function src/models/stage/methods.rs from_definition_copies_all_runtime_policy_fields 118
-function src/models/stage/transitions.rs can_transition_to 74
-function src/models/stage/transitions.rs valid_transitions 58
+function src/models/stage/transitions.rs can_transition_to 73
+function src/models/stage/transitions.rs valid_transitions 57
 function src/orchestrator/auto_merge.rs attempt_auto_merge 63
 function src/orchestrator/core/event_handler.rs handle_one_event 116
 function src/orchestrator/core/merge_handler.rs finalize_merge_resolution 97
 function src/orchestrator/core/merge_handler.rs handle_merge_session_completed 168
 function src/orchestrator/core/merge_handler.rs read_plan_level_auto_merge 61
-function src/orchestrator/core/merge_handler.rs spawn_merge_resolution_session 84
-function src/orchestrator/core/merge_handler.rs spawn_merge_resolution_sessions 95
+function src/orchestrator/core/merge_handler.rs spawn_merge_resolution_session 78
 function src/orchestrator/core/merge_handler.rs try_auto_merge 214
 function src/orchestrator/core/merge_handler.rs verify_and_finalize_merge 65
 function src/orchestrator/core/orchestrator.rs new 67

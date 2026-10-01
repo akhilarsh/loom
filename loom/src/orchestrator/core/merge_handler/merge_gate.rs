@@ -4,48 +4,66 @@
 //! hooks directory. Owner decision 9, `doc/plans/PLAN-loom-state-confinement.md`
 //! §9. Call sites: `merge_handler.rs`'s `try_auto_merge` (before ever
 //! attempting the merge, so a conflicting branch never gets that far either)
-//! and `spawn_merge_resolution_sessions` (for a stage that reached
+//! and `resolver_spawn.rs`'s `gate_holds_merge_stage` (for a stage that reached
 //! `MergeConflict`/`MergeBlocked` some other way, e.g. `loom stage complete`).
 
 use std::path::Path;
 
 use anyhow::Result;
+use chrono::Utc;
 
 use crate::fs::session_files::mark_session_terminal_reason;
 use crate::git::branch::branch_name_for_stage;
 use crate::models::session::{Session, SessionExitReason, SessionStatus, SessionType};
 use crate::orchestrator::core::persistence::Persistence;
+use crate::orchestrator::core::recovery_guards::too_young_to_judge;
 use crate::orchestrator::core::Orchestrator;
 use crate::orchestrator::signals::remove_signal;
 use crate::orchestrator::terminal::native::{session_process_status, SessionProcessStatus};
 
 impl Orchestrator {
-    /// Returns true — after routing `stage_id` to `NeedsHumanReview` — when
-    /// `stage_branch`'s diff since it split from `target_branch` touches a
-    /// control path.
+    /// The control paths `is_control_path` matches, worded for operator
+    /// messages.
+    pub(crate) const CONTROL_PATHS: &'static str =
+        ".claude/, .mcp.json, .loom/, or the tracked git hooks directory";
+
+    /// Returns true — after routing `stage_id` to `NeedsHumanReview` whatever
+    /// its status — when `stage_branch`'s diff since it split from
+    /// `target_branch` touches a control path. The spawn loop's own gate is
+    /// `gate_holds_merge_stage`.
     pub(super) fn merge_gate_blocks(
         &mut self,
         stage_id: &str,
         stage_branch: &str,
         target_branch: &str,
     ) -> bool {
-        let violation =
-            match control_path_violation(&self.config.repo_root, target_branch, stage_branch) {
-                Ok(violation) => violation,
-                Err(error) => {
-                    tracing::warn!(
-                        stage_id = %stage_id,
-                        %error,
-                        "merge gate: failed to compute changed paths; proceeding with merge attempt"
-                    );
-                    return false;
-                }
-            };
-        let Some(reason) = violation else {
+        let Some(reason) = self.merge_gate_reason(stage_id, stage_branch, target_branch) else {
             return false;
         };
         self.route_to_human_review(stage_id, reason, None);
         true
+    }
+
+    /// The human-review reason when `stage_branch`'s diff since it split from
+    /// `target_branch` touches a control path, else `None`. A diff that cannot
+    /// be computed lets the merge proceed.
+    pub(super) fn merge_gate_reason(
+        &self,
+        stage_id: &str,
+        stage_branch: &str,
+        target_branch: &str,
+    ) -> Option<String> {
+        match control_path_violation(&self.config.repo_root, target_branch, stage_branch) {
+            Ok(violation) => violation,
+            Err(error) => {
+                tracing::warn!(
+                    stage_id = %stage_id,
+                    %error,
+                    "merge gate: failed to compute changed paths; proceeding with merge attempt"
+                );
+                None
+            }
+        }
     }
 
     /// Persists `completed_commit` from branch HEAD before a merge attempt,
@@ -89,30 +107,58 @@ impl Orchestrator {
     /// merge conflict, so it must not block merge resolver spawning: a
     /// tracked Stage session is always stale here and retirement is attempted;
     /// a tracked Merge (or base-conflict) session is left alone while its
-    /// process is still alive. Neither is replaced until death is proved.
+    /// process is still alive. Neither is replaced until death is proved: by
+    /// PID identity, or without one by the orphan rule
+    /// (`identityless_writer_blocks_spawn`).
     pub(super) fn cleanup_stale_merge_session(&mut self, stage_id: &str) -> bool {
         let Some(session) = self.active_sessions.get(stage_id).cloned() else {
             return false;
         };
-        let has_identity = matches!(
-            session_process_status(&self.config.work_dir, &session),
-            SessionProcessStatus::VerifiedAlive | SessionProcessStatus::Dead
-        );
-        if stale_merge_retirement_blocks_spawn(
-            &session,
-            has_identity,
-            |tracked| self.backend.is_session_alive(tracked),
-            |stale| self.backend.kill_session(stale),
-            |stale| self.confirm_session_gone(stale),
-        ) {
+        if self.merge_writer_retirement_unproven(&session, true) {
             return true;
         }
-        self.finish_stale_merge_retirement(stage_id, &session);
+        self.finish_stale_merge_retirement(stage_id, &session, SessionExitReason::Replaced);
         false
     }
 
-    fn finish_stale_merge_retirement(&mut self, stage_id: &str, session: &Session) {
-        self.active_sessions.remove(stage_id);
+    /// Whether `session`, a merge writer for some stage, is still not proven
+    /// gone after its kill. With `spare_live_resolver`, a live resolver (any
+    /// tracked kind but `Stage`) is left running and counts as not gone.
+    pub(super) fn merge_writer_retirement_unproven(
+        &self,
+        session: &Session,
+        spare_live_resolver: bool,
+    ) -> bool {
+        let has_identity = matches!(
+            session_process_status(&self.config.work_dir, session),
+            SessionProcessStatus::VerifiedAlive | SessionProcessStatus::Dead
+        );
+        let probe = |tracked: &Session| self.backend.is_session_alive(tracked);
+        let kill = |stale: &Session| self.backend.kill_session(stale);
+        let confirm_gone = |stale: &Session| self.confirm_session_gone(stale);
+        if spare_live_resolver {
+            stale_merge_retirement_blocks_spawn(session, has_identity, probe, kill, confirm_gone)
+        } else {
+            retirement_unproven(session, has_identity, probe, kill, confirm_gone)
+        }
+    }
+
+    /// Retire `session`, a merge writer for `stage_id` proven gone: stop
+    /// tracking it if it is the tracked one, remove its signal, and record
+    /// `reason` as its exit.
+    pub(super) fn finish_stale_merge_retirement(
+        &mut self,
+        stage_id: &str,
+        session: &Session,
+        reason: SessionExitReason,
+    ) {
+        if self
+            .active_sessions
+            .get(stage_id)
+            .is_some_and(|tracked| tracked.id == session.id)
+        {
+            self.active_sessions.remove(stage_id);
+        }
         if let Err(error) = remove_signal(&session.id, &self.config.work_dir) {
             tracing::warn!(session_id = %session.id, %error, "Failed to remove stale signal");
         }
@@ -120,7 +166,7 @@ impl Orchestrator {
             &self.config.work_dir,
             &session.id,
             SessionStatus::ContextExhausted,
-            SessionExitReason::Replaced,
+            reason,
         ) {
             tracing::warn!(
                 session_id = %session.id,
@@ -134,7 +180,7 @@ impl Orchestrator {
 pub(super) fn stale_merge_retirement_blocks_spawn(
     session: &Session,
     has_pid_identity: bool,
-    probe: impl FnOnce(&Session) -> Result<bool>,
+    probe: impl Fn(&Session) -> Result<bool>,
     kill: impl FnOnce(&Session) -> Result<()>,
     confirm_gone: impl FnOnce(&Session) -> Result<bool>,
 ) -> bool {
@@ -152,20 +198,52 @@ pub(super) fn stale_merge_retirement_blocks_spawn(
             Ok(false) => {}
         }
     }
+    retirement_unproven(session, has_pid_identity, probe, kill, confirm_gone)
+}
+
+/// Kill `session` and return whether its death is still not proven: by PID
+/// identity when it has one, else by the orphan rule.
+fn retirement_unproven(
+    session: &Session,
+    has_pid_identity: bool,
+    probe: impl Fn(&Session) -> Result<bool>,
+    kill: impl FnOnce(&Session) -> Result<()>,
+    confirm_gone: impl FnOnce(&Session) -> Result<bool>,
+) -> bool {
     let kill_error = kill(session).err();
     if !has_pid_identity {
-        tracing::warn!(
-            session_id = %session.id,
-            kill_error = ?kill_error,
-            "Stale merge writer has no verified PID identity; retaining ownership"
-        );
-        return true;
+        return identityless_writer_blocks_spawn(session, probe, kill_error.as_ref());
     }
     match confirm_gone(session) {
         Ok(true) => false,
         Ok(false) => warn_retirement_uncertainty(session, kill_error.as_ref(), None),
         Err(error) => warn_retirement_uncertainty(session, kill_error.as_ref(), Some(&error)),
     }
+}
+
+/// A stale writer with no verified PID identity can be neither signalled nor
+/// confirmed gone by PID, so orphan recovery's rule judges it instead: older
+/// than `ORPHAN_PROBE_GRACE_SECS`, a liveness probe that finds it not running
+/// proves it dead and it is retired. It keeps ownership while younger (the
+/// grace period bounds that), while the backend still sees it running, or
+/// while the probe errors, which orphan recovery likewise retries next pass.
+fn identityless_writer_blocks_spawn(
+    session: &Session,
+    probe: impl Fn(&Session) -> Result<bool>,
+    kill_error: Option<&anyhow::Error>,
+) -> bool {
+    let probed = (!too_young_to_judge(session, Utc::now())).then(|| probe(session));
+    if matches!(probed, Some(Ok(false))) {
+        return false;
+    }
+    tracing::warn!(
+        session_id = %session.id,
+        ?kill_error,
+        probe = ?probed,
+        "Stale merge writer has no verified PID identity and is not proven dead; \
+         retaining ownership"
+    );
+    true
 }
 
 fn warn_retirement_uncertainty(

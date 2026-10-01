@@ -27,6 +27,21 @@ fn test_merge_blocked_can_transition_to_completed() {
 }
 
 #[test]
+fn test_merge_blocked_can_transition_to_merge_conflict() {
+    // `loom stage merge` retrying a MergeBlocked stage can hit a real conflict.
+    let status = StageStatus::MergeBlocked;
+    assert!(status.can_transition_to(&StageStatus::MergeConflict));
+}
+
+#[test]
+fn test_stage_try_mark_merge_conflict_from_merge_blocked() {
+    let mut stage = create_test_stage(StageStatus::MergeBlocked);
+    assert!(stage.try_mark_merge_conflict().is_ok());
+    assert_eq!(stage.status, StageStatus::MergeConflict);
+    assert!(stage.merge_conflict);
+}
+
+#[test]
 fn test_merge_blocked_cannot_transition_to_other_states() {
     let status = StageStatus::MergeBlocked;
     assert!(!status.can_transition_to(&StageStatus::WaitingForDeps));
@@ -34,7 +49,6 @@ fn test_merge_blocked_cannot_transition_to_other_states() {
     assert!(!status.can_transition_to(&StageStatus::NeedsHandoff));
     assert!(!status.can_transition_to(&StageStatus::WaitingForInput));
     assert!(!status.can_transition_to(&StageStatus::Skipped));
-    assert!(!status.can_transition_to(&StageStatus::MergeConflict));
     assert!(!status.can_transition_to(&StageStatus::CompletedWithFailures));
 }
 

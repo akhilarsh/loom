@@ -79,7 +79,8 @@ fn merge_probe_failure_does_not_consume_resolver_attempt_budget() {
     let mut orchestrator = constructed.unwrap();
 
     assert_eq!(orchestrator.spawn_merge_resolution_sessions().unwrap(), 0);
-    assert_eq!(super::merge_resolver_attempts(&work_dir, &stage.id), 0);
+    let attempts = super::resolver_attempts::merge_resolver_attempts(&work_dir, &stage.id);
+    assert_eq!(attempts, 0);
     assert!(!super::attempts_file(&work_dir, &stage.id).exists());
 }
 

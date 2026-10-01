@@ -100,7 +100,8 @@ fn test_valid_transitions_merge_blocked() {
     assert!(transitions.contains(&StageStatus::Queued));
     assert!(transitions.contains(&StageStatus::Executing));
     assert!(transitions.contains(&StageStatus::Completed));
-    assert_eq!(transitions.len(), 3);
+    assert!(transitions.contains(&StageStatus::MergeConflict));
+    assert_eq!(transitions.len(), 4);
 }
 
 #[test]
