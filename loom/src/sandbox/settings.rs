@@ -110,12 +110,19 @@ pub(crate) struct SettingsTarget<'a> {
     /// Whether `enabledPlugins` and `extraKnownMarketplaces` carry forward
     /// from `existing` too.
     pub carry_plugin_keys: bool,
+    /// The session's working directory: `allow_write` entries naming it or a
+    /// path inside it are dropped (`grant_paths::is_inside_cwd`). `None`
+    /// keeps every entry.
+    pub cwd: Option<&'a Path>,
 }
 
 /// The settings document for `config` at `target`: the sandbox block and
-/// permission rules [`generate_settings_json`] builds, the resolved
-/// state-root rules, and what `existing` carries forward. Pure: the session
-/// capsule and the `build_settings_for` test helper both build through it.
+/// permission rules [`generate_settings_json`] builds, less the
+/// `allow_write` entries inside `target.cwd`, the resolved
+/// state-root rules, and what `existing` carries forward. It writes nothing,
+/// and reads the filesystem only to resolve those entries' symlinks: the
+/// session capsule and the `build_settings_for` test helper both build
+/// through it.
 pub(crate) fn build_settings(
     config: &MergedSandboxConfig,
     target: &SettingsTarget<'_>,
@@ -124,6 +131,12 @@ pub(crate) fn build_settings(
     let mut config = config.clone();
     if !target.is_worktree {
         strip_worktree_escape_denies(&mut config);
+    }
+    if let Some(cwd) = target.cwd {
+        config
+            .filesystem
+            .allow_write
+            .retain(|entry| !super::grant_paths::is_inside_cwd(entry, cwd));
     }
     let mut settings = generate_settings_json(&config);
     if let Some(state_root) = target.state_root {
@@ -188,28 +201,6 @@ fn push_missing(settings: &mut Value, pointer: &str, items: impl IntoIterator<It
     }
 }
 
-/// Filters plan `allow_write` paths into `Edit(...)` permission rules and
-/// appends them to `allow`, deduping against what's already there. A path
-/// starting with exactly one `/` is rewritten to `//` (Claude Code's
-/// permission-rule paths take single `/` as project-relative, `//` as
-/// absolute — the opposite of `sandbox.filesystem.allowWrite`); `//abs`,
-/// `~/...` and relative entries pass through unchanged (see
-/// `grant_paths::edit_rule`). Also filters `../` and dedupes against `allow`.
-fn push_allow_write_rules(allow: &mut Vec<Value>, config: &MergedSandboxConfig) {
-    for path in config
-        .filesystem
-        .allow_write
-        .iter()
-        .map(|p| p.trim())
-        .filter(|p| !p.is_empty() && !p.contains("../"))
-    {
-        let rule = json!(super::grant_paths::edit_rule(path));
-        if !allow.contains(&rule) {
-            allow.push(rule);
-        }
-    }
-}
-
 /// Generate Claude Code settings JSON from sandbox config
 pub fn generate_settings_json(config: &MergedSandboxConfig) -> Value {
     let mut settings = json!({});
@@ -264,7 +255,7 @@ pub fn generate_settings_json(config: &MergedSandboxConfig) -> Value {
     }
 
     // Add allow_write paths as exceptions (same Write->Edit reasoning as above).
-    push_allow_write_rules(&mut allow, config);
+    super::grant_paths::push_allow_write_rules(&mut allow, config);
 
     // Add narrow Read permissions for orchestration state files agents need.
     // These are the *relative* forms; `build_settings` adds matching
@@ -439,6 +430,8 @@ fn preserve_unowned_keys(new_settings: &mut Value, existing: &Value, carry: bool
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_cwd_grants;
 #[cfg(test)]
 mod tests_read_denies;
 #[cfg(test)]

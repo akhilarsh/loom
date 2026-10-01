@@ -101,6 +101,7 @@ pub(super) fn write_session_capsule(request: &CapsuleRequest<'_>) -> Result<Stri
         kind: request.kind,
         sandbox: request.sandbox,
         worktree_rooted,
+        cwd: &cwd,
         state_root: &state_root,
         repo_root: &repo_root,
         hooks_dir,
@@ -269,6 +270,9 @@ pub(crate) fn cleanup_session_settings(work_dir: &Path, session_id: &str) {
 #[cfg(test)]
 #[path = "tests_capsule_checkout.rs"]
 mod tests_capsule_checkout;
+#[cfg(test)]
+#[path = "tests_capsule_cwd_grants.rs"]
+mod tests_capsule_cwd_grants;
 #[cfg(test)]
 #[path = "tests_capsule_interpreters.rs"]
 mod tests_capsule_interpreters;

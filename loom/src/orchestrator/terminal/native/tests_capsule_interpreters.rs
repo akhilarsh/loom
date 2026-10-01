@@ -15,6 +15,7 @@ fn build_with_interpreters(python3: Option<&Path>, python_hooks: &[PathBuf]) -> 
         kind: SessionType::Stage,
         sandbox: &sandbox(false),
         worktree_rooted: false,
+        cwd: Path::new("/repo"),
         state_root: Path::new("/repo/.loom/work"),
         repo_root: Path::new("/repo"),
         hooks_dir: Path::new(HOOKS_DIR),

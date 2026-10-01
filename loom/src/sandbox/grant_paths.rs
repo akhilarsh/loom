@@ -1,6 +1,7 @@
 //! Host-side existence checks and permission-rule mapping for plan-authored
 //! `allow_write` grants.
 
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 use super::config::MergedSandboxConfig;
@@ -73,6 +74,64 @@ pub fn warn_missing_grants(config: &MergedSandboxConfig, stage_id: &str) {
     }
 }
 
+/// Whether the `allow_write` entry `entry` names the session's working
+/// directory `cwd` or a path inside it, so the settings builder drops it.
+///
+/// The working directory is writable already, so such an entry grants
+/// nothing; what it does do is break git. Claude Code's Linux sandbox
+/// (bubblewrap) bind-mounts every non-glob `allowWrite` path on its own, and
+/// the kernel refuses to unlink or rename a mount point: git replacing a
+/// listed file, or `rm -rf` of a listed directory, fails with `Device or
+/// resource busy`. A glob is never mounted, so it is kept.
+///
+/// `~/` resolves against the home directory, `/` and `//` are absolute, and a
+/// bare path resolves against `cwd`. Both sides then have their symlinks
+/// resolved ([`resolve_through_symlinks`]), so an entry reaching through a
+/// link to a target outside `cwd` (a worktree's `.loom/work`) is kept. Any
+/// resolution failure keeps the entry too.
+pub(crate) fn is_inside_cwd(entry: &str, cwd: &Path) -> bool {
+    let entry = entry.trim();
+    if entry.is_empty() || entry.chars().any(|c| GLOB_METACHARACTERS.contains(&c)) {
+        return false;
+    }
+    // `~` alone or `~user/...` does not resolve here, so it is kept.
+    let path = if entry.starts_with(['/', '~']) {
+        match resolve_grant_path(entry, dirs::home_dir().as_deref()) {
+            Some(path) => path,
+            None => return false,
+        }
+    } else {
+        cwd.join(entry)
+    };
+    match (
+        resolve_through_symlinks(&path),
+        resolve_through_symlinks(cwd),
+    ) {
+        (Some(path), Some(cwd)) => path.starts_with(cwd),
+        _ => false,
+    }
+}
+
+/// `path` with its longest existing ancestor canonicalized and the missing
+/// tail re-appended, so a path that does not exist yet still resolves.
+/// `None` when no ancestor canonicalizes or the missing tail ends in `..`.
+fn resolve_through_symlinks(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(resolved) = current.canonicalize() {
+            return Some(
+                missing
+                    .iter()
+                    .rev()
+                    .fold(resolved, |acc, part| acc.join(part)),
+            );
+        }
+        missing.push(current.file_name()?);
+        current = current.parent()?;
+    }
+}
+
 /// Map an `allow_write` entry to the `Edit(...)` permission rule it should
 /// become. Claude Code's permission-rule paths use a single leading `/` for
 /// PROJECT-relative and `//` for absolute — the opposite of
@@ -84,6 +143,28 @@ pub(crate) fn edit_rule(path: &str) -> String {
         format!("Edit(/{path})")
     } else {
         format!("Edit({path})")
+    }
+}
+
+/// Filters plan `allow_write` paths into `Edit(...)` permission rules and
+/// appends them to `allow`, deduping against what's already there. A path
+/// starting with exactly one `/` is rewritten to `//` (Claude Code's
+/// permission-rule paths take single `/` as project-relative, `//` as
+/// absolute — the opposite of `sandbox.filesystem.allowWrite`); `//abs`,
+/// `~/...` and relative entries pass through unchanged (see [`edit_rule`]).
+/// Also filters `../` and dedupes against `allow`.
+pub(super) fn push_allow_write_rules(allow: &mut Vec<Value>, config: &MergedSandboxConfig) {
+    for path in config
+        .filesystem
+        .allow_write
+        .iter()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty() && !p.contains("../"))
+    {
+        let rule = json!(edit_rule(path));
+        if !allow.contains(&rule) {
+            allow.push(rule);
+        }
     }
 }
 

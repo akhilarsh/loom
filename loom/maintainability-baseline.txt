@@ -41,8 +41,8 @@ file src/plan/schema/validation.rs 1222
 file src/plan/tests/amendment.rs 605
 file src/remote_control.rs 598
 file src/sandbox/config.rs 822
-file src/sandbox/settings.rs 445
-file src/sandbox/settings/tests.rs 1596
+file src/sandbox/settings.rs 438
+file src/sandbox/settings/tests.rs 1565
 file src/skills/index.rs 564
 file src/verify/duplicate_detection.rs 436
 file src/verify/transitions/state.rs 433

@@ -1,8 +1,10 @@
+use super::super::{build_settings, generate_settings_json, SettingsTarget};
 use super::*;
 use crate::models::stage::{
     CommandConfinement, FilesystemConfig, Implementer, Implementers, LinuxConfig, NetworkConfig,
     PermissionMode,
 };
+use serde_json::json;
 
 fn config() -> MergedSandboxConfig {
     MergedSandboxConfig {
@@ -223,4 +225,37 @@ fn rejects_every_command_exclusion() {
     let error = validate_emittable(&config).unwrap_err().to_string();
     assert!(error.contains("excluded_commands"));
     assert!(error.contains("outside the host sandbox"));
+}
+
+#[test]
+fn test_generate_settings_never_emits_excluded_commands() {
+    let config = MergedSandboxConfig {
+        enabled: true,
+        auto_allow: true,
+        allow_unsandboxed_escape: false,
+        excluded_commands: vec!["loom".to_string(), "git".to_string()],
+        filesystem: FilesystemConfig::default(),
+        network: NetworkConfig::default(),
+        linux: LinuxConfig::default(),
+        permission_mode: PermissionMode::Auto,
+        implementers: Implementers::default(),
+        command_confinement: CommandConfinement::default(),
+    };
+
+    let json = generate_settings_json(&config);
+    assert!(json["sandbox"]["excludedCommands"].is_null());
+
+    let error = build_settings(
+        &config,
+        &SettingsTarget {
+            is_worktree: false,
+            state_root: None,
+            existing: &json!({}),
+            carry_plugin_keys: false,
+            cwd: None,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("excluded_commands"));
 }

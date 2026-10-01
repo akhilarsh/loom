@@ -1,6 +1,7 @@
 //! The capsule's settings document, built from already-resolved inputs.
 //!
-//! Pure: nothing here reads the environment or the filesystem. The document
+//! Nothing here writes, and the only read is `sandbox::build_settings`
+//! resolving `allow_write` entries against the session's cwd. The document
 //! is `sandbox::build_settings`'s for the session's location, plus the plans
 //! read, the session's scratch grant, the approved-permissions list, the
 //! location and control-surface write denies
@@ -30,6 +31,9 @@ pub(super) struct CapsuleInputs<'a> {
     pub sandbox: &'a MergedSandboxConfig,
     /// Whether the session runs in a stage worktree rather than the checkout.
     pub worktree_rooted: bool,
+    /// The session's working directory, absolute: `allow_write` entries
+    /// inside it are dropped (`sandbox::SettingsTarget::cwd`).
+    pub cwd: &'a Path,
     /// The canonical state root (`.loom/work`).
     pub state_root: &'a Path,
     pub repo_root: &'a Path,
@@ -69,6 +73,7 @@ pub(super) fn capsule_settings(inputs: &CapsuleInputs<'_>) -> Result<Value> {
             state_root: Some(utf8(inputs.state_root)?),
             existing: inputs.checkout_settings.unwrap_or(&no_checkout_settings),
             carry_plugin_keys: inputs.sandbox.implementers.includes_codex(),
+            cwd: Some(inputs.cwd),
         },
     )?;
     let plans = inputs.repo_root.join("doc").join("plans");

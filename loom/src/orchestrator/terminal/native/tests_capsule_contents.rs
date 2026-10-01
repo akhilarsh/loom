@@ -67,6 +67,11 @@ fn try_build(
         kind,
         sandbox: config,
         worktree_rooted,
+        cwd: Path::new(if worktree_rooted {
+            "/repo/.worktrees/s1"
+        } else {
+            "/repo"
+        }),
         state_root: Path::new("/repo/.loom/work"),
         repo_root: Path::new("/repo"),
         hooks_dir: Path::new(HOOKS_DIR),

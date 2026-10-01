@@ -69,6 +69,7 @@ pub(super) fn build_settings_for(
             state_root,
             existing,
             carry_plugin_keys: carries_plugin_keys(config, is_worktree),
+            cwd: None,
         },
     )
     .unwrap()
@@ -319,38 +320,6 @@ fn test_generate_settings_with_linux_config() {
 
     let json = generate_settings_json(&config);
     assert_eq!(json["sandbox"]["enableWeakerNestedSandbox"], true);
-}
-
-#[test]
-fn test_generate_settings_never_emits_excluded_commands() {
-    let config = MergedSandboxConfig {
-        enabled: true,
-        auto_allow: true,
-        allow_unsandboxed_escape: false,
-        excluded_commands: vec!["loom".to_string(), "git".to_string()],
-        filesystem: FilesystemConfig::default(),
-        network: NetworkConfig::default(),
-        linux: LinuxConfig::default(),
-        permission_mode: PermissionMode::Auto,
-        implementers: Implementers::default(),
-        command_confinement: CommandConfinement::default(),
-    };
-
-    let json = generate_settings_json(&config);
-    assert!(json["sandbox"]["excludedCommands"].is_null());
-
-    let error = build_settings(
-        &config,
-        &SettingsTarget {
-            is_worktree: false,
-            state_root: None,
-            existing: &json!({}),
-            carry_plugin_keys: false,
-        },
-    )
-    .unwrap_err()
-    .to_string();
-    assert!(error.contains("excluded_commands"));
 }
 
 #[test]
