@@ -161,12 +161,19 @@ pub(super) fn append_settled_completion_rules(content: &mut String) {
     content.push_str("- **Verify acceptance criteria** before marking stage complete\n");
 }
 
+/// BLOCK-F: when a stage cannot finish, the main agent disputes a wrong check
+/// or blocks the stage on a need only a person can meet. Byte-identical in the
+/// orchestration skill (`tests_doctrine_v2.rs` pins every copy).
+const STAGE_EXIT_RULES: &str = "**When the stage cannot finish.** Fix what the stage can fix. A criterion, wiring check, contract, review finding or test-integrity event that is wrong gets a dispute: `loom stage dispute-criteria` (with `--field` for wiring and wiring-tests entries), `dispute-contract`, `dispute-findings` or `dispute-integrity`. Filing ends this session by design: the daemon starts a fresh session with the verdict, so waiting gains nothing. Never revert, weaken or postpone correct work to avoid a dispute. A need only a person can meet (a credential, a host install, a network domain or path the plan does not grant) gets `loom stage block <stage-id> \"<what is needed and why>\"`: the daemon retires the session and shows the reason to the operator. Commit your work before filing either. Never end a turn asking the operator to act while the stage is executing.";
+
 /// Append completion rules shared between standard and integration-verify prefixes
 pub(super) fn append_completion_rules(content: &mut String) {
     append_settled_completion_rules(content);
     content.push_str("- No `loom stage retry` mid-session.\n");
     content.push_str(CONTEXT_CEILING_HANDOFF);
     content.push_str("- Run `loom stage complete <stage-id>` from the worktree ROOT directory; if acceptance criteria fail, fix and run it again\n\n");
+    content.push_str(STAGE_EXIT_RULES);
+    content.push_str("\n\n");
 }
 
 #[cfg(test)]

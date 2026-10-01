@@ -98,8 +98,9 @@ fn format_missing_grants_note(missing: &[String]) -> String {
         "\nThese grants did not exist when this session was spawned, and the sandbox binds \
          only paths that exist at session start. Writes there fail with `Read-only file \
          system`, and a `mkdir` inside the session cannot create them. That is a sandbox \
-         limit, not a bug in your change: STOP and report it as a blocker. The operator must \
-         create the path on the host and restart this stage's session.\n\n",
+         limit, not a bug in your change: block the stage with `loom stage block <stage-id> \
+         \"<path> is missing on the host\"`: the operator creates the path and retries the \
+         stage.\n\n",
     );
     content
 }
@@ -131,7 +132,8 @@ mod tests {
 
         assert!(content.contains("Missing on the host, so NOT writable this session"));
         assert!(content.contains("`/tmp/loom-pre-commit-plan`"));
-        assert!(content.contains("STOP and report it as a blocker"));
+        assert!(content.contains("loom stage block"));
+        assert!(!content.contains("report it as a blocker"));
     }
 
     #[test]

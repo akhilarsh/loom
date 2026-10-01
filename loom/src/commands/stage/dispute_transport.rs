@@ -243,7 +243,7 @@ fn send_via_relay(
 
     let payload =
         serde_json::to_value(dispute.queued()).context("failed to serialize dispute request")?;
-    context.emit(wording.relay_kind, payload, wording.command, false, sink)?;
+    context.emit(wording.relay_kind, payload, wording.command, true, sink)?;
     Ok(())
 }
 

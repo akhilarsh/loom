@@ -8,6 +8,9 @@
 //! - The plan-writer skill routes v2 authors to `loom project detect` and the
 //!   contracts reference.
 //!
+//! - BLOCK-F (when the stage cannot finish): the standard, integration-verify
+//!   and knowledge-distill stable prefixes and `skills/loom-orchestration/SKILL.md`.
+//!
 //! BLOCK-E is defined here rather than in `tests_doctrine_blocks.rs`, as BLOCK-C
 //! is in `tests_doctrine_waiting.rs`: that file is a private child of
 //! `tests_doctrine`, so a sibling module cannot reach its constants.
@@ -29,6 +32,10 @@ const SKILLS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../skills");
 /// BLOCK-E - the plan-v2 review order, verbatim (DESIGN D16). The v2 review
 /// section of a stage signal and the orchestration skill carry it byte for byte.
 const BLOCK_E: &str = "**Review order (plan v2):** fix every finding, run the full gate, then run the final review round, then complete. Edit nothing after the final review round: any edit, formatting included, changes the change fingerprint and needs another round. A commit does not change it.";
+
+/// BLOCK-F - when the stage cannot finish, verbatim. Every stable prefix and the
+/// orchestration skill carry it byte for byte.
+const BLOCK_F: &str = "**When the stage cannot finish.** Fix what the stage can fix. A criterion, wiring check, contract, review finding or test-integrity event that is wrong gets a dispute: `loom stage dispute-criteria` (with `--field` for wiring and wiring-tests entries), `dispute-contract`, `dispute-findings` or `dispute-integrity`. Filing ends this session by design: the daemon starts a fresh session with the verdict, so waiting gains nothing. Never revert, weaken or postpone correct work to avoid a dispute. A need only a person can meet (a credential, a host install, a network domain or path the plan does not grant) gets `loom stage block <stage-id> \"<what is needed and why>\"`: the daemon retires the session and shows the reason to the operator. Commit your work before filing either. Never end a turn asking the operator to act while the stage is executing.";
 
 /// The body of the `## <heading>` section of `markdown`: everything after the
 /// heading line up to the next level-2 heading or the end. `None` when no line
@@ -67,6 +74,35 @@ fn block_e_agrees_across_every_surface() {
             "{label} does not carry BLOCK-E verbatim. The plan-v2 review order must be \
              byte-identical wherever it appears; reword one copy and you must reword all \
              of them. Expected to find:\n{BLOCK_E}"
+        );
+    }
+}
+
+#[test]
+fn block_f_agrees_across_every_surface() {
+    for (label, text) in [
+        (
+            "the standard stable prefix",
+            super::cache::generate_stable_prefix(),
+        ),
+        (
+            "the integration-verify stable prefix",
+            super::cache::generate_integration_verify_stable_prefix(),
+        ),
+        (
+            "the knowledge-distill stable prefix",
+            super::cache::generate_knowledge_distill_stable_prefix(),
+        ),
+        (
+            "skills/loom-orchestration/SKILL.md",
+            ORCHESTRATION_SKILL.to_string(),
+        ),
+    ] {
+        assert!(
+            text.contains(BLOCK_F),
+            "{label} does not carry BLOCK-F verbatim. The stage exit doctrine must be \
+             byte-identical wherever it appears; reword one copy and you must reword all \
+             of them. Expected to find:\n{BLOCK_F}"
         );
     }
 }
