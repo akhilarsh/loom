@@ -39,6 +39,10 @@ pub(crate) fn handle_block_stage(
             return Ok(());
         }
         stage.close_reason = Some(reason.to_string());
+        // A block closes the attempt with its own reason: an earlier attempt's
+        // crash evidence would re-arm auto-retry and hide this block from
+        // attention and from the daemon's retirement of the session.
+        stage.failure_info = None;
         stage.updated_at = Utc::now();
         Ok(())
     })
@@ -79,6 +83,39 @@ mod tests {
             stage.close_reason.as_deref(),
             Some("criterion 41 is unrunnable")
         );
+    }
+
+    #[test]
+    fn a_block_clears_a_prior_attempts_failure_info() {
+        use crate::models::failure::{FailureInfo, FailureType};
+
+        // A crash auto-retry and a `loom stage retry` without `--force` both
+        // requeue a stage with its old `failure_info` in place; a provision
+        // block records `InfrastructureError` before the operator retries it.
+        for prior in [FailureType::SessionCrash, FailureType::InfrastructureError] {
+            let temp = TempDir::new().unwrap();
+            let mut stage = Stage::new("build-api".to_string(), None);
+            stage.id = "build-api".to_string();
+            stage.status = StageStatus::Executing;
+            stage.failure_info = Some(FailureInfo {
+                failure_type: prior.clone(),
+                detected_at: Utc::now(),
+                evidence: vec!["an earlier attempt".to_string()],
+            });
+            save_stage(&stage, temp.path()).unwrap();
+
+            let response =
+                handle_block_stage(temp.path(), "build-api", "spec is ambiguous").unwrap();
+
+            assert!(matches!(response, Response::Ok), "prior {prior:?}");
+            let stage = load_stage("build-api", temp.path()).unwrap();
+            assert_eq!(stage.status, StageStatus::Blocked, "prior {prior:?}");
+            assert_eq!(stage.close_reason.as_deref(), Some("spec is ambiguous"));
+            assert!(
+                stage.failure_info.is_none(),
+                "prior {prior:?} must be cleared"
+            );
+        }
     }
 
     #[test]

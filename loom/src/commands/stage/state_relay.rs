@@ -40,6 +40,7 @@ pub(super) fn block_with_mode(
             crate::verify::transitions::update_stage(&stage_id, &work_dir, |stage| {
                 stage.try_mark_blocked()?;
                 stage.close_reason = Some(reason.clone());
+                stage.failure_info = None;
                 stage.updated_at = chrono::Utc::now();
                 Ok(())
             })?;
@@ -76,6 +77,7 @@ fn block_relayed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
@@ -144,6 +146,57 @@ mod tests {
 
         let stderr_text = String::from_utf8(sink.stderr).unwrap();
         assert!(stderr_text.contains("End your turn after the confirmation."));
+    }
+
+    /// Restores the process cwd on drop, even if the test panics:
+    /// `set_current_dir` is process-global.
+    struct CwdGuard(std::path::PathBuf);
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.0).unwrap();
+        }
+    }
+
+    /// With no daemon listening, `loom stage block` writes the stage itself;
+    /// that write must drop the failure record an earlier attempt left, or the
+    /// Blocked stage reads as a crash.
+    #[test]
+    #[serial]
+    fn a_daemonless_block_clears_a_prior_attempts_failure_info() {
+        use crate::models::failure::{FailureInfo, FailureType};
+        use crate::models::stage::{Stage, StageStatus};
+        use crate::verify::transitions::{load_stage, save_stage};
+
+        let project = TempDir::new().unwrap();
+        let work_dir = project.path().join(".loom").join("work");
+        fs::create_dir_all(&work_dir).unwrap();
+        fs::write(work_dir.join("config.toml"), "").unwrap();
+        let mut stage = Stage::new("build-api".to_string(), None);
+        stage.id = "build-api".to_string();
+        stage.status = StageStatus::Executing;
+        stage.failure_info = Some(FailureInfo {
+            failure_type: FailureType::SessionCrash,
+            detected_at: chrono::Utc::now(),
+            evidence: vec!["an earlier attempt".to_string()],
+        });
+        save_stage(&stage, &work_dir).unwrap();
+        let _cwd = CwdGuard(std::env::current_dir().unwrap());
+        std::env::set_current_dir(project.path()).unwrap();
+
+        block_with_mode(
+            "build-api".to_string(),
+            "spec is ambiguous".to_string(),
+            RelayMode::Operator,
+            project.path(),
+            &mut VecSink::default(),
+        )
+        .unwrap();
+
+        let blocked = load_stage("build-api", &work_dir).unwrap();
+        assert_eq!(blocked.status, StageStatus::Blocked);
+        assert_eq!(blocked.close_reason.as_deref(), Some("spec is ambiguous"));
+        assert!(blocked.failure_info.is_none());
     }
 
     #[test]

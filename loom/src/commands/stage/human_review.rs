@@ -171,6 +171,7 @@ fn handle_reject(stage_id: &str, reason: &str, work_dir: &Path) -> Result<()> {
     update_stage(stage_id, work_dir, |stage| {
         stage.try_reject_review(reason.to_string())?;
         stage.close_reason = Some(reason.to_string());
+        stage.failure_info = None;
         Ok(())
     })?;
 
@@ -355,6 +356,33 @@ mod tests {
 
         assert_eq!(stage.status, StageStatus::Blocked);
         assert_eq!(stage.review_reason, Some("Not needed anymore".to_string()));
+    }
+
+    /// A reject blocks the stage for a reason the operator gave, so a prior
+    /// attempt's failure record (a crash, a provision error) must not outlive
+    /// it and make the Blocked stage read as a crash.
+    #[test]
+    fn test_handle_reject_clears_a_prior_attempts_failure_info() {
+        use crate::models::failure::{FailureInfo, FailureType};
+
+        let temp = TempDir::new().unwrap();
+        setup_stage(&temp, StageStatus::NeedsHumanReview, Some("Bad criteria"));
+        update_stage("test-stage", temp.path(), |stage| {
+            stage.failure_info = Some(FailureInfo {
+                failure_type: FailureType::SessionCrash,
+                detected_at: chrono::Utc::now(),
+                evidence: vec!["an earlier attempt".to_string()],
+            });
+            Ok(())
+        })
+        .unwrap();
+
+        handle_reject("test-stage", "Not needed anymore", temp.path()).unwrap();
+
+        let rejected = load_stage("test-stage", temp.path()).unwrap();
+        assert_eq!(rejected.status, StageStatus::Blocked);
+        assert_eq!(rejected.close_reason.as_deref(), Some("Not needed anymore"));
+        assert!(rejected.failure_info.is_none());
     }
 
     #[test]
