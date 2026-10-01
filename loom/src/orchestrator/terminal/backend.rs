@@ -210,16 +210,6 @@ impl SessionBackend {
         )
     }
 
-    pub fn spawn_merge_session(
-        &self,
-        stage: &Stage,
-        session: Session,
-        signal_path: &Path,
-        repo_root: &Path,
-    ) -> Result<Session> {
-        self.spawn_main_repo_session(SessionType::Merge, stage, session, signal_path, repo_root)
-    }
-
     pub fn spawn_knowledge_session(
         &self,
         stage: &Stage,

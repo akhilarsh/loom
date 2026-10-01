@@ -1,31 +1,31 @@
 //! `loom stage merge <own> --resolved`, relayed from a Merge session.
 //!
-//! The daemon does what the CLI's `merge_resolved` does, with the daemon's
-//! own phantom-merge guard: the stage must be in a merge-failed status, the
-//! repository must hold no unmerged paths and no `MERGE_HEAD`, and
-//! `finalize_merge_resolution` must prove by ancestry that the stage's commit
-//! landed in the target before `merged = true` is written. Only then is the
-//! worktree removed, through the same `MergeLifecycle` cleanup every merge
-//! uses. Anything short of that leaves `merged = false` and says why.
+//! The resolver merged the target into the stage branch in the stage
+//! worktree. The daemon checks that worktree through pinned git
+//! (`check_resolved_worktree`: no merge in progress, no unmerged path, no
+//! tracked change, the current target tip contained), then lands the merge
+//! with `merge_stage` through the merge gate. `merged = true` is written only
+//! after ancestry proves the stage's commit is in the target. The worktree is
+//! not removed here: the resolver is still running in it, and its exit
+//! (`handle_merge_session_completed`) cleans up.
 
-use std::path::Path;
-
-use crate::git::cleanup::CleanupConfig;
-use crate::git::get_conflicting_files;
-use crate::git::merge::merge_head_exists;
+use crate::git::merge::check_resolved_worktree;
 use crate::models::session::Session;
 use crate::models::stage::StageStatus;
-use crate::orchestrator::merge_lifecycle::{finish_verified_merge, CleanupOutcome};
 
-use super::super::merge_handler::report_deferred_cleanup;
+use super::super::merge_handler::Landing;
 use super::super::persistence::Persistence;
 use super::super::Orchestrator;
 use super::Settle;
 
 impl Orchestrator {
-    /// Finalize the merge `session` resolved for `stage_id`.
-    pub(super) fn resolve_merge_from_inbox(&mut self, session: &Session, stage_id: &str) -> Settle {
-        let mut stage = match self.load_stage(stage_id) {
+    /// Land the merge `session` resolved for `stage_id`.
+    pub(super) fn resolve_merge_from_inbox(
+        &mut self,
+        _session: &Session,
+        stage_id: &str,
+    ) -> Settle {
+        let stage = match self.load_stage(stage_id) {
             Ok(stage) => stage,
             Err(error) => return Settle::Refused(format!("{error:#}")),
         };
@@ -38,57 +38,33 @@ impl Orchestrator {
                 stage.status
             ));
         }
-        if let Err(reason) = merge_is_concluded(&self.config.repo_root) {
-            return Settle::Refused(reason);
-        }
-        let merge_point = crate::git::branch::resolve_target_branch(
+        let target = crate::git::branch::resolve_target_branch(
             &self.config.base_branch,
             &self.config.repo_root,
         );
-        let message = "merge resolution relayed and verified";
-        if !self.finalize_merge_resolution(&mut stage, &session.id, stage_id, &merge_point, message)
-        {
-            return Settle::Refused(format!(
-                "no ancestry proof that stage '{stage_id}' landed in '{merge_point}'; merged stays false"
-            ));
+        if let Err(reason) = check_resolved_worktree(&self.config.repo_root, stage_id, &target) {
+            return Settle::Refused(reason);
         }
-        let outcome = finish_verified_merge(
-            stage_id,
-            &self.config.repo_root,
-            &self.config.work_dir,
-            &merge_point,
-            &CleanupConfig::quiet(),
-        );
-        report_deferred_cleanup(stage_id, &outcome);
-        Settle::Applied(Some(format!(
-            "merged into '{merge_point}'; worktree cleanup {}",
-            describe(&outcome)
-        )))
-    }
-}
-
-/// The resolution is committed: no unmerged paths and no merge in progress.
-fn merge_is_concluded(repo_root: &Path) -> Result<(), String> {
-    match get_conflicting_files(repo_root) {
-        Ok(files) if files.is_empty() => {}
-        Ok(files) => return Err(format!("unmerged paths remain: {}", files.join(", "))),
-        Err(error) => return Err(format!("could not list unmerged paths: {error:#}")),
-    }
-    match merge_head_exists(repo_root) {
-        Ok(false) => Ok(()),
-        Ok(true) => {
-            Err("a merge is still in progress (MERGE_HEAD exists); commit it first".to_string())
+        match self.land_stage_merge(stage_id, &target) {
+            Landing::Merged => Settle::Applied(Some(format!(
+                "merged into '{target}'; the worktree is removed after this session exits"
+            ))),
+            Landing::Held => Settle::Refused(format!(
+                "routed to human review: the stage branch touches a control path ({})",
+                Self::CONTROL_PATHS
+            )),
+            Landing::Conflict(paths) => Settle::Refused(format!(
+                "'{target}' moved and conflicts again in {}: merge it into this worktree \
+                 again, resolve, commit, then rerun --resolved",
+                paths.join(", ")
+            )),
+            Landing::Blocked(block) => Settle::Applied(Some(format!(
+                "resolution accepted; the merge is blocked: {block}. Loom retries it every tick"
+            ))),
+            Landing::Unproven => Settle::Refused(format!(
+                "no ancestry proof that stage '{stage_id}' landed in '{target}'; merged stays false"
+            )),
+            Landing::Failed(error) => Settle::Refused(error),
         }
-        Err(error) => Err(format!("could not check for MERGE_HEAD: {error:#}")),
-    }
-}
-
-fn describe(outcome: &CleanupOutcome) -> String {
-    match outcome {
-        CleanupOutcome::Done(_) => "done".to_string(),
-        CleanupOutcome::NothingToDo => "had nothing to remove".to_string(),
-        CleanupOutcome::Deferred => "deferred".to_string(),
-        CleanupOutcome::Refused { reason } => format!("refused: {reason}"),
-        CleanupOutcome::Failed(error) => format!("failed: {error}"),
     }
 }

@@ -1,6 +1,7 @@
-//! `merge-resolved` end to end: the daemon's ancestry proof decides, the
-//! worktree cleanup runs through `MergeLifecycle`, and the request is refused
-//! for any other session kind or stage.
+//! `merge-resolved` end to end: the daemon checks the stage worktree, lands
+//! the merge, and its ancestry proof decides; the worktree stays for the
+//! resolver's exit to remove, and the request is refused for any other
+//! session kind or stage.
 
 use std::path::Path;
 use std::process::Command;
@@ -41,26 +42,41 @@ fn git(root: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-/// A repository on `main` with the stage branch `loom/s1` one commit ahead,
-/// merged into `main` only when `merged`.
-fn repository(fx: &Fixture, merged: bool) {
+/// A repository on `main` with the stage worktree `.worktrees/s1` on `loom/s1`,
+/// one commit ahead.
+fn repository(fx: &Fixture) {
     let root = &fx.repo_root;
     git(root, &["init", "-q", "-b", "main"]);
-    std::fs::write(root.join(".gitignore"), ".loom/\n").unwrap();
+    std::fs::write(root.join(".gitignore"), ".loom/\n.worktrees/\n").unwrap();
     std::fs::write(root.join("a.txt"), "a\n").unwrap();
     git(root, &["add", "."]);
     git(root, &["commit", "-q", "-m", "base"]);
-    git(root, &["checkout", "-q", "-b", "loom/s1"]);
-    std::fs::write(root.join("b.txt"), "b\n").unwrap();
-    git(root, &["add", "b.txt"]);
-    git(root, &["commit", "-q", "-m", "stage work"]);
-    git(root, &["checkout", "-q", "main"]);
-    if merged {
-        git(
-            root,
-            &["merge", "-q", "--no-ff", "loom/s1", "-m", "merge stage"],
-        );
-    }
+    let worktree = worktree_of(fx);
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "loom/s1",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(worktree.join("b.txt"), "b\n").unwrap();
+    git(&worktree, &["add", "b.txt"]);
+    git(&worktree, &["commit", "-q", "-m", "stage work"]);
+}
+
+fn worktree_of(fx: &Fixture) -> std::path::PathBuf {
+    fx.repo_root.join(".worktrees").join(STAGE)
+}
+
+/// Commit `name` on `main`, which the stage worktree then lacks.
+fn advance_main(fx: &Fixture, name: &str, text: &str) {
+    std::fs::write(fx.repo_root.join(name), text).unwrap();
+    git(&fx.repo_root, &["add", name]);
+    git(&fx.repo_root, &["commit", "-q", "-m", "main work"]);
 }
 
 /// An orchestrator over the fixture, on the tmux lane so that building it
@@ -94,12 +110,35 @@ fn resolve(fx: &Fixture, orchestrator: &mut Orchestrator) -> Option<LedgerOutcom
     fx.outcome(&record.id, &entry.id)
 }
 
-#[test]
-fn merge_resolved_with_ancestry_proof_completes_the_stage_and_removes_its_branch() {
-    let fx = fixture();
-    repository(&fx, true);
+/// The stage as the daemon meets it after a resolver merged the (moved) target
+/// into the worktree: `main` advanced, and the worktree merged it.
+fn resolved_stage(fx: &Fixture) -> Orchestrator {
+    repository(fx);
+    advance_main(fx, "m.txt", "m\n");
+    git(
+        &worktree_of(fx),
+        &["merge", "-q", "main", "-m", "merge main"],
+    );
     fx.stage(StageStatus::MergeConflict, None);
-    let mut orchestrator = orchestrator(&fx);
+    orchestrator(fx)
+}
+
+/// A refused `--resolved`: the stage keeps `MergeConflict`, `merged` stays
+/// false, `main` does not move, and the worktree stays.
+fn assert_refused(fx: &Fixture, orchestrator: &mut Orchestrator) {
+    let main_before = git(&fx.repo_root, &["rev-parse", "main"]);
+    assert_eq!(resolve(fx, orchestrator), Some(LedgerOutcome::Refused));
+    let stage = load_stage(STAGE, &fx.work_dir).unwrap();
+    assert_eq!(stage.status, StageStatus::MergeConflict);
+    assert!(!stage.merged);
+    assert_eq!(git(&fx.repo_root, &["rev-parse", "main"]), main_before);
+    assert!(worktree_of(fx).is_dir());
+}
+
+#[test]
+fn merge_resolved_lands_the_merge_and_leaves_the_worktree_for_the_resolver_exit() {
+    let fx = fixture();
+    let mut orchestrator = resolved_stage(&fx);
 
     assert_eq!(
         resolve(&fx, &mut orchestrator),
@@ -109,28 +148,52 @@ fn merge_resolved_with_ancestry_proof_completes_the_stage_and_removes_its_branch
     let stage = load_stage(STAGE, &fx.work_dir).unwrap();
     assert_eq!(stage.status, StageStatus::Completed);
     assert!(stage.merged);
-    assert!(git(&fx.repo_root, &["branch", "--list", "loom/s1"]).is_empty());
+    assert_eq!(
+        git(&fx.repo_root, &["cat-file", "-t", "main:b.txt"]),
+        "blob"
+    );
+    assert!(worktree_of(&fx).is_dir(), "the resolver still runs there");
+    git(
+        &fx.repo_root,
+        &["rev-parse", "--verify", "refs/heads/loom/s1"],
+    );
 }
 
 #[test]
-fn merge_resolved_without_ancestry_proof_leaves_merged_false() {
+fn merge_resolved_is_refused_while_the_target_tip_is_not_merged_in() {
     let fx = fixture();
-    repository(&fx, false);
+    repository(&fx);
+    advance_main(&fx, "m.txt", "m\n");
     fx.stage(StageStatus::MergeConflict, None);
     let mut orchestrator = orchestrator(&fx);
+    assert_refused(&fx, &mut orchestrator);
+}
 
-    assert_eq!(
-        resolve(&fx, &mut orchestrator),
-        Some(LedgerOutcome::Refused)
-    );
+#[test]
+fn merge_resolved_is_refused_with_a_merge_in_progress_or_unmerged_paths() {
+    let fx = fixture();
+    repository(&fx);
+    let worktree = worktree_of(&fx);
+    std::fs::write(worktree.join("a.txt"), "stage side\n").unwrap();
+    git(&worktree, &["commit", "-q", "-am", "stage edit"]);
+    advance_main(&fx, "a.txt", "main side\n");
+    let merge = Command::new("git")
+        .args(["merge", "main"])
+        .current_dir(&worktree)
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "the merge must conflict");
+    fx.stage(StageStatus::MergeConflict, None);
+    let mut orchestrator = orchestrator(&fx);
+    assert_refused(&fx, &mut orchestrator);
+}
 
-    let stage = load_stage(STAGE, &fx.work_dir).unwrap();
-    assert_eq!(stage.status, StageStatus::MergeConflict);
-    assert!(!stage.merged);
-    assert_eq!(
-        git(&fx.repo_root, &["branch", "--list", "loom/s1"]),
-        "loom/s1"
-    );
+#[test]
+fn merge_resolved_is_refused_with_an_uncommitted_tracked_change() {
+    let fx = fixture();
+    let mut orchestrator = resolved_stage(&fx);
+    std::fs::write(worktree_of(&fx).join("b.txt"), "edited\n").unwrap();
+    assert_refused(&fx, &mut orchestrator);
 }
 
 #[test]

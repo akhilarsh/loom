@@ -1,5 +1,7 @@
+use super::resolver_spawn::test_fixtures::{orchestrator_with_conflict, repo_with_stage_branches};
 use super::Orchestrator;
 use crate::fs::session_files::{load_session_exact, save_session};
+use crate::git::MergeBlock;
 use crate::models::failure::FailureType;
 use crate::models::session::{Session, SessionExitReason, SessionStatus, SessionType};
 use crate::models::stage::{Stage, StageStatus};
@@ -59,29 +61,26 @@ fn restore_terminal_env(saved: Option<std::ffi::OsString>) {
 }
 
 #[test]
-#[serial]
 fn merge_probe_failure_does_not_consume_resolver_attempt_budget() {
-    let temp = tempfile::tempdir().unwrap();
-    let work_dir = temp.path().join(".loom").join("work");
-    let config = OrchestratorConfig {
-        work_dir: work_dir.clone(),
-        repo_root: temp.path().to_path_buf(),
-        enable_skill_routing: false,
-        ..Default::default()
-    };
-    let mut stage = Stage::new("probe-failure".to_string(), None);
-    stage.id = "probe-failure".to_string();
-    stage.status = StageStatus::MergeConflict;
-    crate::verify::transitions::save_stage(&stage, &work_dir).unwrap();
-    let saved_terminal = pin_terminal_env();
-    let constructed = Orchestrator::new(config, ExecutionGraph::build(Vec::new()).unwrap());
-    restore_terminal_env(saved_terminal);
-    let mut orchestrator = constructed.unwrap();
+    // `loom/probe` shares no history with `main`, so the merge-tree probe that
+    // lists the conflicting files fails; both branches and the worktree exist.
+    let repo = repo_with_stage_branches(&[]);
+    let root = repo.path();
+    git_ok(root, &["checkout", "-q", "--orphan", "loom/probe"]);
+    git_ok(root, &["commit", "-q", "-m", "unrelated root"]);
+    git_ok(root, &["checkout", "-q", "main"]);
+    let mut orchestrator = orchestrator_with_conflict(root, "probe");
+    let work_dir = orchestrator.config.work_dir.clone();
 
     assert_eq!(orchestrator.spawn_merge_resolution_sessions().unwrap(), 0);
-    let attempts = super::resolver_attempts::merge_resolver_attempts(&work_dir, &stage.id);
-    assert_eq!(attempts, 0);
-    assert!(!super::attempts_file(&work_dir, &stage.id).exists());
+
+    let stage = crate::verify::transitions::load_stage("probe", &work_dir).unwrap();
+    assert_eq!(stage.status, StageStatus::MergeConflict);
+    assert_eq!(
+        super::resolver_attempts::merge_resolver_attempts(&work_dir, "probe"),
+        0
+    );
+    assert!(!super::attempts_file(&work_dir, "probe").exists());
 }
 
 struct FakeRetirementBackend {
@@ -316,18 +315,13 @@ fn failed_auto_merge_moves_completed_stage_to_merge_blocked() {
     let (temp, _worktree_path) = repo_with_unmerged_stage_branch(stage_id, true);
     let root = temp.path();
     let work_dir = root.join(".loom").join("work");
-    let branch = format!("loom/{stage_id}");
-
-    // Make the merge fail deterministically: an untracked b.txt in the main
+    // Block the merge deterministically: an untracked b.txt in the main
     // checkout, with content different from the one committed on the stage
-    // branch, makes git refuse the merge ("untracked working tree files
-    // would be overwritten by merge") before MERGE_HEAD is ever set.
+    // branch, makes `merge_stage` report an uncommitted overlap without
+    // touching the checkout.
     std::fs::write(root.join("b.txt"), "conflicting untracked content").unwrap();
-
     save_completed_unmerged_stage(stage_id, &work_dir);
-
     let head_before = isolated_git(root, &["rev-parse", "main"]).stdout;
-
     let mut orchestrator = orchestrator_for(root, &work_dir);
 
     assert!(!orchestrator.try_auto_merge(stage_id));
@@ -335,29 +329,21 @@ fn failed_auto_merge_moves_completed_stage_to_merge_blocked() {
     let reloaded = crate::verify::transitions::load_stage(stage_id, &work_dir).unwrap();
     assert_eq!(reloaded.status, StageStatus::MergeBlocked);
     assert!(!reloaded.merged);
-    let failure_info = reloaded
-        .failure_info
-        .expect("failed auto-merge must record failure_info");
-    assert_eq!(failure_info.failure_type, FailureType::InfrastructureError);
-    assert!(
-        !failure_info.evidence.is_empty(),
-        "failure_info must carry the git error as evidence"
-    );
-
+    let overlap = MergeBlock::UncommittedOverlap {
+        paths: vec!["b.txt".to_string()],
+    };
+    assert_eq!(reloaded.merge_block, Some(overlap));
+    let info = reloaded.failure_info.expect("a block records failure_info");
+    assert_eq!(info.failure_type, FailureType::InfrastructureError);
+    assert!(!info.evidence.is_empty(), "failure_info carries the reason");
     let head_after = isolated_git(root, &["rev-parse", "main"]).stdout;
     assert_eq!(
         head_before, head_after,
-        "a failed auto-merge must not move 'main'"
+        "a blocked merge must not move 'main'"
     );
-    assert!(
-        isolated_git(
-            root,
-            &["rev-parse", "--verify", &format!("refs/heads/{branch}")]
-        )
-        .status
-        .success(),
-        "a failed auto-merge must not delete the stage branch"
-    );
+    let branch_ref = format!("refs/heads/loom/{stage_id}");
+    let branch = isolated_git(root, &["rev-parse", "--verify", &branch_ref]);
+    assert!(branch.status.success(), "the stage branch must survive");
 }
 
 #[test]

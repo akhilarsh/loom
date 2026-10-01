@@ -319,7 +319,7 @@
       "name": "Documentation",
       "label": "MERGE CONFLICT",
       "command": null,
-      "note": "merge resolver session-3f9a2c1e-1788720000 is running (attempt 1 of 3)",
+      "note": "merge resolver session-3f9a2c1e-1788720000 is running (attempt 1 of 6)",
       "automatic": true,
       "failure_type": null,
       "failure_label": null,

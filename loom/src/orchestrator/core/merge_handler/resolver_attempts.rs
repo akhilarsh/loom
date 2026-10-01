@@ -5,14 +5,14 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 /// Maximum number of merge-resolver sessions the daemon will spawn for a single
-/// stage before giving up and routing it to `NeedsHumanReview`. Mirrors the
-/// crash-retry cap (the default `max_retries` of 3).
+/// stage before giving up and routing it to `NeedsHumanReview`. It counts every
+/// resolver session, the first included.
 ///
 /// Without this cap a resolver that fails fast and deterministically would be
 /// respawned on every ~5s poll cycle (the kept signal file is NOT a guard —
 /// `find_live_merge_session_for_stage` deletes it once the PID is dead), each
 /// spawn on `opus`/`xhigh` → unbounded token + window burn (O-3).
-pub(crate) const MAX_MERGE_RESOLVER_ATTEMPTS: u32 = 3;
+pub(crate) const MAX_MERGE_RESOLVER_ATTEMPTS: u32 = 6;
 
 /// Directory holding per-stage merge-resolver attempt counters.
 ///
@@ -126,10 +126,8 @@ mod tests {
     }
 
     #[test]
-    fn max_merge_resolver_attempts_matches_default_retries() {
-        // The merge-resolver respawn cap should mirror the crash-retry cap so
-        // both failure-bounding mechanisms agree on "3 attempts".
-        assert_eq!(super::MAX_MERGE_RESOLVER_ATTEMPTS, 3);
+    fn max_merge_resolver_attempts_is_six() {
+        assert_eq!(super::MAX_MERGE_RESOLVER_ATTEMPTS, 6);
     }
 
     #[test]

@@ -15,7 +15,7 @@ fn a_live_merge_resolver_is_automatic_with_no_command() {
         guidance(&entry),
         (
             None,
-            Some("merge resolver session-abc is running (attempt 1 of 3)"),
+            Some("merge resolver session-abc is running (attempt 1 of 6)"),
             true
         )
     );
@@ -38,7 +38,7 @@ fn the_running_resolver_note_survives_the_daemon_wire() {
         guidance(&entry),
         (
             None,
-            Some("merge resolver session-abc is running (attempt 2 of 3)"),
+            Some("merge resolver session-abc is running (attempt 2 of 6)"),
             true
         )
     );
@@ -56,7 +56,7 @@ fn a_merge_error_without_a_resolver_waits_for_the_daemon() {
         guidance(&entry),
         (
             None,
-            Some("waiting for the daemon to start a merge resolver (2 of 3 attempts used)"),
+            Some("waiting for the daemon to start a merge resolver (2 of 6 attempts used)"),
             true
         )
     );

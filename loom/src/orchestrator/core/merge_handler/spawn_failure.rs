@@ -30,13 +30,12 @@ impl Orchestrator {
         )
     }
 
-    /// What a review reason adds when a merge resolver ran in the main
-    /// checkout: it may have left its merge in progress there.
-    pub(super) fn in_progress_merge_note(&self) -> String {
+    /// What a review reason adds when a merge resolver ran in the stage
+    /// worktree: it may have left its merge in progress there.
+    pub(super) fn in_progress_merge_note(&self, stage_id: &str) -> String {
         format!(
-            "the main checkout {} may hold an in-progress merge: run git merge --abort there, \
-             or finish that merge by hand",
-            self.config.repo_root.display()
+            "the worktree .worktrees/{stage_id} may hold an in-progress merge: run git merge \
+             --abort there, or finish that merge by hand"
         )
     }
 
@@ -54,7 +53,7 @@ impl Orchestrator {
             let causes: Vec<String> = e.chain().skip(1).map(|cause| cause.to_string()).collect();
             let reason = format!(
                 "{unstopped}; stop it by hand, then {steps}. Also, {}. Spawn error: {}",
-                self.in_progress_merge_note(),
+                self.in_progress_merge_note(stage_id),
                 causes.join(": ")
             );
             if self.route_merge_stage_to_review(stage_id, reason, None) == ReviewRoute::NotSaved {

@@ -6,7 +6,6 @@ use super::types::{Implementers, Stage, StageStatus, StageType};
 
 impl Default for Stage {
     fn default() -> Self {
-        let now = chrono::Utc::now();
         Self {
             id: String::new(),
             name: String::new(),
@@ -25,8 +24,8 @@ impl Default for Stage {
             held: false,
             parent_stage: None,
             child_stages: Vec::new(),
-            created_at: now,
-            updated_at: now,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
             completed_at: None,
             started_at: None,
             duration_secs: None,
@@ -48,6 +47,7 @@ impl Default for Stage {
             merged: false,
             merge_assumed: false,
             merge_conflict: false,
+            merge_block: None,
             verification_status: Default::default(),
             context_ceiling_tokens: None,
             plan_overview: None,

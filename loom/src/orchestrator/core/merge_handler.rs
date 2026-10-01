@@ -5,325 +5,34 @@ use chrono::Utc;
 
 use crate::git::branch::branch_name_for_stage;
 use crate::git::cleanup::CleanupConfig;
-use crate::git::merge::{check_merge_state, MergeState};
 use crate::git::merge::{merge_tree, verify_merge_succeeded, TreeMerge};
 use crate::models::failure::{FailureInfo, FailureType};
 use crate::models::session::Session;
 use crate::models::stage::StageStatus;
-use crate::orchestrator::auto_merge::{attempt_auto_merge, is_auto_merge_enabled, AutoMergeResult};
+use crate::orchestrator::auto_merge::{attempt_auto_merge, is_auto_merge_enabled};
 use crate::orchestrator::merge_lifecycle::{self, CleanupOutcome, MergeLifecycle};
-use crate::orchestrator::signals::{generate_merge_signal, remove_signal};
+use crate::orchestrator::signals::generate_merge_signal;
 use crate::verify::transitions::load_stage;
 
 use super::persistence::Persistence;
 use super::{clear_status_line, Orchestrator};
 
+mod auto_merge_outcome;
+mod blocked_retry;
+mod landing;
 mod merge_gate;
 pub(super) mod resolver_attempts;
+mod resolver_exit;
 mod resolver_spawn;
 mod resolver_stop;
 mod review_route;
 mod spawn_failure;
 
+pub(super) use landing::Landing;
 use resolver_attempts::{attempts_file, ReservedAttempt};
 use review_route::awaits_merge;
 
 impl Orchestrator {
-    pub(super) fn handle_merge_session_completed(
-        &mut self,
-        session_id: &str,
-        stage_id: &str,
-    ) -> Result<()> {
-        clear_status_line();
-        eprintln!("Merge session '{session_id}' completed for stage '{stage_id}'");
-
-        // Check if the merge was successful and update stage accordingly
-        let mut stage = self.load_stage(stage_id)?;
-
-        // Determine the merge point to check against
-        let merge_point = crate::git::branch::resolve_target_branch(
-            &self.config.base_branch,
-            &self.config.repo_root,
-        );
-
-        // If stage is already marked as merged, do NOT trust the flag blindly
-        // for non-knowledge stages. Derive commit if missing, then verify
-        // ancestry; only treat as merged if the verification passes. Trust
-        // merged=true only for knowledge stages (no branch by design).
-        if stage.merged {
-            let actually_merged = if stage.stage_type == crate::models::stage::StageType::Knowledge
-            {
-                true
-            } else {
-                let commit = match stage.completed_commit.clone() {
-                    Some(c) => Some(c),
-                    None => crate::git::get_branch_head(
-                        &branch_name_for_stage(stage_id),
-                        &self.config.repo_root,
-                    )
-                    .ok(),
-                };
-                commit
-                    .map(|c| {
-                        verify_merge_succeeded(&c, &merge_point, &self.config.repo_root)
-                            .unwrap_or(false)
-                    })
-                    .unwrap_or(false)
-            };
-
-            if actually_merged {
-                // Merge resolved - clean up signal and active session
-                if let Err(e) = remove_signal(session_id, &self.config.work_dir) {
-                    eprintln!("Warning: Failed to remove merge signal: {e}");
-                }
-                self.active_sessions.remove(stage_id);
-                self.clear_merge_resolver_attempts(stage_id);
-                clear_status_line();
-                eprintln!("Stage '{stage_id}' merge completed successfully");
-                return Ok(());
-            }
-
-            tracing::error!(
-                stage_id = %stage_id,
-                "Merge session ended with merged=true but ancestry verification failed; \
-                 falling through to verify_and_finalize_merge to revert."
-            );
-            match self.update_stage(stage_id, |current| {
-                current.merged = false;
-                Ok(())
-            }) {
-                Ok(updated) => stage = updated,
-                Err(error) => tracing::warn!(
-                    stage_id = %stage_id,
-                    %error,
-                    "Failed to revert merged=true after failed verification"
-                ),
-            }
-            // Fall through to the verify_and_finalize logic below.
-        }
-
-        // Check if the merge was actually successful by examining git state.
-        // check_merge_state uses completed_commit + git ancestry (primary) and
-        // falls back to metadata flags. With the reordered check, git ancestry
-        // takes priority over the merge_conflict flag.
-        let merge_state = check_merge_state(&stage, &merge_point, &self.config.repo_root);
-
-        // If check_merge_state couldn't determine success (Conflict/Unknown — e.g.,
-        // completed_commit was never set), fall back to checking the branch HEAD directly.
-        let merge_state = match merge_state {
-            Ok(MergeState::Conflict) | Ok(MergeState::Unknown) => {
-                let branch_name = branch_name_for_stage(stage_id);
-                match crate::git::get_branch_head(&branch_name, &self.config.repo_root) {
-                    Ok(head) => {
-                        match crate::git::branch::is_ancestor_of(
-                            &head,
-                            &merge_point,
-                            &self.config.repo_root,
-                        ) {
-                            Ok(true) => Ok(MergeState::Merged),
-                            _ => merge_state,
-                        }
-                    }
-                    Err(_) => {
-                        // Branch doesn't exist — may have been cleaned up after merge
-                        if !crate::git::branch_exists(&branch_name, &self.config.repo_root)
-                            .unwrap_or(true)
-                        {
-                            Ok(MergeState::BranchMissing)
-                        } else {
-                            merge_state
-                        }
-                    }
-                }
-            }
-            other => other,
-        };
-
-        match merge_state {
-            Ok(MergeState::Merged) => {
-                // `finalize_merge_resolution` re-verifies git ancestry before
-                // writing merged=true (phantom-merge invariant). If verification
-                // unexpectedly fails here, it routes to the surface-to-user arm
-                // instead of lying about merge status.
-                if !self.finalize_merge_resolution(
-                    &mut stage,
-                    session_id,
-                    stage_id,
-                    &merge_point,
-                    "merge verified and marked as complete",
-                ) {
-                    self.surface_unresolved_merge(stage_id);
-                }
-            }
-            Ok(MergeState::BranchMissing) => {
-                // BranchMissing means a commit was recorded but is NOT an ancestor
-                // of the merge point AND the branch is gone — i.e. stranded work,
-                // not a completed merge. Writing merged=true here is the documented
-                // phantom-merge bug. `finalize_merge_resolution` ancestry-checks and
-                // will return false; route to surface-to-user without lying.
-                if !self.finalize_merge_resolution(
-                    &mut stage,
-                    session_id,
-                    stage_id,
-                    &merge_point,
-                    "branch cleaned up after verified merge",
-                ) {
-                    tracing::error!(
-                        stage_id = %stage_id,
-                        "Merge session ended with branch missing but no ancestry proof \
-                         that the work landed in the target. NOT marking merged=true \
-                         (phantom-merge prevention). Run `loom stage merge {}` manually.",
-                        stage_id
-                    );
-                    self.surface_unresolved_merge(stage_id);
-                }
-            }
-            Ok(MergeState::Pending) | Ok(MergeState::Conflict) | Ok(MergeState::Unknown) => {
-                // PID dead but merge not resolved - remove active session but KEEP signal
-                // file so the user-facing instructions below are surfaced. NOTE: the
-                // signal does NOT prevent respawn — `find_live_merge_session_for_stage`
-                // deletes it once the PID is dead. Respawn is bounded by the per-stage
-                // resolver attempt cap in `spawn_merge_resolution_sessions` (see O-3).
-                self.surface_unresolved_merge(stage_id);
-            }
-            Err(e) => {
-                // PID dead but merge state unknown - remove active session but KEEP signal
-                // file so the user-facing instructions below are surfaced. As above, the
-                // signal is not a respawn guard; the attempt cap bounds respawning.
-                eprintln!("Warning: Failed to verify merge state: {e}");
-                self.surface_unresolved_merge(stage_id);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Remove active-session tracking for an unresolved merge and print
-    /// user-facing recovery instructions.
-    ///
-    /// Used by all non-finalizing arms of `handle_merge_session_completed`.
-    /// The stage is left in its current (MergeConflict/MergeBlocked) status so
-    /// it remains visible to the user and to `spawn_merge_resolution_sessions`.
-    fn surface_unresolved_merge(&mut self, stage_id: &str) {
-        self.active_sessions.remove(stage_id);
-        clear_status_line();
-        eprintln!("Merge may not be complete. To finish:");
-        eprintln!("  1. Verify the merge was successful: git status");
-        eprintln!("  2. If merge is complete, run: loom worktree remove {stage_id}");
-        eprintln!("  3. If issues remain, run: loom stage merge {stage_id}");
-    }
-
-    /// Finalize a resolved merge: write `merged=true`, transition to Completed,
-    /// update the graph, and clean up the signal + active session.
-    ///
-    /// PHANTOM-MERGE INVARIANT: this is a daemon-side automated path, so it MUST
-    /// NOT write `merged=true` without git ancestry proof. Before finalizing it
-    /// derives `completed_commit` from the stage branch HEAD when missing and
-    /// requires `verify_merge_succeeded(commit, merge_point)` to return
-    /// `Ok(true)`. If that proof is unavailable the stage is left unchanged and
-    /// the function returns `false` so the caller can surface the situation to
-    /// the user instead of lying about merge status. Mirrors
-    /// `verify_and_finalize_merge`.
-    ///
-    /// Returns `true` only when the merge was ancestry-verified and finalized.
-    pub(super) fn finalize_merge_resolution(
-        &mut self,
-        stage: &mut crate::models::stage::Stage,
-        session_id: &str,
-        stage_id: &str,
-        merge_point: &str,
-        log_message: &str,
-    ) -> bool {
-        // Derive completed_commit from the branch HEAD if missing so we have
-        // something to ancestry-check. If neither is available, refuse.
-        if stage.completed_commit.is_none() {
-            let branch_name = branch_name_for_stage(stage_id);
-            match crate::git::get_branch_head(&branch_name, &self.config.repo_root) {
-                Ok(head) => stage.completed_commit = Some(head),
-                Err(_) => {
-                    tracing::error!(
-                        stage_id = %stage_id,
-                        "Cannot finalize merge: no completed_commit and branch HEAD \
-                         unavailable; refusing to write merged=true (phantom-merge prevention)"
-                    );
-                    return false;
-                }
-            }
-        }
-
-        // Safe to unwrap: ensured Some above.
-        let completed_commit = stage.completed_commit.clone().unwrap();
-        match verify_merge_succeeded(&completed_commit, merge_point, &self.config.repo_root) {
-            Ok(true) => {}
-            other => {
-                tracing::error!(
-                    stage_id = %stage_id,
-                    commit = %completed_commit,
-                    target = %merge_point,
-                    verified = ?other,
-                    "Refusing to finalize merge: ancestry verification did not pass \
-                     (phantom-merge prevention)"
-                );
-                return false;
-            }
-        }
-
-        let updated = self.update_stage(stage_id, |current| {
-            if !matches!(
-                current.status,
-                StageStatus::MergeConflict | StageStatus::MergeBlocked | StageStatus::Completed
-            ) {
-                anyhow::bail!(
-                    "stage status changed to {} during merge verification",
-                    current.status
-                );
-            }
-            match current.completed_commit.as_deref() {
-                Some(fresh) if fresh != completed_commit => {
-                    anyhow::bail!("completed_commit changed during merge verification")
-                }
-                None => current.completed_commit = Some(completed_commit.clone()),
-                Some(_) => {}
-            }
-            current.merged = true;
-            current.merge_conflict = false;
-            if matches!(
-                current.status,
-                StageStatus::MergeConflict | StageStatus::MergeBlocked
-            ) {
-                if let Err(error) = current.try_transition(StageStatus::Completed) {
-                    current.force_status_with_reason(
-                        StageStatus::Completed,
-                        &format!("merge resolved but transition was illegal: {error}"),
-                    );
-                }
-            }
-            Ok(())
-        });
-        match updated {
-            Ok(updated) => *stage = updated,
-            Err(error) => {
-                tracing::warn!(stage_id = %stage_id, %error, "Failed to persist merge resolution");
-                return false;
-            }
-        }
-
-        self.graph.set_node_merged(stage_id, true);
-        if let Err(e) = self.graph.mark_completed(stage_id) {
-            eprintln!("Warning: Failed to mark stage as completed in graph: {e}");
-        }
-
-        if let Err(e) = remove_signal(session_id, &self.config.work_dir) {
-            eprintln!("Warning: Failed to remove merge signal: {e}");
-        }
-        self.active_sessions.remove(stage_id);
-        self.clear_merge_resolver_attempts(stage_id);
-
-        clear_status_line();
-        eprintln!("Stage '{stage_id}' {log_message}");
-        true
-    }
-
     /// Verify merge succeeded and update stage state accordingly.
     ///
     /// This helper encapsulates the common pattern of verifying a merge via git ancestry
@@ -415,6 +124,7 @@ impl Orchestrator {
                 Some(_) => {}
             }
             current.merged = true;
+            current.clear_merge_block();
             Ok(())
         });
         match updated {
@@ -440,6 +150,7 @@ impl Orchestrator {
     ) {
         let first_line = error.lines().next().unwrap_or(error);
         let updated = self.update_stage(stage_id, |current| {
+            current.clear_merge_block();
             current.failure_info = Some(FailureInfo {
                 failure_type: FailureType::InfrastructureError,
                 detected_at: Utc::now(),
@@ -471,9 +182,9 @@ impl Orchestrator {
     /// Attempt auto-merge for a completed stage.
     ///
     /// Returns `true` if the merge succeeded or was not needed (stage can be marked Completed).
-    /// Returns `false` if the merge failed with conflicts (stage should be marked MergeConflict).
+    /// Returns `false` if the merge did not land: the stage is `MergeConflict` (the spawn
+    /// loop gives it a resolver), `MergeBlocked` (retried every tick) or in human review.
     pub(super) fn try_auto_merge(&mut self, stage_id: &str) -> bool {
-        // Load the stage to check auto_merge setting
         let mut stage = match load_stage(stage_id, &self.config.work_dir) {
             Ok(s) => s,
             Err(e) => {
@@ -483,208 +194,43 @@ impl Orchestrator {
             }
         };
 
-        // If stage is already merged (e.g., by `loom stage complete`), skip auto-merge.
-        // Without this guard, the daemon would redundantly attempt to merge an already-merged
-        // stage. If cleanup partially removed the branch but not the worktree directory,
-        // the redundant merge would fail and force-overwrite the Completed status to
-        // MergeConflict/MergeBlocked — even though Completed is a terminal state.
-        // This would spawn a spurious resolver session while the dependent stage was
-        // already started by sync_graph_with_stage_files.
+        // An already merged stage (e.g. by `loom stage complete`) is not merged
+        // again: a redundant merge after a partial cleanup would overwrite the
+        // terminal Completed status with MergeConflict/MergeBlocked.
         if stage.merged {
             self.cleanup_already_merged(stage_id);
             return true;
         }
 
-        // Load plan-level auto_merge setting from config.
-        //
-        // O-20: distinguish "no plan-level setting exists" (legitimate None →
-        // fall back to the daemon/stage default) from "the plan file exists but
-        // could not be read or parsed". In the latter case a plan-level
-        // `auto_merge: false` may be present-but-unseen; silently defaulting to
-        // enabled would merge a stage the user asked NOT to auto-merge. Log a
-        // warning so the fallback is visible rather than silent.
+        // O-20: `read_plan_level_auto_merge` warns about an unreadable plan.
         let plan_auto_merge = self.read_plan_level_auto_merge(stage_id);
-
         if !is_auto_merge_enabled(&stage, self.config.auto_merge, plan_auto_merge) {
-            // Auto-merge disabled - skip the merge attempt and leave the stage as
-            // Completed + !merged. The user will run `loom stage merge <id>`
-            // manually when ready. DO NOT write merged=true here — that would
-            // silently satisfy downstream dependency checks without the work
-            // actually being merged.
-            tracing::info!(
-                stage_id = %stage_id,
-                "auto-merge disabled; leaving stage as Completed + !merged \
-                 (run `loom stage merge {}` to merge manually)",
-                stage_id
-            );
+            // Leave the stage Completed + !merged for `loom stage merge`; merged=true
+            // here would satisfy dependents without a merge.
+            tracing::info!(stage_id = %stage_id, "auto-merge disabled; run `loom stage merge` to merge manually");
             return true;
         }
 
-        // Get target branch (from config or default branch of the repo)
         let target_branch = crate::git::branch::resolve_target_branch(
             &self.config.base_branch,
             &self.config.repo_root,
         );
-
-        // Phantom-merge guard: refuse to auto-merge a stage whose branch
-        // EXISTS but has zero commits beyond the merge target. Without this
-        // check, an empty branch (HEAD == target HEAD) silently "merges" as a
-        // no-op: `completed_commit` is filled from branch HEAD (which equals
-        // target HEAD), `attempt_auto_merge` returns AlreadyUpToDate /
-        // FastForward, and `is_ancestor_of(target_HEAD, target)` trivially
-        // passes — resulting in `merged: true` for work that was never
-        // committed. Leave the stage at Completed + !merged so dependents do
-        // not unblock. Skip the guard when the branch is missing — that path
-        // already lands in the `NoBranch` / `Err` arms below with their own
-        // recovery handling.
-        let stage_branch = branch_name_for_stage(stage_id);
-        let stage_branch_exists =
-            crate::git::branch::branch_exists(&stage_branch, &self.config.repo_root)
-                .unwrap_or(false);
-        if stage_branch_exists {
-            if self.merge_gate_blocks(stage_id, &stage_branch, &target_branch) {
-                return false;
-            }
-            match crate::git::branch::commits_ahead_of(
-                &stage_branch,
-                &target_branch,
-                &self.config.repo_root,
-            ) {
-                Ok(0) => {
-                    tracing::error!(
-                        stage_id = %stage_id,
-                        branch = %stage_branch,
-                        target = %target_branch,
-                        "Stage branch has zero commits beyond target; routing to human review"
-                    );
-                    let reason = format!(
-                        "branch {stage_branch} has zero commits beyond {target_branch}: the \
-                         agent never committed work for this stage. Re-queue it with \
-                         `loom stage human-review {stage_id} --approve`, or redo it manually."
-                    );
-                    self.route_to_human_review(stage_id, reason, None);
-                    return false;
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        stage_id = %stage_id,
-                        branch = %stage_branch,
-                        error = %e,
-                        "commits_ahead_of probe failed; proceeding with merge attempt"
-                    );
-                }
-            }
+        if self.auto_merge_precheck_blocks(stage_id, &target_branch) {
+            return false;
         }
-
         self.capture_completed_commit(&mut stage, stage_id);
 
         clear_status_line();
         eprintln!("Auto-merging stage '{stage_id}'...");
-
         MergeLifecycle::new(stage_id, &self.config.repo_root, &self.config.work_dir)
             .reconcile_overlay();
-
-        match attempt_auto_merge(
+        let outcome = attempt_auto_merge(
             &stage,
             &self.config.repo_root,
             &self.config.work_dir,
             &target_branch,
-            &self.backend,
-        ) {
-            Ok(AutoMergeResult::Success {
-                files_changed,
-                insertions,
-                deletions,
-            }) => self.finalize_auto_merge(
-                &mut stage,
-                stage_id,
-                &target_branch,
-                &format!("merged: {files_changed} files, +{insertions} -{deletions}"),
-            ),
-            Ok(AutoMergeResult::FastForward) => self.finalize_auto_merge(
-                &mut stage,
-                stage_id,
-                &target_branch,
-                "merged (fast-forward)",
-            ),
-            Ok(AutoMergeResult::AlreadyUpToDate) => {
-                self.finalize_auto_merge(&mut stage, stage_id, &target_branch, "already up to date")
-            }
-            Ok(AutoMergeResult::ConflictResolutionSpawned {
-                session,
-                conflicting_files,
-            }) => {
-                // CRITICAL: Transition stage to MergeConflict status to prevent dependent stages
-                // from starting before conflicts are resolved
-                let updated = self.update_stage(stage_id, |current| {
-                    if let Err(error) = current.try_mark_merge_conflict() {
-                        current.force_status_with_reason(
-                            StageStatus::MergeConflict,
-                            &format!(
-                                "auto-merge spawned a conflict resolver but transition was \
-                                 illegal: {error}"
-                            ),
-                        );
-                    }
-                    Ok(())
-                });
-                let persisted = match updated {
-                    Ok(updated) => Some(updated),
-                    Err(error) => {
-                        eprintln!("Warning: Failed to save stage merge conflict status: {error}");
-                        None
-                    }
-                };
-
-                // Also update the graph to reflect MergeConflict status
-                if persisted
-                    .as_ref()
-                    .is_some_and(|stage| stage.status == StageStatus::MergeConflict)
-                {
-                    if let Err(e) = self.graph.mark_status(stage_id, StageStatus::MergeConflict) {
-                        eprintln!("Warning: Failed to mark stage as merge conflict in graph: {e}");
-                    }
-                }
-
-                // Track the merge session so the monitor can detect its lifecycle
-                let session = *session;
-                let session_id = session.id.clone();
-                self.active_sessions
-                    .insert(stage_id.to_string(), session.clone());
-                if let Err(e) = self.save_session(&session) {
-                    eprintln!("Warning: Failed to save merge session: {e}");
-                    // Keep it tracked: with no record on disk, the tracked session is
-                    // what holds the stage against a second resolver while it lives
-                    // (`cleanup_stale_merge_session`).
-                }
-
-                clear_status_line();
-                eprintln!(
-                    "Stage '{stage_id}' has {} conflict(s). Spawned resolution session: {session_id}",
-                    conflicting_files.len()
-                );
-
-                // Return false to indicate merge did not succeed - stage should NOT be marked Completed
-                false
-            }
-            Ok(AutoMergeResult::NoWorktree) => {
-                // Nothing to merge - stage may have been created without worktree
-                self.verify_and_finalize_merge(&mut stage, stage_id, &target_branch)
-            }
-            Err(e) => {
-                clear_status_line();
-                tracing::error!(
-                    stage_id = %stage_id,
-                    error = %e,
-                    "Auto-merge failed"
-                );
-                // MergeBlocked with the error recorded, so status shows it and `loom stage merge` can retry.
-                self.persist_merge_blocked(&mut stage, stage_id, &format!("{e:#}"));
-                // Return false - merge failed, stage should not be marked Completed
-                false
-            }
-        }
+        );
+        self.apply_auto_merge_outcome(&mut stage, stage_id, &target_branch, outcome)
     }
 
     /// Run the deferred worktree/branch cleanup for a stage already marked
@@ -848,7 +394,10 @@ impl Orchestrator {
                 continue;
             }
 
-            if self.spawn_resolver_if_due(&stage) {
+            // A typed merge block needs no resolver: retry the merge itself.
+            if stage.status == StageStatus::MergeBlocked && stage.merge_block.is_some() {
+                self.retry_blocked_merge(&stage);
+            } else if self.spawn_resolver_if_due(&stage) {
                 spawned += 1;
             }
         }
@@ -890,31 +439,13 @@ impl Orchestrator {
             &self.config.repo_root,
         );
 
-        // Get conflicting files from a merge-tree dry run (touches no working
-        // tree). Skipped when MERGE_HEAD is already set: the signal then reads
-        // the active merge's unmerged paths directly.
-        let conflicting_files = if crate::git::merge::merge_head_exists(&self.config.repo_root)? {
-            Vec::new()
-        } else {
+        // Conflicting files from a merge-tree dry run, which touches no working tree.
+        let conflicting_files =
             match merge_tree(&self.config.repo_root, &target_branch, &source_branch)? {
                 TreeMerge::Clean { .. } => Vec::new(),
                 TreeMerge::Conflict { paths } => paths,
-            }
-        };
-
+            };
         let session = Session::new_merge(source_branch.clone(), target_branch.clone());
-
-        // Detect any active merge in the main repo so its unmerged paths
-        // stand in when the probe above was skipped.
-        let in_progress = crate::git::merge::detect_in_progress_merge_at(&self.config.repo_root)?;
-        let conflicting_files = if conflicting_files.is_empty() {
-            match in_progress.as_ref().map(|m| &m.state) {
-                Some(crate::git::merge::ActiveMergeState::HasUnmergedPaths(paths)) => paths.clone(),
-                _ => conflicting_files,
-            }
-        } else {
-            conflicting_files
-        };
 
         let signal_path = generate_merge_signal(
             &session,
@@ -928,25 +459,25 @@ impl Orchestrator {
 
         let spawned_session = self.launch_resolver(stage, session, &signal_path, attempt)?;
 
-        clear_status_line();
-        eprintln!(
-            "Spawned merge resolution session for stage '{}': {}",
-            stage.id, spawned_session.id
-        );
-
-        if !conflicting_files.is_empty() {
-            eprintln!("  Conflicting files:");
-            for file in &conflicting_files {
-                eprintln!("    - {file}");
-            }
-        }
-
+        announce_resolver(&stage.id, &spawned_session.id, &conflicting_files);
         self.active_sessions
             .insert(stage.id.clone(), spawned_session.clone());
         if let Err(error) = self.save_session(&spawned_session) {
             eprintln!("Warning: Failed to save the merge resolver's session record: {error:#}");
         }
         Ok(())
+    }
+}
+
+/// Tell the console which resolver spawned for `stage_id` and what it merges.
+fn announce_resolver(stage_id: &str, session_id: &str, conflicting_files: &[String]) {
+    clear_status_line();
+    eprintln!("Spawned merge resolution session for stage '{stage_id}': {session_id}");
+    if !conflicting_files.is_empty() {
+        eprintln!("  Conflicting files:");
+        for file in conflicting_files {
+            eprintln!("    - {file}");
+        }
     }
 }
 

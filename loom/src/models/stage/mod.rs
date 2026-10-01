@@ -1,8 +1,10 @@
 mod checks;
 mod defaults;
 pub mod dispute_budgets;
+mod merge_block;
 mod methods;
 mod persisted;
+mod status_display;
 mod transitions;
 mod types;
 

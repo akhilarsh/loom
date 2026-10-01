@@ -156,7 +156,7 @@ impl Orchestrator {
             return None;
         }
         let steps = self.manual_merge_steps(stage_id);
-        let note = self.in_progress_merge_note();
+        let note = self.in_progress_merge_note(stage_id);
         Some(format!("{}; {note}. Then {steps}", notes.join("; ")))
     }
 

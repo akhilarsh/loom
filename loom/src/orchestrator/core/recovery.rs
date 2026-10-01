@@ -774,11 +774,11 @@ impl Recovery for Orchestrator {
         // `loom stage complete --no-verify` completion followed by a daemon
         // restart, and a derived commit that ancestry reports Ok(false).
         //
-        // A failed attempt leaves the stage MergeBlocked with the error in
-        // failure_info; only auto-merge-disabled stages remain Completed +
-        // !merged. `merge_retry_attempted` is in-memory only: the entry stays
-        // in the set so a stage is not retried every 5-second poll, and
-        // user-driven `loom stage merge` is independent of it.
+        // A conflict leaves the stage MergeConflict (the spawn loop gives it a
+        // resolver) and a typed block leaves it MergeBlocked with `merge_block`
+        // (the spawn loop retries it every tick). `merge_retry_attempted` is in
+        // memory only: the entry stays so a stage is not re-merged every poll,
+        // and `loom stage merge` is independent of it.
         for stuck_id in stuck_completed_stage_ids {
             if self.merge_retry_attempted.contains(&stuck_id) {
                 continue;

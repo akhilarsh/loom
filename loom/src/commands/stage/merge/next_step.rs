@@ -130,24 +130,24 @@ mod tests {
     #[test]
     fn budget_left_promises_a_resolver_unless_the_gate_holds_the_branch() {
         let running = next_step(StageStatus::MergeConflict, 0, true);
-        assert!(running.starts_with("The running daemon spawns merge resolver 1 of 3"));
+        assert!(running.starts_with("The running daemon spawns merge resolver 1 of 6"));
         assert!(running.contains("unless branch loom/s touches a control path"));
         assert!(running.contains(".mcp.json") && running.contains("human review"));
         assert!(running.contains("or branch loom/s or target branch trunk is missing"));
 
         let stopped = next_step(StageStatus::MergeBlocked, 2, false);
         assert!(stopped.starts_with("No daemon is running. Once `loom run` from /repo"));
-        assert!(stopped.contains("spawns merge resolver 3 of 3"));
+        assert!(stopped.contains("spawns merge resolver 3 of 6"));
     }
 
     #[test]
     fn a_spent_budget_promises_human_review_and_no_resolver() {
         for running in [true, false] {
-            let step = next_step(StageStatus::MergeConflict, 3, running);
+            let step = next_step(StageStatus::MergeConflict, 6, running);
             assert!(step.contains("routes this stage to human review"), "{step}");
             assert!(!step.contains("spawns"), "{step}");
         }
-        let stopped = next_step(StageStatus::MergeBlocked, 3, false);
+        let stopped = next_step(StageStatus::MergeBlocked, 6, false);
         assert!(stopped.starts_with("No daemon is running"));
     }
 

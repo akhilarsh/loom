@@ -1,0 +1,110 @@
+//! The two halves of `try_auto_merge` around the merge itself: the guards
+//! before it and the handling of its outcome after it.
+
+use anyhow::Result;
+
+use crate::git::branch::{branch_name_for_stage, commits_ahead_of};
+use crate::models::stage::Stage;
+use crate::orchestrator::auto_merge::AutoMergeResult;
+use crate::orchestrator::core::{clear_status_line, Orchestrator};
+
+use super::landing::report_backup_ref;
+
+impl Orchestrator {
+    /// Returns true when a guard stops the auto-merge of `stage_id` into
+    /// `target_branch`: the merge gate holds the branch, or the branch has no
+    /// commit beyond the target.
+    ///
+    /// Phantom-merge guard: an existing branch with zero commits beyond the
+    /// target would "merge" as a no-op, `completed_commit` would be filled from
+    /// the branch HEAD (equal to the target HEAD), ancestry would pass, and
+    /// `merged: true` would stand for work that was never committed. Such a
+    /// stage goes to human review, so dependents do not unblock. A missing
+    /// branch skips the guards: the merge attempt reports it with its own
+    /// recovery handling.
+    pub(super) fn auto_merge_precheck_blocks(&mut self, stage_id: &str, target: &str) -> bool {
+        let branch = branch_name_for_stage(stage_id);
+        let exists =
+            crate::git::branch::branch_exists(&branch, &self.config.repo_root).unwrap_or(false);
+        if !exists {
+            return false;
+        }
+        if self.merge_gate_blocks(stage_id, &branch, target) {
+            return true;
+        }
+        match commits_ahead_of(&branch, target, &self.config.repo_root) {
+            Ok(0) => {
+                tracing::error!(
+                    stage_id = %stage_id,
+                    %branch,
+                    %target,
+                    "Stage branch has zero commits beyond target; routing to human review"
+                );
+                let reason = format!(
+                    "branch {branch} has zero commits beyond {target}: the agent never \
+                     committed work for this stage. Re-queue it with `loom stage human-review \
+                     {stage_id} --approve`, or redo it manually."
+                );
+                self.route_to_human_review(stage_id, reason, None);
+                true
+            }
+            Ok(_) => false,
+            Err(error) => {
+                tracing::warn!(
+                    stage_id = %stage_id,
+                    %branch,
+                    %error,
+                    "commits_ahead_of probe failed; proceeding with merge attempt"
+                );
+                false
+            }
+        }
+    }
+
+    /// Act on the result of `attempt_auto_merge`; returns whether the stage
+    /// merged. A conflict moves the stage to `MergeConflict` and spawns
+    /// nothing here: the spawn loop gives it a counted resolver. A block is
+    /// recorded on the stage and retried every tick.
+    pub(super) fn apply_auto_merge_outcome(
+        &mut self,
+        stage: &mut Stage,
+        stage_id: &str,
+        target: &str,
+        outcome: Result<AutoMergeResult>,
+    ) -> bool {
+        match outcome {
+            Ok(AutoMergeResult::Success {
+                files_changed,
+                insertions,
+                deletions,
+                backup_ref,
+            }) => {
+                report_backup_ref(stage_id, backup_ref.as_deref());
+                let summary = format!("merged: {files_changed} files, +{insertions} -{deletions}");
+                self.finalize_auto_merge(stage, stage_id, target, &summary)
+            }
+            Ok(AutoMergeResult::AlreadyUpToDate) => {
+                self.finalize_auto_merge(stage, stage_id, target, "already up to date")
+            }
+            Ok(AutoMergeResult::Conflict { conflicting_files }) => {
+                self.record_merge_conflict(stage_id, conflicting_files.len());
+                false
+            }
+            Ok(AutoMergeResult::Blocked(block)) => {
+                self.record_merge_block(stage_id, block);
+                false
+            }
+            // Nothing to merge: the stage may have been created without a worktree.
+            Ok(AutoMergeResult::NoWorktree) => {
+                self.verify_and_finalize_merge(stage, stage_id, target)
+            }
+            Err(error) => {
+                clear_status_line();
+                tracing::error!(stage_id = %stage_id, %error, "Auto-merge failed");
+                // MergeBlocked with the error recorded, so status shows it and `loom stage merge` can retry.
+                self.persist_merge_blocked(stage, stage_id, &format!("{error:#}"));
+                false
+            }
+        }
+    }
+}

@@ -1,7 +1,7 @@
 //! Shared helpers for signal generation, formatting, and parsing.
 //!
-//! This module consolidates duplicated patterns across the 7 signal types
-//! (standard, merge, merge-conflict, knowledge, recovery, and metrics).
+//! This module consolidates duplicated patterns across the signal types
+//! (standard, merge, knowledge, recovery, and metrics).
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ pub(super) use super::retrieval::{
 // sibling module - a cohesive cluster of "render one outgoing signal
 // section" functions, split out to keep this grab-bag file under the line
 // budget. Re-exported here so every existing `helpers::format_*_section`
-// call site (merge.rs, merge_conflict.rs, knowledge.rs) keeps working
+// call site (merge.rs, knowledge.rs) keeps working
 // unchanged.
 pub(super) use super::section_formatters::{
     format_conflicting_files_section, format_execution_rules_section,
@@ -63,8 +63,7 @@ pub(super) fn write_signal_file(
 /// Returns a map from section name to the non-empty trimmed lines in that section.
 /// Lines before the first `## ` header are stored under the empty string key.
 ///
-/// Replaces the 3 near-identical section-parsing loops in merge.rs,
-/// and merge_conflict.rs.
+/// Replaces the near-identical section-parsing loops of the signal parsers.
 pub(super) fn parse_signal_sections(content: &str) -> HashMap<String, Vec<String>> {
     let mut sections: HashMap<String, Vec<String>> = HashMap::new();
     let mut current_section = String::new();

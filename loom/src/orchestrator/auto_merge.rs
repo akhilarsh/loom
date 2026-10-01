@@ -2,17 +2,14 @@
 //!
 //! This module provides functionality to automatically merge stage branches
 //! when stages reach the Completed status. It integrates with the existing
-//! merge infrastructure and can spawn conflict resolution sessions when needed.
+//! merge infrastructure; a conflict is reported to the caller, which hands the
+//! stage to the daemon's resolver spawn loop.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use std::path::Path;
 
-use crate::git::branch::branch_name_for_stage;
-use crate::git::merge::{merge_stage, MergeResult};
-use crate::models::session::Session;
+use crate::git::merge::{merge_stage, MergeBlock, MergeResult};
 use crate::models::stage::Stage;
-use crate::orchestrator::signals::generate_merge_signal;
-use crate::orchestrator::terminal::backend::SessionBackend;
 
 /// Result of an auto-merge attempt.
 ///
@@ -21,23 +18,23 @@ use crate::orchestrator::terminal::backend::SessionBackend;
 /// `crate::orchestrator::merge_lifecycle`, after ancestry has been verified.
 #[derive(Debug)]
 pub enum AutoMergeResult {
-    /// Merge completed successfully
+    /// The target branch now holds the stage's merge commit.
     Success {
         files_changed: u32,
         insertions: u32,
         deletions: u32,
+        /// Ref holding the operator's stashed changes when they were
+        /// reapplied around the merge.
+        backup_ref: Option<String>,
     },
-    /// Fast-forward merge completed
-    FastForward,
     /// Already up to date (no changes needed)
     AlreadyUpToDate,
-    /// Conflicts detected, spawned resolution session.
-    /// Boxed to keep the enum compact — `Session` carries runtime-identity
-    /// fields (`tracking_key`) and dwarfs other variants.
-    ConflictResolutionSpawned {
-        session: Box<Session>,
-        conflicting_files: Vec<String>,
-    },
+    /// The merge conflicts; nothing was changed. The caller moves the stage
+    /// to `MergeConflict` and the spawn loop gives it a resolver.
+    Conflict { conflicting_files: Vec<String> },
+    /// The target was not advanced and nothing in the main checkout changed;
+    /// the caller records the reason and retries.
+    Blocked(MergeBlock),
     /// Stage has no worktree (nothing to merge)
     NoWorktree,
 }
@@ -63,9 +60,8 @@ pub fn is_auto_merge_enabled(
 ///
 /// This function:
 /// 1. Checks if the stage has a worktree
-/// 2. Attempts to merge the stage branch to the target branch
-/// 3. On success: reports the merge statistics and stops there
-/// 4. On conflict: spawns a Claude Code session for resolution
+/// 2. Merges the stage branch into the target branch with `merge_stage`
+/// 3. Maps the result; a conflict spawns nothing here
 ///
 /// Cleanup is deliberately NOT done here. It belongs to the caller, via
 /// `crate::orchestrator::merge_lifecycle`, and runs only after the merge has
@@ -81,62 +77,32 @@ pub fn attempt_auto_merge(
     repo_root: &Path,
     work_dir: &Path,
     target_branch: &str,
-    backend: &SessionBackend,
 ) -> Result<AutoMergeResult> {
-    // Check if stage has a worktree
     let worktree_path = repo_root.join(".worktrees").join(&stage.id);
     if !worktree_path.exists() {
         return Ok(AutoMergeResult::NoWorktree);
     }
 
-    // Attempt the merge
     let merge_result =
         merge_stage(&stage.id, target_branch, repo_root, work_dir).context("Auto-merge failed")?;
-
-    match merge_result {
+    Ok(match merge_result {
         MergeResult::Success {
             files_changed,
             insertions,
             deletions,
-            ..
-        } => Ok(AutoMergeResult::Success {
+            backup_ref,
+        } => AutoMergeResult::Success {
             files_changed,
             insertions,
             deletions,
-        }),
-
-        MergeResult::Blocked(block) => bail!("Merge blocked: {block}"),
-
-        MergeResult::AlreadyUpToDate => Ok(AutoMergeResult::AlreadyUpToDate),
-
+            backup_ref,
+        },
+        MergeResult::AlreadyUpToDate => AutoMergeResult::AlreadyUpToDate,
         MergeResult::Conflict { conflicting_files } => {
-            // Create a merge session to resolve conflicts
-            let source_branch = branch_name_for_stage(&stage.id);
-            let session = Session::new_merge(source_branch.clone(), target_branch.to_string());
-
-            // Generate the merge signal file. Fresh conflict path: merge_stage
-            // uses merge-tree, so there is no in-progress merge to inherit.
-            let signal_path = generate_merge_signal(
-                &session,
-                stage,
-                &source_branch,
-                target_branch,
-                &conflicting_files,
-                work_dir,
-            )
-            .context("Failed to generate merge signal")?;
-
-            // Spawn the merge resolution session.
-            let spawned_session = backend
-                .spawn_merge_session(stage, session, &signal_path, repo_root)
-                .context("Failed to spawn merge resolution session")?;
-
-            Ok(AutoMergeResult::ConflictResolutionSpawned {
-                session: Box::new(spawned_session),
-                conflicting_files,
-            })
+            AutoMergeResult::Conflict { conflicting_files }
         }
-    }
+        MergeResult::Blocked(block) => AutoMergeResult::Blocked(block),
+    })
 }
 
 #[cfg(test)]
