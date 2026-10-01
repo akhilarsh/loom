@@ -1,6 +1,6 @@
 # Sandbox And Confinement Gaps
 
-> Sandbox gaps: no E2E canary, diverging env allowlists
+> Sandbox gaps: no E2E canary, env lists
 
 ## Sandbox Denial Has No End-to-End CI Canary
 
@@ -174,3 +174,14 @@ symlinked `doc/loom/knowledge` or `.loom` directory is still followed and writte
 ## Plan Files Are Not Merge-Gate Control Paths
 
 `orchestrator/core/merge_handler/merge_gate.rs::is_control_path` protects `.claude/`, `.mcp.json`, `.loom/` and the tracked git hooks directory. A plan file under `doc/plans/` is ordinary content: a stage whose sandbox grants `doc/**` can edit its own plan, and the edit merges automatically. Anything the daemon runs on the host must therefore come from a snapshot taken at `loom init` in the work directory (the `[plan_sandbox]` precedent in `fs/work_dir/config_sections.rs`), never from the live plan file at spawn time. PLAN-stage-exits-and-environment's `provision` follows this rule (`[plan_provision]`). Adjudicator amendments rewrite the plan file too, but they only touch sandboxed fields.
+
+## A Stage Agent's Bash Allow-List Reaches Outside the Worktree
+
+A stage agent's Bash is confined by the bubblewrap sandbox (the file-tool guard `worktree-file-guard.sh` does not see Bash), but
+the allow-list still reaches beyond the worktree. The harness adds the whole git common directory: `HEAD`, `refs/heads/main`,
+`packed-refs`, `objects`, `info` and other worktrees' metadata are writable, and loom denies only `.git/hooks` and `.git/config`
+(`sandbox/control_surfaces/session_denies.rs`). `package_caches.rs` grants the operator's cargo, bun and npm caches, so a tampered
+`~/.cargo/registry/src` crate would run on the host at the next build. `denyRead` covers only five credential paths, so
+`~/.config/gh/hosts.yml`, `~/.netrc` and `~/.npmrc` are readable. The fix is a separate plan, briefed in
+`security-hardening-worktree-hook.md` at the repository root; operator decisions recorded there: per-session package caches,
+`/tmp/claude-<uid>` stays writable, nothing uid- or machine-specific.

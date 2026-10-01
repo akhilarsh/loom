@@ -1,6 +1,6 @@
 # Coding Conventions
 
-> Discovered coding conventions in the codebase.
+> Coding conventions
 >
 > **Related files:** [patterns.md](patterns.md) for design patterns, [architecture.md](architecture.md) for system overview.
 

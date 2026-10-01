@@ -1,6 +1,6 @@
 # Architecture
 
-> Components, data flow, module deps
+> Component relationships and data flow
 >
 > **Related files:** [patterns.md](patterns.md) for design patterns, [entry-points.md](entry-points.md) for code navigation, [conventions.md](conventions.md) for coding standards.
 
@@ -180,15 +180,20 @@ Full detail: [architecture/context-retrieval.md](architecture/context-retrieval.
 
 ## Source Graph (`loom/src/context/source_graph/`, `context/extract/`)
 
-A derived tree-sitter graph of the repo's own source, with two live consumers:
-`loom map` (via `context::graph_store`) and the `Source` retrieval channel,
-ranked by `context::rank_source` (`context/rank_source.rs:154`) and fused into the
-same `ContextPack` as knowledge chunks. Its defining property is an explicit
-honesty contract: every edge carries provenance and a confidence ceiling, and no
-file is ever silently omitted — a degraded file is reported as degraded.
+A derived tree-sitter graph of the repo's own source over twelve dialects in three grammar packs, with
+two live consumers: `loom map` and the `Source` retrieval channel, ranked by `context::rank_source` and
+fused into the same `ContextPack` as knowledge chunks. Its defining property is an explicit honesty
+contract: every edge carries one of seven evidence classes with a named confidence constant, sites and
+(when ambiguous) a bounded candidate set, cross-file binding refuses rather than guesses, and no file is
+ever silently omitted: a degraded file is reported as degraded. A persisted resolved view keeps queries
+cheap, and its incremental relink is proven equal to a cold build.
 
-Extractor trait, cache identity, coverage contract, the ranker and the
-publish/reconcile lifecycle: [architecture/source-graph.md](architecture/source-graph.md).
+- Contract, extractors and dialects, identity, cache and coverage: [source-graph](architecture/source-graph.md)
+- Local binding, resolver rules 1 to 7, path conventions: [source-graph-resolution](architecture/source-graph-resolution.md)
+- Builder, freshness states, the reconcile lease: [source-graph-build](architecture/source-graph-build.md)
+- Resolved view, persistence, relink equivalence: [source-graph-view](architecture/source-graph-view.md)
+- Census, source windows, edge-quality evaluator: [source-graph-evaluation](architecture/source-graph-evaluation.md)
+- Intent routing, explained neighbours, caveats, windows: [context-retrieval-routing](architecture/context-retrieval-routing.md)
 
 ## Execution Containment (`loom/src/verify/criteria/confine.rs`)
 

@@ -1,6 +1,6 @@
 # Entry Points
 
-> Key files agents should read first to understand the codebase.
+> Key files to read first
 >
 > **Related files:** [architecture.md](architecture.md) for system overview, [patterns.md](patterns.md) for design patterns.
 
@@ -198,7 +198,7 @@ Full detail: [terminal-backends.md](architecture/terminal-backends.md).
 
 The context-retrieval pipeline (`context/mod.rs` is the one entry point) and the
 source-graph retrieval channel: extraction, ranking, fusion, packing, delivery
-dedupe, the overlay lifecycle, and `loom map`'s three read-only view flags.
+dedupe, the overlay lifecycle, and `loom map`'s views and flags (`--callers`, `--references`, `--window`, `--census`, `--eval-edges`, …).
 
 → [Context Retrieval and Source Graph](entry-points/context-and-source-graph.md)
 

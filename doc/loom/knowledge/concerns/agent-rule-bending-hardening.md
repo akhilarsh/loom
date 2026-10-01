@@ -1,6 +1,6 @@
 # Agent Rule-Bending Hardening
 
-> Checks an agent can bend, and the hardening backlog
+> Bendable checks, hardening backlog
 
 ## Why This Entry Exists (2026-09-16)
 
@@ -105,9 +105,11 @@ growing one.
   for commits to work.
 - Host-side git runs inside the worktree from **unsandboxed** shell hooks: `commit-guard.sh:119` and
   `:136` (bare `git status --porcelain`), plus `stage-terminal-guard.sh`, `poll-guard.sh`,
-  `no-preexisting-failures.sh` and `_progress-classification.sh`. `git/runner.rs`'s
-  `-c core.hooksPath=/dev/null` applies to loom's own Rust git calls and covers hooks only — not
-  `core.fsmonitor`, `diff.external`, `filter.*.clean`, `core.sshCommand`, aliases or `core.pager`.
+  `no-preexisting-failures.sh` and `_progress-classification.sh`. `git/runner.rs`'s `NO_HOOKS_ARGS`
+  (`-c core.hooksPath=/dev/null -c core.fsmonitor=false`) applies to loom's own Rust git calls and
+  covers those two keys only. `diff.external`, `filter.*.clean`, `core.sshCommand`, aliases and
+  `core.pager` stay uncovered. The census's git calls use `run_git_pinned` (`git/runner/pinned.rs`),
+  which also drops `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_COMMON_DIR`.
 - **Unverified:** no working gadget was built. A local check did not get `core.fsmonitor` to fire on
   git 2.43 through a repointed worktree gitdir. Treat the gadget as unproven and the structural gap
   as real.

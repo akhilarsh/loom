@@ -1,6 +1,6 @@
 # Mistakes & Lessons Learned
 
-> Record mistakes made during development and how to avoid them.
+> Mistakes and lessons learned
 >
 > **Format:** Describe what went wrong, why, and how to avoid it next time.
 >
@@ -22,10 +22,6 @@ Seven lessons on what a large removal or rename leaves behind — straggler init
 
 Sandbox path rules, permission sync, `excludedCommands` matching, settings env leaking between the main repo and its worktrees, a worktree-only escape rule applied at the repo root, a directory literally named `hooks/` being sandbox-protected regardless of permission config, and `Write(path)` permission rules never enforcing (only `Edit(path)` does). Root cause: settings are _merged_ from several sources. The tool and network failures (sccache, `cargo audit`, loopback TCP, bind-mounted files, macOS path aliases) and the `.loom/work` state channels (credentials, `loom memory`, handoff, daemon socket, ledgers) each have their own topic. → [Sandbox & Settings](mistakes/sandbox-and-settings.md), [Tooling & Network](mistakes/sandbox-tooling-and-network.md), [State Channels](mistakes/sandbox-state-channels.md), [Directory Named `hooks/`](mistakes/sandbox-protected-hooks-dir.md), [Sandbox Write Rules Inert](mistakes/sandbox-write-rules-inert.md)
 
-## gawk vs POSIX awk (2026-03-31)
-
-Cross-platform shell/hook portability traps: gawk extensions failing on macOS's BSD awk, hook integration tests missing a shared dependency, non-portable `timeout`, an empty-array guard that is a syntax error on a different bash, an unneeded chmod, a heredoc-scanning finalization guard, a Python hash-seed, redirect order, a `set -e` function tail, hook tests inheriting the live session's LOOM_* variables, `updatedInput` without `permissionDecision`, and `cmd | head` under `pipefail` killing the producer with SIGPIPE (capture output first, then truncate). → [Hooks: Shell Portability](mistakes/hooks-shell-portability.md)
-
 ## Session Identity: Backend Metadata Must Be Persisted
 
 Session identity, liveness routing, spawn-site coverage, the struct-literal blast radius of adding a session field, settings-env identity leaking into worktrees/main-repo sessions. Root cause: a session fact derived at one call site instead of persisted and read back through the shared service.
@@ -34,7 +30,7 @@ Session identity, liveness routing, spawn-site coverage, the struct-literal blas
 
 ## Hooks: Shell Command Matchers (2026-07-28)
 
-Token-based Bash matchers repeatedly shipped with bypasses because separators that are _glued_ to a neighbour never become tokens. Also: forgeable `glob | head -1` privilege lookups, env leakage into simulated process trees, three Bash parsing traps.
+Token-based Bash matchers repeatedly shipped with bypasses because separators that are _glued_ to a neighbour never become tokens. Also: forgeable `glob | head -1` privilege lookups, env leakage into simulated process trees, three Bash parsing traps, and cross-platform portability traps (gawk extensions on BSD awk, non-portable `timeout`, redirect order, `cmd | head` under `pipefail` killing the producer with SIGPIPE).
 
 → [Shell Command Matchers](mistakes/shell-command-matchers.md), [Hooks: Shell Portability](mistakes/hooks-shell-portability.md)
 
@@ -248,3 +244,7 @@ Twelve prevention rules from the verification-v2 plan: wave-brief ownership gaps
 ## An flock Outlives `drop` Under a Forking Test Binary
 
 A test asserting an `flock` is free right after `drop` must poll to a deadline. A child forked by another test thread holds the descriptor until exec. → [Test Concurrency & Fixtures](mistakes/test-concurrency-and-fixtures.md)
+
+## Source Graph Delivery
+
+Resolver fixtures, candidate narrowing across files, cache mutation outside `GraphStore`, wiring patterns missing from briefs, formatter passes that break size caps or frozen contracts, and eval cases without `expect`. → [Source Graph Delivery Mistakes](mistakes/source-graph-delivery.md)

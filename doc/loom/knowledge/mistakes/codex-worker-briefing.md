@@ -1,6 +1,6 @@
 # Codex Worker Briefing Gotchas
 
-> Codex brief pitfalls: braces, placeholders, path reuse
+> Codex brief pitfalls
 
 ## A Bash Command Text Containing Both "loom" and Any "complete" Substring Gets Pinned, Even for Unrelated Commands
 

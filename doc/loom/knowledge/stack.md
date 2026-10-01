@@ -87,33 +87,39 @@ pre-existing `command -v jq` skip instead. `rg`/`fd` are doctrine dependencies o
 `loom-hooks/prefer-modern-tools.sh` allows `grep`/`find` through with a warning rather than blocking when the
 preferred replacement is not installed.
 
-## Tree-sitter Source Extraction (2026-08-17)
+## Tree-sitter Source Extraction
 
-Six optional dependencies behind ONE default-on cargo feature, `source-graph`
-(`loom/Cargo.toml:41-46`, `:63-77`), all exact-pinned with `=`:
+Thirteen optional dependencies behind three default-on cargo features (`loom/Cargo.toml`), all exact-pinned
+with `=`:
 
-| Crate | Pin |
+| Pack (feature) | Crates |
 | --- | --- |
-| `tree-sitter` | `=0.27.0` |
-| `tree-sitter-rust` | `=0.24.2` |
-| `tree-sitter-typescript` | `=0.23.2` |
-| `tree-sitter-python` | `=0.25.0` |
-| `tree-sitter-go` | `=0.25.0` |
-| `streaming-iterator` | `=0.1.9` |
+| Core (`source-graph`) | `tree-sitter =0.27.0`, `tree-sitter-rust =0.24.2`, `tree-sitter-typescript =0.23.2` (TypeScript and TSX), `tree-sitter-python =0.25.0`, `tree-sitter-go =0.25.0`, `tree-sitter-javascript =0.25.0`, `streaming-iterator =0.1.9` |
+| Wave B (`source-graph-wave-b`) | `tree-sitter-java =0.23.5`, `tree-sitter-c-sharp =0.23.5`, `tree-sitter-ruby =0.23.1`, `tree-sitter-php =0.24.2` |
+| Wave C (`source-graph-wave-c`) | `tree-sitter-c =0.24.2`, `tree-sitter-cpp =0.23.4` |
 
-`streaming-iterator` is required, not incidental: `QueryCursor::matches` returns a
-`StreamingIterator`, not a plain `Iterator`.
+`default = ["source-graph", "source-graph-wave-b", "source-graph-wave-c"]`; each wave feature implies
+`source-graph`. `streaming-iterator` is required, not incidental: `QueryCursor::matches` returns a
+`StreamingIterator`. Every grammar comes from `github.com/tree-sitter`; Kotlin and Swift grammars are not
+maintained there, so those dialects are not supported, and shell and configuration languages (proposal
+wave D) are out of scope.
 
-`--no-default-features` is the only supported degraded mode and it **builds** — extraction
-falls back to file-level lexical nodes rather than failing — so a host without a C
-toolchain can still build loom. The deps are collapsed into one feature deliberately, so a
-host cannot disable half the grammars and leave the extractor registry inconsistent.
+**The per-pack capability-gap rule.** The pack, not the crate, is the unit of feature gating. A pack that is not
+compiled does not fail the build or hide its dialects: `extractor_for` returns `Lookup::Gap` and the files get
+file-level `LexicalOnly` nodes with the detail `grammar pack {feature} not compiled ({dialect})`, which the coverage
+report and census list as `gaps`. Collapsing every grammar into one feature would let a host drop half the grammars
+and leave the registry inconsistent, and a feature per crate (what `cargo add --optional` generates) would expose
+that same inconsistency; packs group grammars that ship together. `GrammarPack::feature()` names the feature and
+`compiled()` tests it. `--no-default-features` remains the degraded mode that builds with no C toolchain and yields
+lexical nodes only. The `[features]` table is the one hand-edited block of `Cargo.toml`: it has no `cargo` command;
+dependencies themselves are added with `cargo add <crate>@=<version> --optional`.
 
-Exact pins matter here because a grammar version participates in the extraction cache
-identity (`ExtractorIdentity.grammar_version`); a floating pin would silently invalidate or,
-worse, silently reuse cached extractions. Note that `grammar_version` carries the *grammar*
-crate version, not the tree-sitter core version, so a core-only bump does not invalidate
-cached extractions. See `architecture/source-graph.md`.
+The three packs cost binary size and build time: the release binary grew from 37.7 MiB (core grammars only) to 52.0 MiB
+(+37.9%) with both waves, and the grammar build scripts that compile `parser.c` take 0.5 to 1.7 s each (cpp and c-sharp
+1.7 s, ruby and php 1.4 s, javascript 0.8 s, java 0.6 s, c 0.5 s).
 
-Upgrading the core crate is not free: 0.26 → 0.27 made `QueryMatch::captures` a method
-rather than a public field (`context/extract/treesitter/collect.rs:108`).
+Exact pins matter because `ExtractorIdentity.grammar_version` carries the *grammar* crate version into the cache
+identity: a floating pin would silently invalidate or, worse, silently reuse cached extractions. A core-only
+`tree-sitter` bump does not change it. Upgrading the core crate is not free: 0.26 to 0.27 made
+`QueryMatch::captures` a method rather than a public field (`context/extract/treesitter/collect.rs`). See
+[Source Graph](architecture/source-graph.md#the-extractor-trait).

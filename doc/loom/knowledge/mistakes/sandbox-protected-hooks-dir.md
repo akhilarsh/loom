@@ -1,6 +1,6 @@
 # Directory Named `hooks/` Is Sandbox-Protected
 
-> A directory named hooks/ is sandbox write-protected.
+> hooks/ dir is sandbox-protected
 
 ## The Rule
 

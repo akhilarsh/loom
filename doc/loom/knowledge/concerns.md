@@ -1,6 +1,6 @@
 # Concerns & Technical Debt
 
-> Technical debt, warnings, issues, and improvements needed.
+> Technical debt and open issues
 > Every section here must be an OPEN concern. When one is resolved, DELETE it — do not strike the
 > heading and leave the body, which is how eleven dead entries accumulated before 2026-08-26. Git
 > history keeps the record and [mistakes.md](mistakes.md) keeps the lesson. If a resolved concern
@@ -233,3 +233,14 @@ network `bunx` cannot fetch transitive packages even for a cached tool, so `.md`
 Nine of the 23 test-runner adapters (cargo-nextest, gradle, maven, sbt, rspec, phpunit, pest, swift-test, mix-test) have
 fixtures written from documented output, not captured runs, so their parsers are unproven. Adapter gaps, contract-phase
 gaps and duplicated helpers: [verification-v2-followups](concerns/verification-v2-followups.md).
+
+## Source Graph Limits and Review Backlog
+
+The graph states what it cannot see: C/C++ macros and templates, reflection and dynamic dispatch, JavaScript
+`#private` members, Ruby bare calls, inherited members, and Kotlin, Swift and shell (not supported). Open decisions:
+the storage engine waits on warm `--timings` data, the agent-task comparison and `scripts/retrieval-ab` have not been
+run, and the labelled corpora enter loom's own graph because `EXCLUDED_ROOTS` matches only a first path segment. About
+150 small reviewer suggestions (resolver, extraction, view store, lease hardening, routing, evaluator, fixtures) are
+grouped by area in the backlog.
+
+→ [Source Graph Known Gaps](concerns/source-graph-known-gaps.md), [Source Graph Review Backlog](concerns/source-graph-review-backlog.md)

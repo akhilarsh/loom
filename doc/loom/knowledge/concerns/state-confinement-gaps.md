@@ -1,6 +1,6 @@
 # State Confinement Gaps
 
-> Shared package-manager caches stay session-writable.
+> Shared package caches session-writable
 
 ## Open Gap (2026-09-13)
 

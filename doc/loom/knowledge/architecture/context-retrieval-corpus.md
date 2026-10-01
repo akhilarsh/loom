@@ -1,6 +1,6 @@
 # Context Retrieval Corpus
 
-> Stopwording, rescue floor, BM25 index, indexed prose
+> Stopwording, rescue floor, BM25
 
 ## Corpus-Derived Query Stopwording, With a Rescue Floor
 

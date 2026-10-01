@@ -6,7 +6,7 @@ verified: 054528e508d51ede343e254590cdb73ae00f7df6
 ---
 # Context Retrieval
 
-> Retrieval: graphs, lanes, gating, tiered packs
+> Retrieval: graphs, lanes, gating, packs
 
 ## What This Subsystem Is
 
@@ -100,15 +100,14 @@ surfaces it as a bug instead of silently masking it.
 
 ## Exact-Rung Gating: the Query Side Also Has to Look Like Code
 
-Before A.1, boundary-checked substring matching (`contains_whole_term`) fixed
-only the *candidate* side of an exact match — a symbol named `n` stopped
-matching every prompt containing the letter — but nothing checked whether the
-*query occurrence* looked like a code reference at all. Measured, all real:
-"why doesn't loom repair --fix do it, **the point** is" pulled in `lerpPoint`,
-`repairGini` and `type Point` at `high` confidence purely because an ordinary
-English word happened to equal a symbol name.
+Boundary-checked substring matching (`contains_whole_term`) fixes only the
+*candidate* side of an exact match — a symbol named `n` does not match every
+prompt containing the letter. Nothing in it checks whether the *query
+occurrence* looks like a code reference at all: "why doesn't loom repair --fix do
+it, **the point** is" pulled in `lerpPoint`, `repairGini` and `type Point` at
+`high` confidence purely because an ordinary English word equalled a symbol name.
 
-`lexical::ExactGate` (`context/lexical/evidence.rs`) now admits a rung only
+`lexical::ExactGate` (`context/lexical/evidence.rs`) therefore admits a rung only
 when the occurrence carries one of three independent signals, any one being
 sufficient:
 
@@ -149,8 +148,12 @@ second floor one level down, at plain lexical candidacy
 earned no rung is a candidate only when every word of its terminal scope
 segment is a surviving query term and that name has more than one word.
 Required ids are exempt, and a one-word name falls back to the gate above, so
-`` `tokenize` `` still reaches `fn tokenize` while `what does tokenize do` no
-longer does. The reason this floor is needed on one channel and not the other
+this floor admits `` `tokenize` `` in backticks but not `tokenize` in prose. A
+whole-query symbol question such as `what does tokenize do` reaches `fn tokenize`
+another way: `rank_source/intent.rs::classify` returns `SymbolQuestion` and
+`rank_source/routing.rs::admit_symbol_question` admits the exact node with reason
+`symbol-question` at `Low` confidence (see
+[Context Retrieval Routing](context-retrieval-routing.md)). The reason this floor is needed on one channel and not the other
 is per-channel stopwording asymmetry: source documents are ~10-token scope and
 signature strings holding almost no prose, so the project vocabulary the
 knowledge channel drops as ubiquitous — `hooks`, `sessions`, `settings` —
@@ -364,3 +367,13 @@ calling session's `LOOM_WORK_DIR` (see
 [Never Spawn a Surviving Process From a Test](../mistakes/detached-spawn-in-tests.md)
 for why an inherited env var made an "isolated" harness mutate the real
 checkout).
+
+## Routing, Explained Neighbours and Caveats
+
+A query is classified into `Literal`, `Relationship`, `SymbolQuestion` or `General` (`rank_source/intent.rs`) and routed
+before lexical ranking. Relationship queries seed the exact node and add its direct neighbours, each carrying a `via`
+explanation, under one `MAX_EXPANDED_TOKENS = 300` budget shared with expansion. Partial-coverage and non-`Current` packs
+carry caveats that cut the score by 0.6, stage briefs and the CLI attach at most two 12-line source windows, and the graph
+behind all of it is the persisted resolved view.
+
+→ [Context Retrieval Routing](context-retrieval-routing.md)

@@ -1,6 +1,6 @@
 # Architectural Patterns
 
-> Discovered patterns in the codebase that help agents understand how things work.
+> Architectural patterns
 >
 > **Related files:** [architecture.md](architecture.md) for system overview, [conventions.md](conventions.md) for coding standards.
 

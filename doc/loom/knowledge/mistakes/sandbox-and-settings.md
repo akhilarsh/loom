@@ -1,6 +1,6 @@
 # Sandbox And Settings
 
-> Sandbox path rules, permission sync, merge traps
+> Sandbox path rules, permission sync
 
 ## Sandbox: Contradictory Path Rules
 

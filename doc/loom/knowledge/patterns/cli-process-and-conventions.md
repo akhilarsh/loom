@@ -196,17 +196,20 @@ A second execution model distinct from the daemon/worktree orchestrator: `loom p
 
 When a component's view is structurally narrower than the claim it is asked to make, encode
 the gap as a numeric ceiling in a named constant whose docstring carries the reasoning —
-not as a comment at the call site. The source graph does this with
-`MAX_INFERRED_CONFIDENCE = 0.5` (an extractor sees one file), `MAX_RESOLVED_INFERRED_CONFIDENCE = 0.9`
-(whole-graph uniqueness is evidence, but not a parse) and `1.0` reserved for `Parser`
-provenance alone.
+not as a comment at the call site. The source graph does this with one constant per evidence
+class in `context/source_graph/mod.rs`: `STRUCTURAL_CONFIDENCE = 1.0` (containment only),
+`RECEIVER_CONFIDENCE` and `IMPORT_CONFIDENCE` at 0.85, `LOCAL_NAME_CONFIDENCE` 0.8,
+`UNIQUE_NAME_CONFIDENCE` 0.6 and `MAX_SYNTAX_CONFIDENCE` 0.5. Each docstring says the number ranks
+evidence and is not a calibrated probability. See
+[Source Graph](../architecture/source-graph.md#the-honesty-contract).
 
-Two properties make it work: a widening is a **new constructor** encoding the wider bound
-(`SourceEdge::resolve_to`), never a raw field write; and path-level aggregation takes the
-**MINIMUM** edge confidence along a path, never a product — a product punishes long
-fully-parsed chains for their length (`1.0 × 1.0 × 1.0` stays `1.0`, but `0.9^5` reads as a
-guess). `resolve.rs`'s `Trust::extend` only lowers the running minimum, carrying the weakest
-edge's provenance and kind with it.
+Two properties make it work: a widening goes through a **constructor or method that encodes the
+wider bound** (`SourceEdge::bind`, which moves only an unresolved `Syntax` edge to `Receiver`,
+`Import` or `UniqueName` at that class's ceiling), never a raw field write; and path-level
+aggregation takes the **MINIMUM** edge confidence along a path, never a product — a product
+punishes long fully-parsed chains for their length (`1.0 × 1.0 × 1.0` stays `1.0`, but `0.9^5`
+reads as a guess). `resolve.rs`'s `Trust::extend` only lowers the running minimum, carrying the
+weakest edge's provenance and kind with it.
 
 ## Best-Effort By Contract, Stated In the Docstring
 

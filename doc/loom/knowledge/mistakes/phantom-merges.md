@@ -1,6 +1,6 @@
 # Phantom Merges
 
-> Merge machinery lessons: merged=true without verifying
+> Merge lessons: merged=true unverified
 
 ## Phantom Merges: merged=true Without Verification
 

@@ -1,6 +1,6 @@
 # Doctrine Cross Surface
 
-> Pinning multi-surface guidance with equality tests
+> Pinning multi-surface guidance
 
 ## Doctrine Block Cross-Surface Pinning
 
