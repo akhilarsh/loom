@@ -135,11 +135,12 @@ and replay protection.
 
 ## Dispute Criteria — Current Implementation
 
-`commands/stage/dispute_criteria.rs` is a **thin RPC client**, not a state mutator:
+`commands/stage/dispute_criteria.rs` is a **thin RPC client**, not a state mutator; the socket, relay and spool logic it shares with `dispute-findings`, `dispute-contract` and `dispute-integrity` lives in `commands/stage/dispute_transport.rs`:
 
 ```rust
 pub fn dispute_criteria(
     stage_id: String,
+    field: CriterionField,
     criterion_index: usize,
     reason: String,
     evidence_commit: Option<String>,
@@ -147,13 +148,14 @@ pub fn dispute_criteria(
 ) -> Result<()>
 ```
 
-- CLI: `loom stage dispute-criteria <stage-id> --criterion-index N --reason <text> [--evidence-commit <sha>] [--failure-output <path>]`
-- Sends `Request::DisputeCriteria` over the daemon socket. The **daemon** writes `.loom/work/disputes/<stage>/<n>/request.md` and transitions the stage to `NeedsAdjudication`, then returns the allocated id.
-- **Credentials: a missing `.loom/work/user.token` is the NORMAL case here, not an error.** An earlier version of this section said the client "reads `.loom/work/user.token`" and treated absence as fatal — that made the command unusable from the one place it was ever needed, because the sandbox denies a stage agent that read by design (S-1: the token authorizes every User RPC, not just the ones a stage agent is entitled to). The client now presents `daemon::rpc::user_credential()`, which falls back to a non-empty placeholder, and names the session it is running inside via `LOOM_SESSION_ID`. The daemon authorizes it by the connection instead — see `daemon/server/self_service.rs`.
-- `--failure-output` is a path; the client loads it and truncates to 4KB on a UTF-8 char boundary.
+- CLI: `loom stage dispute-criteria <stage-id> [--field acceptance|wiring|wiring-tests] --criterion-index N --reason <text> [--evidence-commit <sha>] [--failure-output <path>]`. `--field` defaults to `acceptance`; the index is into the list the field names (`cli/types_stage_disputes.rs`, `daemon/server/dispute.rs`).
+- Sends `Request::DisputeCriteria { auth_token, stage_id, session_id, field, criterion_index, reason, evidence_commit, failure_output }` (`daemon/protocol.rs`) over the daemon socket. The **daemon** checks the stage transition, writes `.loom/work/disputes/<stage>/<n>/request.md` (its `kind: criterion` record carries `field`) and transitions the stage to `NeedsAdjudication`, then returns the allocated id.
+- **Credentials: a missing `.loom/work/user.token` is the NORMAL case here, not an error.** The sandbox denies a stage agent that read by design (S-1: the token authorizes every User RPC, not just the ones a stage agent is entitled to). The client presents `daemon::rpc::user_credential()`, which falls back to a non-empty placeholder, and names the session it is running inside via `LOOM_SESSION_ID`. The daemon authorizes it by the connection instead — see `daemon/server/self_service.rs`.
+- `--failure-output` is a path; the client loads it and truncates to 4KB on a UTF-8 char boundary. `models/dispute.rs` holds the one `truncate_to_byte_limit` and `FAILURE_OUTPUT_MAX_BYTES`; the daemon truncates again defensively.
 - The agent never writes `.loom/work/disputes/<stage>/<n>/verdict.md` or `applied.marker` — both are daemon-only.
 - With no daemon listening the dispute cannot be filed at all (the daemon is what persists it), and the command says so rather than reporting a bare connect error.
-- Server-side handler: `daemon/server/dispute.rs`. On-disk schema: `models/dispute.rs`.
+- Server-side handler: `daemon/server/dispute.rs`. On-disk schema: `models/dispute.rs`. Verdict rules per field: [adjudication-lifecycle](../architecture/adjudication-lifecycle.md#dispute-kinds-criterion-findings-contract-integrity).
+- Open: `DisputeField` (`cli/types_stage_disputes.rs`), `AmendField` and `CriterionField` mirror one enum three times, and `dispute_criteria_with_mode` takes nine arguments under `allow(too_many_arguments)` (see [code-quality-and-hook-debt](../concerns/code-quality-and-hook-debt.md)).
 
 ## Fix Attempts Counter — Current Usage
 

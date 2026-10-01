@@ -70,3 +70,39 @@ Open parser and command gaps found while writing the language skills, checked ag
   `CwdGuard` copied into four test files; `verify/utils.rs` `.size_limit(1 << 20)` versus `wiring.rs` `PATTERN_SIZE_LIMIT`.
 - **Slow hook tests** (`loom-hooks/tests/run-all.sh` is 162 s after the PATH-fixture fix): `prefer-modern-tools-missing-rg-fd.sh`
   78 s, `poll-guard-subagent-waits.sh` 63 s, and four others near 40 s.
+
+## Provision Install Validation Gaps
+
+Plan authors are trusted, so these are author-mistake gaps, not stage-agent bypasses. The validator is `plan/schema/validation/v2_fields/provision_installs.rs`; the required forms are in [plan-environment](../architecture/plan-lifecycle-and-fields.md#plan-provision-snapshot-spawn-gate-hardening).
+
+- **Indirection is not seen through.** Install detection takes the first non-flag word as the subcommand, so `npm --prefix web ci`, `bun --cwd web install`, `pnpm -C web install`, `env -C web bun install` (`command_start` stops at the `-C` value) and `corepack pnpm install` are not checked. `changes_directory` does not see through `eval`: `refusal && eval 'cd web' && bun install ...` moves the install unflagged, and `eval "bun install"` escapes install detection. Fix: parse `eval`'s argument as a nested script in `nested_scripts`, or reject the wrappers.
+- **The `.npmrc` refusal tests only the entry's directory.** For a `working_dir` nested in an npm or pnpm workspace the root `.npmrc` may still be read. Document `working_dir` as the workspace root or check the ancestors.
+- **Yarn.** Yarn classic reads `.yarnrc` `yarn-path` and yarn berry reads the yarn berry config `yarnPath`; both run a repository JS file on the host even with `--ignore-scripts`. Berry also rejects `--frozen-lockfile` and `--ignore-scripts` (it wants `--immutable`), and `YARN_INSTALL` uses classic syntax. Validation checks only `--ignore-scripts` and the `.npmrc` refusal.
+- **uv.** `uv sync --frozen --no-install-project` still builds sdist dependencies through their build backends on the host and reads agent-writable the uv config and `[tool.uv]` project index settings (a registry redirect like `.npmrc`). Validation requires only `--no-install-project`.
+- **Host caches.** The stage sandbox can write `~/.bun/install/cache`, `~/.npm` and the pnpm store (`sandbox/package_caches.rs`), which the host provision reads with the operator's `HOME`. `--backend=copyfile` stops writes back into the bun cache but not a poisoned extracted entry, and a committed `web/node_modules` symlink is an untested channel. Fix: seed or isolate the cache for provision (see [state-confinement-gaps](state-confinement-gaps.md)).
+- **Module cycle.** `visit_argvs` (`v2_lints/mod.rs`) is used by `v2_fields::provision_installs`, while `v2_lints::js_provision` imports the hardened constants from `v2_fields`. Moving `visit_argvs` next to `command_start` and `nested_scripts` in `criterion_hazards.rs` removes it.
+
+## Provision Gate and Environment Lint Gaps
+
+- **Before/after comparison by entry string.** `provision_gate.rs` matches `git status` entry strings, so a provision that rewrites a file already listed before it ran passes the ignored-files-only rule. Compare content (a hash of the diff and untracked files) or document the limit.
+- **`loom init` prints no provision entries.** The operator cannot see which host commands the plan will run unsandboxed; listing them at init would show it.
+- **Duplicated code.** `block_for_provision` repeats `persist_blocked_stage` (`stage_executor.rs`) plus `close_reason` and the graph mark; `write/read_provision_snapshot` re-implement `config_sections.rs` `write_section/read_section` including a toml to `toml_edit` round trip; `merge_gate.rs::hooks_dir_prefix` reads `--local/--global/--system` itself while `git/hooks.rs::configured_hooks_path` implements the same precedence.
+- **Hook lint false negatives.** `repo_hooks.rs` skips a symlinked hook (`ln -s ../../scripts/pre-commit .git/hooks/pre-commit`) and does not expand a `~/` `core.hooksPath`. A multi-link file is not refused (no impact: hook content is never echoed and `.git` is write-denied).
+- **Registry lint.** `registry_domains.rs` ignores the stage's `excluded_commands` (which run outside the sandbox), so it errors for a command that can already reach the network; `npm --prefix web install` and bare `yarn` are missed; `--offline` installs are over-reported. `sandboxed_commands` filters by the `BEFORE_STAGE_LABEL` label prefix; a `sandboxed` flag on `StageCommand` would not depend on label text.
+- **JS lint advice.** `js_provision.rs` tells a package with no lockfile to install with `npm ci` after committing a lockfile, even when its runner is bun.
+
+## Completion-Gate and Dispute Backlog
+
+- `format_gate.rs` builds a `Stage::default()` whose empty id makes `${STAGE_ID}` expand to an empty string, contradicting the module doc; `biome check` also lints, so a lint error in a contract file is reported with "run the formatter" advice; the formatter-gate tests (`freeze_tests.rs`) need a host `rustfmt` binary.
+- Three enums mirror the dispute field (`DisputeField` in `cli/types_stage_disputes.rs`, `AmendField`, `CriterionField`), and `dispute_criteria_with_mode` takes nine arguments under `allow(too_many_arguments)`.
+- Other `std::env::set_current_dir` tests (`commands/knowledge/tests*.rs`, `telemetry/tests.rs`) restore the cwd by hand and are not panic-safe; the guard in `commands/stage/state_relay.rs` tests could become a shared `CwdGuard`.
+- `commands/status/data/collector.rs::build_stage_summary` stays under the 50-line ledger through `let (facts, now) = (...)`; moving the ledger entry or extracting a helper is the cleaner fix.
+
+## Test Gaps Recorded by Reviewers
+
+- No test drives `loom init` with a provision plan and reads the snapshot back; passing `LoomConfig::default()` instead of the parsed plan's loom config survives the wiring regex (`commands/init/plan_setup.rs`).
+- `start_stage` reaching `pre_spawn_gates_passed` is checked by a source regex only; a runtime test that a failing provision stops the spawn would pin it.
+- Git-status tolerance of a failing listing is covered only through a non-git `TempDir`, which depends on `TMPDIR` not sitting inside a repository.
+- An unreadable or unparsable manifest counting as declaring dependencies (`impact_tests/runs.rs`) and a manifest over 256 KiB (`skills/project/tests.rs`) have no test.
+- `joined_by_and`'s `|`, `&` and parenthesis arms have no test (`plan/schema/tests/v2_tests.rs`); the `pushd web && refusal && install` case fails the `opens` check first, so it does not guard `changes_directory`.
+- `crash-blocked-stage-is-not-an-agent-block` covers a crash with retries left only; a `(_, Some(reason))` arm placed after the auto-retry arm is caught only by `attention_model_guidance_tests.rs`. `pre-commit-hook-registry-need-is-an-error` has no negative control (unit tests cover it). The `close_reason` sanitizer test asserts only the absence of ESC and bidi characters, not the flattened text.

@@ -245,5 +245,5 @@ Typed value read-path replacing the old stringly `UserConfig::value_of`. See [Ty
 implementer starts), the zero-test guard, wiring v2 and `reachable`, test integrity, impact-selected tests, and a
 recorded review gate, all read from `stage.plan_version == 2`. Disputes gain three kinds (findings, contract,
 integrity). Detail: [contract-phase](architecture/contract-phase.md), [verification-v2-gates](architecture/verification-v2-gates.md),
-[test-runner-adapters](architecture/test-runner-adapters.md), [plan fields and lints](architecture/plan-lifecycle-and-fields.md),
+[test-runner-adapters](architecture/test-runner-adapters.md), [plan fields and lints, provision, freeze formatter gate](architecture/plan-lifecycle-and-fields.md),
 [adjudication-lifecycle](architecture/adjudication-lifecycle.md).

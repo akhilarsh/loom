@@ -90,9 +90,15 @@ adjudication record, use `disputes/<stage>/<n>/verdict.md`.
 
 ## Dispute Kinds: Criterion, Findings, Contract, Integrity
 
-`DisputeRequest` carries a `DisputeKind` (`models/dispute.rs`, serde tag `kind`, kebab-case). `Criterion { criterion_index }`
-is the original dispute and behaves as before, including when the dispute request file is unreadable at apply time
-(the kind falls back to the criterion path so v1 behaviour is unchanged). The three v2 kinds:
+`DisputeRequest` carries a `DisputeKind` (`models/dispute.rs`, serde tag `kind`, kebab-case). `Criterion { criterion_index, field }`
+disputes one entry of the list `field` names (`CriterionField`: `acceptance`, `wiring`, `wiring-tests`; the request file carries
+`field` beside `criterion_index`, and `Request::DisputeCriteria` carries it too). When the dispute request file is
+unreadable at apply time, the kind falls back to the acceptance criterion path. The verdict must amend the disputed field
+(`orchestrator/adjudication/verdict.rs::admits`): a wiring or wiring-tests dispute may amend only its own list, an
+acceptance dispute may amend `acceptance` or `wiring`. The wiring and wiring-tests briefings reuse the criterion
+briefing's verdict rules, run reading, schema and evidence sections, with "the criterion" meaning the disputed entry, so
+the acceptance briefing stays byte-identical (`prompt/tests_golden.rs`). `CriterionField` keeps `Default` because
+test code builds `DisputeKind::criterion(Default::default(), 0)`. The three v2 kinds:
 
 | Kind | Filed with | Budget field | Judge verdicts | Durable effect |
 | --- | --- | --- | --- | --- |

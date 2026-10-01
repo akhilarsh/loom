@@ -233,7 +233,7 @@ network `bunx` cannot fetch transitive packages even for a cached tool, so `.md`
 
 Nine of the 23 test-runner adapters (cargo-nextest, gradle, maven, sbt, rspec, phpunit, pest, swift-test, mix-test) have
 fixtures written from documented output, not captured runs, so their parsers are unproven. Adapter gaps, contract-phase
-gaps and duplicated helpers: [verification-v2-followups](concerns/verification-v2-followups.md).
+gaps, duplicated helpers, provision and environment-lint gaps, gate and dispute backlog: [verification-v2-followups](concerns/verification-v2-followups.md).
 
 ## Source Graph Limits and Review Backlog
 

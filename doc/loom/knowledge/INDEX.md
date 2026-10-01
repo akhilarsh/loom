@@ -22,7 +22,7 @@
 
 | Topic | Blurb | Lines |
 | --- | --- | --- |
-| [adjudication-lifecycle](architecture/adjudication-lifecycle.md) | Dispute to verdict, per-kind rulings | 137 |
+| [adjudication-lifecycle](architecture/adjudication-lifecycle.md) | Dispute to verdict, per-kind rulings | 143 |
 | [codex-concurrency](architecture/codex-concurrency.md) | Codex fan-out limits and degradation | 128 |
 | [codex-plugin](architecture/codex-plugin.md) | Codex plugin install, identity, and forwarding | 364 |
 | [completion-recovery](architecture/completion-recovery.md) | Completion HMAC, exit_reason, handoff folds | 34 |
@@ -43,7 +43,7 @@
 | [merge-flow](architecture/merge-flow.md) | How a completed stage reaches its target branch | 79 |
 | [orchestrator-loop](architecture/orchestrator-loop.md) | Tick order, Monitor, heartbeat liveness | 56 |
 | [owned-waits](architecture/owned-waits.md) | Worker-set waits: lease/engine, exit codes | 48 |
-| [plan-lifecycle-and-fields](architecture/plan-lifecycle-and-fields.md) | Plan fields v1/v2, checks, lints | 216 |
+| [plan-lifecycle-and-fields](architecture/plan-lifecycle-and-fields.md) | Plan fields v1/v2, checks, lints | 252 |
 | [quota-poller](architecture/quota-poller.md) | Usage-quota polling, caching, rendering | 31 |
 | [remote-control](architecture/remote-control.md) | Capability detection, preflight, naming | 82 |
 | [security-and-isolation](architecture/security-and-isolation.md) | 4-layer worktree defense | 185 |
@@ -58,7 +58,7 @@
 | [terminal-backends](architecture/terminal-backends.md) | Native and tmux session backends | 285 |
 | [test-runner-adapters](architecture/test-runner-adapters.md) | 23 adapters, profiles, quoting, detect | 49 |
 | [token-accounting-and-receipts](architecture/token-accounting-and-receipts.md) | Usage ledger, --compare, criterion cache | 260 |
-| [verification-v2-gates](architecture/verification-v2-gates.md) | v2 completion gates, order, owners | 124 |
+| [verification-v2-gates](architecture/verification-v2-gates.md) | v2 completion gates, order, owners | 133 |
 | [web-dashboard](architecture/web-dashboard.md) | loom status --web: server, SPA, streaming | 95 |
 | [web-terminal](architecture/web-terminal.md) | loom status --web --terminals: browser terminal | 175 |
 
@@ -70,7 +70,7 @@
 | [context-and-source-graph](entry-points/context-and-source-graph.md) | Context retrieval pipeline, source-graph channel | 79 |
 | [filesystem-and-integration-modules](entry-points/filesystem-and-integration-modules.md) | Git, fs, handoff, sandbox, remote | 121 |
 | [hooks](entry-points/hooks.md) | Hook scripts, their events, command matching | 146 |
-| [orchestrator-daemon-and-sessions](entry-points/orchestrator-daemon-and-sessions.md) | Orchestrator, daemon, signals, merges | 224 |
+| [orchestrator-daemon-and-sessions](entry-points/orchestrator-daemon-and-sessions.md) | Orchestrator, daemon, signals, merges | 226 |
 | [remote-control](entry-points/remote-control.md) | Remote-control capability detection call sites | 99 |
 
 ### patterns
@@ -85,7 +85,7 @@
 | [remote-control](patterns/remote-control.md) | Detect/preflight/resolve for external agents | 51 |
 | [security-sandbox-and-hooks](patterns/security-sandbox-and-hooks.md) | Hooks, input validation, sandbox config | 137 |
 | [stage-daemon-channels](patterns/stage-daemon-channels.md) | How a stage agent reaches the daemon | 105 |
-| [stage-lifecycle-and-verification](patterns/stage-lifecycle-and-verification.md) | Stage states, locked writes, verify | 185 |
+| [stage-lifecycle-and-verification](patterns/stage-lifecycle-and-verification.md) | Stage states, locked writes, verify | 195 |
 | [subagent-hierarchy](patterns/subagent-hierarchy.md) | Fan-out vs coordinators vs teams; model mix | 91 |
 
 ### conventions
@@ -145,7 +145,7 @@
 | [status-broadcast-hardening](mistakes/status-broadcast-hardening.md) | Frame overflow, read-timeout desync | 74 |
 | [store-without-consumer](mistakes/store-without-consumer.md) | A store written but never read | 94 |
 | [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, file ownership | 285 |
-| [subagent-liveness-and-watch](mistakes/subagent-liveness-and-watch.md) | Subagent liveness detection; watch traps | 321 |
+| [subagent-liveness-and-watch](mistakes/subagent-liveness-and-watch.md) | Subagent liveness detection; watch traps | 327 |
 | [subagent-orchestration](mistakes/subagent-orchestration.md) | Delegation model, defect reports, gotchas | 120 |
 | [test-concurrency-and-fixtures](mistakes/test-concurrency-and-fixtures.md) | Racy tests: fds, ETXTBSY, stdin | 217 |
 | [testing-and-lint](mistakes/testing-and-lint.md) | Lint/test discipline | 336 |
@@ -154,7 +154,7 @@
 | [typed-config-values-process](mistakes/typed-config-values-process.md) | Brief, dev-server, plan-prose gotchas | 43 |
 | [untrusted-value-boundaries](mistakes/untrusted-value-boundaries.md) | Enumerate every producer of a rendered field | 188 |
 | [verification-harness](mistakes/verification-harness.md) | When checks fail at once, suspect the harness | 369 |
-| [verification-v2-delivery](mistakes/verification-v2-delivery.md) | Wave, gate and proof misses in v2 | 192 |
+| [verification-v2-delivery](mistakes/verification-v2-delivery.md) | Wave, gate and proof misses in v2 | 247 |
 | [visibility-and-reachability](mistakes/visibility-and-reachability.md) | pub(crate) visibility is capped by path | 123 |
 | [web-dashboard-server](mistakes/web-dashboard-server.md) | Dashboard server: concurrency, security, tests | 316 |
 | [writer-reader-address](mistakes/writer-reader-address.md) | A layer written under a key its reader ignores | 73 |
@@ -163,19 +163,19 @@
 
 | Topic | Blurb | Lines |
 | --- | --- | --- |
-| [agent-rule-bending-hardening](concerns/agent-rule-bending-hardening.md) | Bendable checks, hardening backlog | 246 |
+| [agent-rule-bending-hardening](concerns/agent-rule-bending-hardening.md) | Bendable checks, hardening backlog | 249 |
 | [automatic-knowledge-source-graph-followups](concerns/automatic-knowledge-source-graph-followups.md) | Knowledge-plan followups | 51 |
 | [code-quality-and-hook-debt](concerns/code-quality-and-hook-debt.md) | Oversized units, duplicated tables, hook debt | 197 |
 | [codex-heartbeat-starvation](concerns/codex-heartbeat-starvation.md) | Heartbeat starvation from long codex runs | 73 |
 | [iterm2-window-teardown](concerns/iterm2-window-teardown.md) | iTerm2 window never named | 48 |
 | [knowledge-cli-gaps](concerns/knowledge-cli-gaps.md) | Knowledge CLI gaps and housekeeping | 101 |
 | [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 97 |
-| [runtime-and-session-safety](concerns/runtime-and-session-safety.md) | Runtime edge cases: tmux, orphan adoption | 151 |
+| [runtime-and-session-safety](concerns/runtime-and-session-safety.md) | Runtime edge cases: tmux, orphan adoption | 150 |
 | [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: canary, credential reads, codex home | 255 |
-| [source-graph-known-gaps](concerns/source-graph-known-gaps.md) | Language limits, open decisions | 80 |
+| [source-graph-known-gaps](concerns/source-graph-known-gaps.md) | Language limits, open decisions | 79 |
 | [source-graph-review-backlog](concerns/source-graph-review-backlog.md) | Unimplemented reviewer suggestions | 242 |
 | [state-confinement-gaps](concerns/state-confinement-gaps.md) | Shared package caches session-writable | 18 |
 | [token-accounting-and-proof-defects](concerns/token-accounting-and-proof-defects.md) | Token-optimization and efficiency follow-ups | 92 |
 | [typed-config-values](concerns/typed-config-values.md) | Accepted gaps in the config read-path | 27 |
-| [verification-v2-followups](concerns/verification-v2-followups.md) | v2 adapters, parser gaps, known gaps | 72 |
+| [verification-v2-followups](concerns/verification-v2-followups.md) | v2 adapters, parser gaps, known gaps | 108 |
 | [web-dashboard-latent-issues](concerns/web-dashboard-latent-issues.md) | Latent issues found in commands/status/web/ | 94 |

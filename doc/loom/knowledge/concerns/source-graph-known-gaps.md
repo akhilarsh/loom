@@ -72,9 +72,8 @@ which changes `excluded` for every consumer (enumeration, census, evaluator).
   `ensure_base` parses the ~97 MB base layer only to check `layer_is_current`, then `GraphStore::view` parses the ~122 MB
   view. Re-measure with a release build; a follow-up could check base currency without parsing the layer (from the view
   identity or `state.json`).
-- **The impact selector runs corpora as projects.** Because the labelled corpora enter the graph, the stage completion
-  command's impact-selected tests can pick `cargo test` in `labeled/rust`, `go test` in `labeled/go` and web `vitest` files
-  (14 `web/` files although no `web/` file changed). In a stage sandbox without network `bunx vitest` fails with a 403 from
-  `registry.npmjs.org` and blocks completion although acceptance, goal-backward, contracts and review pass; with network,
-  `cargo` writes `labeled/rust/Cargo.lock` and moves the review fingerprint (commit that file). The root cause is the
-  `EXCLUDED_ROOTS` first-segment gap above.
+- **The labelled corpora still reach the selector's graph.** Project detection skips `fixtures` directories
+  (`skills/project/scan.rs::SKIP_DIRS`), so `labeled/rust` and `labeled/go` are no runner packages, and the selection set
+  is the stage's diff since its merge base, so unchanged `web/` files are not picked. A JS package without `node_modules`
+  gives a note, not a failure (see [verification-v2-gates](../architecture/verification-v2-gates.md)). The graph-side root
+  cause, the `EXCLUDED_ROOTS` first-segment gap above, is unchanged.
