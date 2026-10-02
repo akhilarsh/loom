@@ -117,6 +117,10 @@ A successful reapply keeps its backup ref under `refs/loom/autostash/` as a safe
 
 It passes `MergeGate::Bypass`. It is operator-only because the sandbox denies writes to the state directory, so a stage agent cannot write the stage file the command changes first; the command itself checks no operator credential.
 
+## Stage-Id Auto-Detection Fails Closed When a Tag Shares the Branch Name
+
+`commands/common/mod.rs` detects the stage from `git rev-parse --abbrev-ref HEAD`. When a tag has the same name as the branch, git prints the ambiguous form, the stage is not detected, and the command falls back to asking for the stage id.
+
 ## A Refused Fast-Forward Listing Splits a Path Containing a Newline
 
 The paths git names in a refused fast-forward are parsed line by line, so a path with a newline inside is read as two paths.

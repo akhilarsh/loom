@@ -43,3 +43,13 @@ tree through tree-sitter. The machine exhausted 125 GB and had to be rebooted.
 **Fix:** spawn guarded by an `AtomicBool` defaulting to `!cfg!(test)`, plus an
 inferred-root refusal in `spawn_if_needed`, plus a test asserting the guard is
 in force so it cannot regress silently.
+
+## Drop Order Deleted a tmux Socket Before kill-server Ran (2026-10-02)
+
+**What happened**: every full test run left four `tmux` servers alive (`-s loom-web-term-stage`); 188 had accumulated.
+
+**Why**: `loom/tests/e2e/web_terminal.rs` `Fixture` declared its `TmuxTmpDirGuard` before its `TmuxServerGuard`. Rust drops fields in declaration order, so the isolated socket directory was deleted first and `tmux -S <socket> kill-server` failed silently.
+
+**Prevention**: declare a process guard before the guard that removes what it needs (fields drop top to bottom), make the kill wait for the process to exit, and count leftover processes before and after a test run.
+
+**Fix**: field order swapped, a bounded wait added (`loom/tests/e2e/tmux_guards.rs`); the leaked servers were killed.

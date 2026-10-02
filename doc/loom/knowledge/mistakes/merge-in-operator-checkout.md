@@ -55,9 +55,9 @@
 
 **Why**: branch names were passed to git unqualified.
 
-**Prevention**: qualify branch names as `refs/heads/<name>` wherever a proof or guard resolves one.
+**Prevention**: qualify branch names as `refs/heads/<name>` wherever a proof or guard resolves one. When introducing a ref-resolution rule, grep every git invocation that takes a branch name.
 
-**Fix**: `branch_ref` in `git/branch`, used by `get_branch_head`, `commits_ahead_of`, `verify_merge_succeeded` and `merge_stage`.
+**Fix**: `branch_ref` in `git/branch`, used by `get_branch_head`, `commits_ahead_of`, `verify_merge_succeeded`, the ancestry callers and `merge_stage`. A later review found the removal guard (`git/cleanup/removal.rs`) and `current_branch` still resolving bare names; both now go through `branch_ref` / `symbolic-ref`.
 
 ## CLI Merge Paths Wrote merged = true Without Proof (2026-10-02)
 
