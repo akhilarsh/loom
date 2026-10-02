@@ -31,6 +31,9 @@ pub enum ProgressiveMergeResult {
     AlreadyMerged,
     /// Conflicts detected that need resolution
     Conflict { conflicting_files: Vec<String> },
+    /// The control-path gate refused the branch; nothing was changed. The
+    /// caller routes the stage to human review with `reason`.
+    Held { reason: String },
     /// Branch doesn't exist (already cleaned up)
     NoBranch,
 }
@@ -85,6 +88,10 @@ mod tests {
         }
         .is_success());
         assert!(!ProgressiveMergeResult::Blocked(MergeBlock::TargetMoved).is_success());
+        assert!(!ProgressiveMergeResult::Held {
+            reason: "control path".to_string()
+        }
+        .is_success());
         assert!(ProgressiveMergeResult::AlreadyMerged.is_success());
         // NoBranch is NOT success: a missing branch means the work was never
         // committed, not that it merged (phantom-merge prevention, A-3/O-2).

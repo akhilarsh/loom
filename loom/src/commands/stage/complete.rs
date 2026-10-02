@@ -673,7 +673,7 @@ fn run_verification_phase(phase: VerificationPhase<'_>) -> Result<()> {
         let cwd = std::env::current_dir().context("Failed to get current directory")?;
         let repo_root = find_repo_root_from_cwd(&cwd).unwrap_or_else(|| cwd.clone());
 
-        complete_with_merge(stage, &repo_root, work_dir)?;
+        complete_with_merge(stage, &repo_root, work_dir, crate::git::MergeGate::Enforce)?;
     } else {
         // --no-verify: Skip verifications, just mark as completed.
         //

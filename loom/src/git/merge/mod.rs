@@ -3,6 +3,7 @@
 mod checkout_apply;
 mod checkout_files;
 mod checkout_state;
+pub mod control_paths;
 mod fast_forward;
 pub mod in_progress;
 mod inputs;
@@ -22,6 +23,7 @@ use lock::MergeLock;
 use operation::operator_operation;
 
 // Re-export status types for use by other modules
+pub use control_paths::{control_path_violation, control_path_violation_as, MergeGate};
 pub use in_progress::{
     detect_in_progress_merge_at, detect_in_progress_merge_at_worktree, detect_in_progress_merges,
     git_dir_for_repo_path, merge_head_exists, ActiveMergeState, InProgressMerge, MergeLocation,
@@ -58,6 +60,9 @@ pub enum MergeResult {
     AlreadyUpToDate,
     /// The merge was computed but the target was not advanced.
     Blocked(MergeBlock),
+    /// The control-path gate refused the branch ([`MergeGate::Enforce`]);
+    /// nothing was changed. `reason` is the human-review reason.
+    Held { reason: String },
 }
 
 /// Merge a stage branch into the target branch (typically main) without
@@ -66,15 +71,20 @@ pub enum MergeResult {
 /// Steps, under the merge lock:
 /// 1. Refuse while the operator has a merge, cherry-pick, revert or rebase
 ///    in progress in the checkout.
-/// 2. Compute the merge with `git merge-tree`; conflicts leave everything
+/// 2. With [`MergeGate::Enforce`], hold a branch whose diff touches a control
+///    path. The gate reads the same two commits that are merged, under the
+///    lock, so a commit made to the branch while the lock was awaited cannot
+///    slip past it.
+/// 3. Compute the merge with `git merge-tree`; conflicts leave everything
 ///    untouched.
-/// 3. Advance the target with [`advance_target`], which writes the merge
+/// 4. Advance the target with [`advance_target`], which writes the merge
 ///    commit with `git commit-tree` only when the advance can happen.
 pub fn merge_stage(
     stage_id: &str,
     target_branch: &str,
     repo_root: &Path,
     work_dir: &Path,
+    gate: MergeGate,
 ) -> Result<MergeResult> {
     let _lock = MergeLock::acquire(work_dir, Duration::from_secs(30)).map_err(|e| {
         anyhow::anyhow!(
@@ -98,6 +108,14 @@ pub fn merge_stage(
     let branch_tip = tree::rev_parse(repo_root, &format!("refs/heads/{branch_name}"))?;
     if is_ancestor_of(&branch_tip, &old, repo_root)? {
         return Ok(MergeResult::AlreadyUpToDate);
+    }
+
+    if gate == MergeGate::Enforce {
+        // Fails closed: a diff that cannot be computed is an error, not a pass.
+        let label = branch_name_for_stage(stage_id);
+        if let Some(reason) = control_path_violation_as(repo_root, &old, &branch_tip, &label)? {
+            return Ok(MergeResult::Held { reason });
+        }
     }
 
     merge_and_advance(repo_root, stage_id, target_branch, &old, &branch_tip)

@@ -6,7 +6,7 @@ use crate::models::stage::{Stage, StageStatus};
 use crate::orchestrator::core::OrchestratorConfig;
 use crate::plan::ExecutionGraph;
 use serial_test::serial;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Run `git` in `root` with ambient global/system config neutralized (mirrors
 /// `merge_handler_attempt_tests::isolated_git`).
@@ -242,117 +242,4 @@ fn a_conflicting_branch_touching_claude_settings_spawns_no_resolver() {
         "a held stage is no longer MergeConflict/MergeBlocked, so the resolver \
          spawn loop must not touch it"
     );
-}
-
-#[test]
-fn control_path_violation_names_every_offending_path() {
-    let (temp, _worktree) = repo_with_stage_branch(
-        "multi",
-        &[
-            (".claude/settings.json", "{}\n"),
-            ("src/ok.rs", "fn ok() {}\n"),
-        ],
-    );
-    let root = temp.path();
-
-    let reason = control_path_violation(root, "main", "loom/multi")
-        .unwrap()
-        .expect("a control path was touched");
-    assert!(reason.contains(".claude/settings.json"));
-    assert!(!reason.contains("src/ok.rs"));
-}
-
-#[test]
-fn control_path_violation_is_none_for_an_ordinary_branch() {
-    let (temp, _worktree) = repo_with_stage_branch("clean", &[("src/ok.rs", "fn ok() {}\n")]);
-    let root = temp.path();
-
-    assert_eq!(
-        control_path_violation(root, "main", "loom/clean").unwrap(),
-        None
-    );
-}
-
-#[test]
-fn is_control_path_matches_the_documented_prefixes() {
-    assert!(is_control_path(".claude/settings.json", None));
-    assert!(is_control_path(".mcp.json", None));
-    assert!(is_control_path(".loom/cache/x", None));
-    assert!(!is_control_path("src/x.rs", None));
-    assert!(!is_control_path("claude/x", None));
-    assert!(is_control_path(
-        "loom/.githooks/pre-commit",
-        Some("loom/.githooks/")
-    ));
-    assert!(!is_control_path("loom/.githooks/pre-commit", None));
-}
-
-#[test]
-fn hooks_dir_prefix_reads_a_relative_core_hooks_path() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path();
-    git_ok(root, &["init", "-b", "main"]);
-    git_ok(root, &["config", "core.hooksPath", "loom/.githooks"]);
-
-    assert_eq!(hooks_dir_prefix(root), Some("loom/.githooks/".to_string()));
-}
-
-#[test]
-fn hooks_dir_prefix_is_none_when_unset() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path();
-    git_ok(root, &["init", "-b", "main"]);
-
-    assert_eq!(hooks_dir_prefix(root), None);
-}
-
-#[test]
-fn resolve_hooks_dir_prefix_local_beats_global() {
-    let root = Path::new("/repo");
-    assert_eq!(
-        resolve_hooks_dir_prefix(root, Some("local/hooks"), Some("global/hooks"), None),
-        Some("local/hooks/".to_string())
-    );
-}
-
-#[test]
-fn resolve_hooks_dir_prefix_uses_a_relative_global_when_local_is_unset() {
-    let root = Path::new("/repo");
-    assert_eq!(
-        resolve_hooks_dir_prefix(root, None, Some(".githooks"), None),
-        Some(".githooks/".to_string())
-    );
-}
-
-#[test]
-fn resolve_hooks_dir_prefix_falls_back_to_system_when_local_and_global_are_unset() {
-    let root = Path::new("/repo");
-    assert_eq!(
-        resolve_hooks_dir_prefix(root, None, None, Some("system/hooks")),
-        Some("system/hooks/".to_string())
-    );
-}
-
-#[test]
-fn resolve_hooks_dir_prefix_is_none_for_an_absolute_path_outside_the_repo() {
-    let root = Path::new("/repo");
-    assert_eq!(
-        resolve_hooks_dir_prefix(root, Some("/elsewhere/hooks"), None, None),
-        None
-    );
-}
-
-#[test]
-fn resolve_hooks_dir_prefix_resolves_an_absolute_path_inside_the_repo() {
-    let root = Path::new("/repo");
-    assert_eq!(
-        resolve_hooks_dir_prefix(root, Some("/repo/loom/.githooks"), None, None),
-        Some("loom/.githooks/".to_string())
-    );
-}
-
-#[test]
-fn resolve_hooks_dir_prefix_is_none_when_every_scope_is_unset() {
-    let root = Path::new("/repo");
-    assert_eq!(resolve_hooks_dir_prefix(root, None, None, None), None);
 }

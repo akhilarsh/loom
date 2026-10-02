@@ -1,15 +1,19 @@
 //! The tails of `loom stage merge`: record a block, or mark a landed merge
 //! complete, trigger dependents and clean up.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::git::MergeBlock;
+use crate::git::{merge_stage, MergeBlock, MergeGate, MergeResult};
 use crate::models::stage::Stage;
 use crate::verify::transitions::{trigger_dependents, update_stage};
 
+use super::conflict::record_conflict_and_report;
 use super::finish::finish_merge_and_report;
-use crate::commands::stage::progressive_complete::report_merge_block;
+use super::next_step::report_merge_error;
+use crate::commands::stage::progressive_complete::{
+    report_merge_block, report_stash, route_held_to_review,
+};
 
 /// The main repository root, followed out of a worktree through the state
 /// directory's symlink.
@@ -31,6 +35,60 @@ pub(super) fn record_block(stage_id: &str, work_dir: &Path, block: MergeBlock) -
     })?;
     report_merge_block(stage_id, &block);
     Ok(())
+}
+
+/// Route the stage to human review because the control-path gate held its
+/// branch, say how an operator releases it, and fail the command: the merge
+/// did not happen.
+pub(super) fn hold_for_review(stage_id: &str, work_dir: &Path, reason: &str) -> Result<()> {
+    route_held_to_review(stage_id, work_dir, reason)?;
+    bail!("Stage '{stage_id}' merge held for human review: the branch touches a control path")
+}
+
+/// Merge `stage` into `target_branch` for `loom stage merge` and act on the
+/// outcome: complete it, record a block or conflict, hold it for review, or
+/// report the error (`fix_attempts` was already persisted by the caller).
+pub(super) fn attempt_retried_merge(
+    stage: &Stage,
+    work_dir: &Path,
+    repo_root: &Path,
+    target_branch: &str,
+) -> Result<()> {
+    let stage_id = stage.id.as_str();
+    match merge_stage(
+        stage_id,
+        target_branch,
+        repo_root,
+        work_dir,
+        MergeGate::Enforce,
+    ) {
+        Ok(MergeResult::Success {
+            files_changed,
+            insertions,
+            deletions,
+            stash,
+        }) => {
+            println!("Merge successful!");
+            println!("  {files_changed} files changed, +{insertions} -{deletions}");
+            report_stash(stash.as_ref());
+            let done = format!("Stage '{stage_id}' merge complete! (Completed, merged: true)");
+            complete_retried_merge(stage_id, work_dir, repo_root, target_branch, &done)
+        }
+        Ok(MergeResult::Blocked(block)) => record_block(stage_id, work_dir, block),
+        Ok(MergeResult::AlreadyUpToDate) => {
+            println!("Branch is already up to date with {target_branch}.");
+            let done = format!("Stage '{stage_id}' marked as merged.");
+            complete_retried_merge(stage_id, work_dir, repo_root, target_branch, &done)
+        }
+        Ok(MergeResult::Conflict { conflicting_files }) => {
+            record_conflict_and_report(stage, work_dir, repo_root, &conflicting_files)
+        }
+        Ok(MergeResult::Held { reason }) => hold_for_review(stage_id, work_dir, &reason),
+        Err(e) => {
+            report_merge_error(stage, work_dir, repo_root, &e);
+            Ok(())
+        }
+    }
 }
 
 /// Mark a resolved merge complete after ancestry proves it landed, then

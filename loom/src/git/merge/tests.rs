@@ -48,7 +48,13 @@ fn merge_stage_refuses_when_merge_head_set() {
     let work_dir = root.join(".loom").join("work");
     std::fs::create_dir_all(&work_dir).unwrap();
 
-    let marker = blocked_marker(merge_stage("blockee", "main", root, &work_dir));
+    let marker = blocked_marker(merge_stage(
+        "blockee",
+        "main",
+        root,
+        &work_dir,
+        MergeGate::Enforce,
+    ));
     assert_eq!(marker, "MERGE_HEAD");
     assert!(merge_head_exists(root).unwrap());
 }
@@ -65,7 +71,13 @@ fn merge_stage_refuses_during_cherry_pick() {
     assert!(!pick.status.success(), "cherry-pick must conflict");
     let work = super::test_support::lock_dir();
 
-    let marker = blocked_marker(merge_stage("blockee", "main", root, work.path()));
+    let marker = blocked_marker(merge_stage(
+        "blockee",
+        "main",
+        root,
+        work.path(),
+        MergeGate::Enforce,
+    ));
     assert_eq!(marker, "CHERRY_PICK_HEAD");
     assert!(root.join(".git").join("CHERRY_PICK_HEAD").exists());
 }
@@ -77,6 +89,12 @@ fn merge_stage_refuses_during_rebase() {
     std::fs::create_dir(root.join(".git").join("rebase-merge")).unwrap();
     let work = super::test_support::lock_dir();
 
-    let marker = blocked_marker(merge_stage("blockee", "main", root, work.path()));
+    let marker = blocked_marker(merge_stage(
+        "blockee",
+        "main",
+        root,
+        work.path(),
+        MergeGate::Enforce,
+    ));
     assert_eq!(marker, "rebase-merge");
 }

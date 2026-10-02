@@ -2,19 +2,19 @@
 //! a stage branch whose diff since it split from the target touches a
 //! control path — `.claude/`, `.mcp.json`, `.loom/`, or the tracked git
 //! hooks directory. Owner decision 9, `doc/plans/PLAN-loom-state-confinement.md`
-//! §9. Call sites: `merge_handler.rs`'s `try_auto_merge` (before ever
-//! attempting the merge, so a conflicting branch never gets that far either)
-//! and `resolver_spawn.rs`'s `gate_holds_merge_stage` (for a stage that reached
-//! `MergeConflict`/`MergeBlocked` some other way, e.g. `loom stage complete`).
-
-use std::path::Path;
+//! §9. The path rules live in `crate::git::merge::control_paths`, and
+//! `merge_stage` enforces them on the commits it merges. These are the early
+//! filters: `try_auto_merge` (before ever attempting the merge, so a
+//! conflicting branch never gets that far either) and `resolver_spawn.rs`'s
+//! `gate_holds_merge_stage` (for a stage that reached `MergeConflict` or
+//! `MergeBlocked` some other way, e.g. `loom stage complete`).
 
 use anyhow::Result;
 use chrono::Utc;
 
 use crate::fs::session_files::mark_session_terminal_reason;
 use crate::git::branch::branch_name_for_stage;
-use crate::git::read_hooks_path_scope;
+use crate::git::merge::control_path_violation;
 use crate::models::session::{Session, SessionExitReason, SessionStatus, SessionType};
 use crate::orchestrator::core::persistence::Persistence;
 use crate::orchestrator::core::recovery_guards::too_young_to_judge;
@@ -46,8 +46,9 @@ impl Orchestrator {
     }
 
     /// The human-review reason when `stage_branch`'s diff since it split from
-    /// `target_branch` touches a control path, else `None`. A diff that cannot
-    /// be computed lets the merge proceed.
+    /// `target_branch` touches a control path, else `None`. This is an early
+    /// filter: a diff that cannot be computed lets the caller go on, and the
+    /// gate inside `merge_stage` (which fails closed) decides.
     pub(super) fn merge_gate_reason(
         &self,
         stage_id: &str,
@@ -60,7 +61,7 @@ impl Orchestrator {
                 tracing::warn!(
                     stage_id = %stage_id,
                     %error,
-                    "merge gate: failed to compute changed paths; proceeding with merge attempt"
+                    "merge gate: failed to compute changed paths; proceeding; merge_stage gates the merge"
                 );
                 None
             }
@@ -259,87 +260,6 @@ fn warn_retirement_uncertainty(
         "Failed to prove stale merge writer retirement; retaining ownership"
     );
     true
-}
-
-/// A human-review reason when `stage_branch`'s diff since it split from
-/// `target_branch` touches a control path, else `None`.
-fn control_path_violation(
-    repo_root: &Path,
-    target_branch: &str,
-    stage_branch: &str,
-) -> Result<Option<String>> {
-    let merge_base =
-        crate::git::run_git_checked(&["merge-base", target_branch, stage_branch], repo_root)?;
-    let diff = crate::git::run_git_checked(
-        &[
-            "diff",
-            "--name-only",
-            "--no-renames",
-            merge_base.as_str(),
-            stage_branch,
-        ],
-        repo_root,
-    )?;
-    let hooks_prefix = hooks_dir_prefix(repo_root);
-    let offending: Vec<&str> = diff
-        .lines()
-        .filter(|path| is_control_path(path, hooks_prefix.as_deref()))
-        .collect();
-    if offending.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(format!(
-        "branch {stage_branch} touches control path(s) requiring human review: {}",
-        offending.join(", ")
-    )))
-}
-
-/// Whether `path` (repository-relative, forward-slashed, as `git diff
-/// --name-only` reports it) is a control path: `.claude/`, `.mcp.json`,
-/// `.loom/`, or under the tracked git hooks directory.
-fn is_control_path(path: &str, hooks_prefix: Option<&str>) -> bool {
-    path.starts_with(".claude/")
-        || path == ".mcp.json"
-        || path.starts_with(".loom/")
-        || hooks_prefix.is_some_and(|prefix| path.starts_with(prefix))
-}
-
-/// The repo-relative prefix of the tracked git hooks directory
-/// (`core.hooksPath`), or `None` when it is unset at every scope or resolves
-/// outside the repository.
-fn hooks_dir_prefix(repo_root: &Path) -> Option<String> {
-    // Scoped reads (see `read_hooks_path_scope` for why), one per scope.
-    let local = read_hooks_path_scope(repo_root, "--local");
-    let global = read_hooks_path_scope(repo_root, "--global");
-    let system = read_hooks_path_scope(repo_root, "--system");
-    resolve_hooks_dir_prefix(
-        repo_root,
-        local.as_deref(),
-        global.as_deref(),
-        system.as_deref(),
-    )
-}
-
-/// Resolves `core.hooksPath` from the three config scopes to a repo-relative
-/// prefix ending in `/`, taking the first of `local`, `global`, `system` that
-/// is set — git's own precedence order, so a global value (even a relative
-/// one, which applies inside every repository) is used only when local is
-/// unset. `None` when every scope is unset, or the winning value is an
-/// absolute path outside `repo_root`.
-fn resolve_hooks_dir_prefix(
-    repo_root: &Path,
-    local: Option<&str>,
-    global: Option<&str>,
-    system: Option<&str>,
-) -> Option<String> {
-    let configured = local.or(global).or(system)?;
-    let path = Path::new(configured);
-    let relative = if path.is_absolute() {
-        path.strip_prefix(repo_root).ok()?.to_str()?.to_string()
-    } else {
-        configured.to_string()
-    };
-    Some(format!("{}/", relative.trim_end_matches('/')))
 }
 
 #[cfg(test)]

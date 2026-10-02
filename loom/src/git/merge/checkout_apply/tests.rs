@@ -6,7 +6,7 @@ use crate::git::merge::fast_forward::failpoint::{inject, Failures};
 use crate::git::merge::test_support::{
     commit_file, git_ok, git_out, init_repo, lock_dir, rev, stage_branch,
 };
-use crate::git::merge::{merge_stage, MergeResult};
+use crate::git::merge::{merge_stage, MergeGate, MergeResult};
 
 const LINES: &str = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n";
 
@@ -21,7 +21,7 @@ fn overlapping_checkout(root: &Path) {
 
 fn merge(root: &Path) -> MergeResult {
     let work = lock_dir();
-    merge_stage("s1", "main", root, work.path()).unwrap()
+    merge_stage("s1", "main", root, work.path(), MergeGate::Enforce).unwrap()
 }
 
 fn read(root: &Path) -> String {

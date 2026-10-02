@@ -6,7 +6,8 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
-use crate::git::worktree::find_repo_root_from_cwd;
+use super::progressive_complete::complete_with_merge;
+use crate::git::{worktree::find_repo_root_from_cwd, MergeGate};
 use crate::models::stage::{Stage, StageStatus};
 use crate::orchestrator::adjudication::close_open_disputes;
 use crate::orchestrator::coherence::live_worker_sessions;
@@ -156,11 +157,10 @@ fn handle_force_complete(stage_id: &str, work_dir: &Path) -> Result<()> {
 
     // Attempt progressive merge + completion. On Success, complete_with_merge
     // transitions Executing → Completed and triggers dependents. On
-    // Conflict/Blocked it transitions to the appropriate merge state and saves.
-    // Conflict and blocked outcomes are persisted by `complete_with_merge`, but
-    // remain command failures so callers and automation cannot mistake them for
-    // a successful force-completion.
-    super::progressive_complete::complete_with_merge(&mut stage, &repo_root, work_dir)?;
+    // Conflict/Blocked it transitions to the appropriate merge state and saves;
+    // those outcomes stay command failures so automation cannot mistake them for
+    // a successful force-completion. The reviewed branch skips the control-path gate.
+    complete_with_merge(&mut stage, &repo_root, work_dir, MergeGate::Bypass)?;
     println!("Stage '{stage_id}' force-completed and merged successfully.");
 
     Ok(())

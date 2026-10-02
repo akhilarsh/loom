@@ -6,7 +6,7 @@
 //! Only synchronous `git` commands run here: no daemon and no loom binary.
 
 use loom::git::merge::{
-    check_resolved_worktree, merge_head_exists, merge_stage, MergeBlock, MergeResult,
+    check_resolved_worktree, merge_head_exists, merge_stage, MergeBlock, MergeGate, MergeResult,
 };
 use serial_test::serial;
 use std::path::{Path, PathBuf};
@@ -84,7 +84,7 @@ fn add_stage_worktree(root: &Path, id: &str) -> PathBuf {
 /// The merge lock's work directory, outside the repository so the lock file
 /// never shows as an untracked file there.
 fn merge(root: &Path, work: &TempDir, id: &str) -> MergeResult {
-    merge_stage(id, "main", root, work.path()).unwrap()
+    merge_stage(id, "main", root, work.path(), MergeGate::Enforce).unwrap()
 }
 
 fn status(root: &Path) -> String {

@@ -10,7 +10,7 @@ use std::path::Path;
 use crate::commands::common::detect_stage_id;
 use crate::git::branch::branch_name_for_stage;
 use crate::git::merge::check_resolved_worktree;
-use crate::git::{merge_stage, MergeResult};
+use crate::git::{merge_stage, MergeGate, MergeResult};
 use crate::models::stage::StageStatus;
 use crate::verify::transitions::{load_stage, update_stage};
 
@@ -20,9 +20,10 @@ mod landing;
 mod next_step;
 mod preflight;
 mod relay;
-use conflict::record_conflict_and_report;
-use landing::{complete_resolved_merge, complete_retried_merge, main_repo_root, record_block};
-use next_step::{print_fix_limit_options, report_merge_error};
+use landing::{
+    attempt_retried_merge, complete_resolved_merge, hold_for_review, main_repo_root, record_block,
+};
+use next_step::print_fix_limit_options;
 use preflight::{retry_preflight, RetryPreflight};
 
 use super::progressive_complete::report_stash;
@@ -77,7 +78,7 @@ fn merge_resolved(stage_id: Option<String>) -> Result<()> {
     check_resolved_worktree(&repo_root, &stage_id, &target)
         .map_err(|reason| anyhow!("The stage worktree is not ready to merge: {reason}"))?;
 
-    match merge_stage(&stage_id, &target, &repo_root, work_dir)? {
+    match merge_stage(&stage_id, &target, &repo_root, work_dir, MergeGate::Enforce)? {
         MergeResult::Success { stash, .. } => {
             report_stash(stash.as_ref());
             complete_resolved_merge(&stage, work_dir, &repo_root, &target)
@@ -91,6 +92,7 @@ fn merge_resolved(stage_id: Option<String>) -> Result<()> {
             conflicting_files.join(", ")
         ),
         MergeResult::Blocked(block) => record_block(&stage_id, work_dir, block),
+        MergeResult::Held { reason } => hold_for_review(&stage_id, work_dir, &reason),
     }
 }
 
@@ -155,40 +157,7 @@ fn merge_retry(stage_id: Option<String>) -> Result<()> {
     let branch_name = branch_name_for_stage(&stage_id);
     println!("Merging {branch_name} into {target_branch}...");
 
-    // Attempt the merge
-    match merge_stage(&stage_id, &target_branch, &repo_root, work_dir) {
-        Ok(MergeResult::Success {
-            files_changed,
-            insertions,
-            deletions,
-            stash,
-        }) => {
-            println!("Merge successful!");
-            println!("  {files_changed} files changed, +{insertions} -{deletions}");
-            report_stash(stash.as_ref());
-            let done = format!("Stage '{stage_id}' merge complete! (Completed, merged: true)");
-            complete_retried_merge(&stage_id, work_dir, &repo_root, &target_branch, &done)?;
-        }
-
-        Ok(MergeResult::Blocked(block)) => record_block(&stage_id, work_dir, block)?,
-
-        Ok(MergeResult::AlreadyUpToDate) => {
-            println!("Branch is already up to date with {target_branch}.");
-            let done = format!("Stage '{stage_id}' marked as merged.");
-            complete_retried_merge(&stage_id, work_dir, &repo_root, &target_branch, &done)?;
-        }
-
-        Ok(MergeResult::Conflict { conflicting_files }) => {
-            record_conflict_and_report(&stage, work_dir, &repo_root, &conflicting_files)?;
-        }
-
-        Err(e) => {
-            // fix_attempts was already persisted by the locked increment above.
-            report_merge_error(&stage, work_dir, &repo_root, &e);
-        }
-    }
-
-    Ok(())
+    attempt_retried_merge(&stage, work_dir, &repo_root, &target_branch)
 }
 
 /// Resolve a stage ID: use the one provided, or detect it from the current
@@ -238,162 +207,4 @@ fn find_repo_root(cwd: &Path) -> Result<std::path::PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::git::get_conflicting_files;
-    use crate::git::merge::merge_head_exists;
-    use crate::models::stage::Stage;
-    use std::process::Command;
-    use tempfile::TempDir;
-
-    fn create_test_stage(id: &str, status: StageStatus) -> Stage {
-        Stage {
-            id: id.to_string(),
-            name: format!("Test Stage {id}"),
-            status,
-            fix_attempts: 0,
-            max_fix_attempts: Some(3),
-            ..Stage::default()
-        }
-    }
-
-    // Tests from merge_complete
-
-    #[test]
-    fn test_get_conflicting_files_clean() {
-        // In a clean repo, there should be no conflicting files
-        let temp_dir = TempDir::new().unwrap();
-        let repo_root = temp_dir.path();
-
-        // Initialize a git repo
-        Command::new("git")
-            .args(["init"])
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
-
-        assert!(get_conflicting_files(repo_root).unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_merge_head_absent_in_clean_repo() {
-        let temp_dir = TempDir::new().unwrap();
-        let repo_root = temp_dir.path();
-
-        // Initialize a git repo
-        Command::new("git")
-            .args(["init"])
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
-
-        assert!(!merge_head_exists(repo_root).unwrap());
-    }
-
-    // Tests from retry_merge
-
-    #[test]
-    fn test_merge_rejects_wrong_status() {
-        let temp_dir = TempDir::new().unwrap();
-        let work_dir = temp_dir.path();
-
-        // Create stages directory and a stage in Executing status
-        let stages_dir = work_dir.join(".loom").join("work").join("stages");
-        std::fs::create_dir_all(&stages_dir).unwrap();
-
-        let stage = create_test_stage("test-stage", StageStatus::Executing);
-        let stage_path = stages_dir.join("test-stage.md");
-        let content = crate::verify::transitions::serialize_stage_to_markdown(&stage).unwrap();
-        std::fs::write(stage_path, content).unwrap();
-
-        // merge should fail since we're not in a worktree and status is wrong
-        // We test the status check by calling the function parts directly
-        assert!(!matches!(
-            stage.status,
-            StageStatus::MergeConflict | StageStatus::MergeBlocked
-        ));
-    }
-
-    #[test]
-    fn test_merge_accepts_merge_conflict() {
-        let stage = create_test_stage("test-stage", StageStatus::MergeConflict);
-        assert!(matches!(
-            stage.status,
-            StageStatus::MergeConflict | StageStatus::MergeBlocked
-        ));
-    }
-
-    #[test]
-    fn test_merge_accepts_merge_blocked() {
-        let stage = create_test_stage("test-stage", StageStatus::MergeBlocked);
-        assert!(matches!(
-            stage.status,
-            StageStatus::MergeConflict | StageStatus::MergeBlocked
-        ));
-    }
-
-    #[test]
-    fn test_fix_attempts_increment() {
-        let mut stage = create_test_stage("test-stage", StageStatus::MergeConflict);
-        assert_eq!(stage.fix_attempts, 0);
-
-        let attempts = stage.increment_fix_attempts();
-        assert_eq!(attempts, 1);
-        assert_eq!(stage.fix_attempts, 1);
-
-        let attempts = stage.increment_fix_attempts();
-        assert_eq!(attempts, 2);
-        assert_eq!(stage.fix_attempts, 2);
-    }
-
-    #[test]
-    fn test_fix_limit_detection() {
-        let mut stage = create_test_stage("test-stage", StageStatus::MergeConflict);
-        stage.max_fix_attempts = Some(2);
-
-        assert!(!stage.is_at_fix_limit());
-
-        stage.fix_attempts = 1;
-        assert!(!stage.is_at_fix_limit());
-
-        stage.fix_attempts = 2;
-        assert!(stage.is_at_fix_limit());
-
-        stage.fix_attempts = 3;
-        assert!(stage.is_at_fix_limit());
-    }
-
-    #[test]
-    fn test_find_repo_root_from_worktree() {
-        let temp_dir = TempDir::new().unwrap();
-        let repo_root = temp_dir.path();
-
-        // Create .worktrees/my-stage structure
-        let worktree = repo_root.join(".worktrees").join("my-stage");
-        std::fs::create_dir_all(&worktree).unwrap();
-
-        let found = find_repo_root(&worktree).unwrap();
-        assert_eq!(
-            found.canonicalize().unwrap(),
-            repo_root.canonicalize().unwrap()
-        );
-    }
-
-    #[test]
-    fn test_find_repo_root_from_subdir() {
-        let temp_dir = TempDir::new().unwrap();
-        let repo_root = temp_dir.path();
-
-        // Create .worktrees/my-stage/src structure
-        let subdir = repo_root.join(".worktrees").join("my-stage").join("src");
-        std::fs::create_dir_all(&subdir).unwrap();
-
-        // From inside worktree subdir, we should still find repo root
-        // We need .worktrees at repo root for this to work
-        let found = find_repo_root(&subdir).unwrap();
-        assert_eq!(
-            found.canonicalize().unwrap(),
-            repo_root.canonicalize().unwrap()
-        );
-    }
-}
+mod tests;

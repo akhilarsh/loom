@@ -225,3 +225,29 @@ fn merge_resolved_is_refused_for_another_session_kind_or_stage() {
         Some(LedgerOutcome::Refused)
     );
 }
+
+#[test]
+fn merge_resolved_refuses_a_branch_that_touches_a_control_path() {
+    let fx = fixture();
+    let mut orchestrator = resolved_stage(&fx);
+    let worktree = worktree_of(&fx);
+    std::fs::create_dir_all(worktree.join(".claude")).unwrap();
+    std::fs::write(worktree.join(".claude/settings.json"), "{}\n").unwrap();
+    git(&worktree, &["add", ".claude/settings.json"]);
+    git(&worktree, &["commit", "-q", "-m", "resolver edit"]);
+    let main_before = git(&fx.repo_root, &["rev-parse", "main"]);
+
+    assert_eq!(
+        resolve(&fx, &mut orchestrator),
+        Some(LedgerOutcome::Refused)
+    );
+
+    let stage = load_stage(STAGE, &fx.work_dir).unwrap();
+    assert_eq!(stage.status, StageStatus::NeedsHumanReview);
+    assert!(!stage.merged);
+    assert!(stage
+        .review_reason
+        .unwrap()
+        .contains(".claude/settings.json"));
+    assert_eq!(git(&fx.repo_root, &["rev-parse", "main"]), main_before);
+}

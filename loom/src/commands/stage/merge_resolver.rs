@@ -8,11 +8,14 @@ use std::path::Path;
 
 use crate::daemon::DaemonServer;
 use crate::git::branch::branch_name_for_stage;
+use crate::git::merge::control_path_violation;
 use crate::models::session::Session;
 use crate::models::stage::{Stage, StageStatus};
 use crate::orchestrator::continuation::save_session;
 use crate::orchestrator::signals::{find_live_merge_session_for_stage, generate_merge_signal};
 use crate::orchestrator::terminal::backend::{merge_resolver_worktree, SessionBackend};
+
+use super::progressive_complete::route_held_to_review;
 
 /// Result of attempting to spawn a merge resolver session.
 pub enum MergeResolverResult {
@@ -66,7 +69,35 @@ pub fn spawn_merge_resolver(
         return Ok(MergeResolverResult::AlreadyRunning { session_id });
     }
 
+    refuse_control_path_branch(stage, merge_point, repo_root, work_dir)?;
+
     spawn_resolver_session(stage, conflicting_files, merge_point, repo_root, work_dir)
+}
+
+/// Refuse to hand a branch that touches a control path to a resolver session:
+/// the stage goes to human review and the spawn fails. A diff that cannot be
+/// computed fails the spawn too.
+fn refuse_control_path_branch(
+    stage: &Stage,
+    merge_point: &str,
+    repo_root: &Path,
+    work_dir: &Path,
+) -> Result<()> {
+    let branch = branch_name_for_stage(&stage.id);
+    let violation = control_path_violation(repo_root, merge_point, &branch).with_context(|| {
+        format!(
+            "Cannot spawn a merge resolver for stage '{}': the control-path check failed",
+            stage.id
+        )
+    })?;
+    let Some(reason) = violation else {
+        return Ok(());
+    };
+    route_held_to_review(&stage.id, work_dir, &reason)?;
+    bail!(
+        "Not spawning a merge resolver for stage '{}': the branch touches a control path",
+        stage.id
+    )
 }
 
 /// Write the merge signal and spawn the resolver in the stage worktree.

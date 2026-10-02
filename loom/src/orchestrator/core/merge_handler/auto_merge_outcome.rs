@@ -64,7 +64,8 @@ impl Orchestrator {
     /// Act on the result of `attempt_auto_merge`; returns whether the stage
     /// merged. A conflict moves the stage to `MergeConflict` and spawns
     /// nothing here: the spawn loop gives it a counted resolver. A block is
-    /// recorded on the stage and retried every tick.
+    /// recorded on the stage and retried every tick. A control-path hold goes
+    /// to human review.
     pub(super) fn apply_auto_merge_outcome(
         &mut self,
         stage: &mut Stage,
@@ -92,6 +93,10 @@ impl Orchestrator {
             }
             Ok(AutoMergeResult::Blocked(block)) => {
                 self.record_merge_block(stage_id, block);
+                false
+            }
+            Ok(AutoMergeResult::Held { reason }) => {
+                self.route_to_human_review(stage_id, reason, None);
                 false
             }
             // Nothing to merge: the stage may have been created without a worktree.

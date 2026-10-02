@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use crate::git::merge::{merge_stage, MergeBlock, MergeResult, StashReapply};
+use crate::git::merge::{merge_stage, MergeBlock, MergeGate, MergeResult, StashReapply};
 use crate::models::stage::Stage;
 
 /// Result of an auto-merge attempt.
@@ -35,6 +35,9 @@ pub enum AutoMergeResult {
     /// The target was not advanced and nothing in the main checkout changed;
     /// the caller records the reason and retries.
     Blocked(MergeBlock),
+    /// The control-path gate refused the branch; nothing was changed. The
+    /// caller routes the stage to human review with `reason`.
+    Held { reason: String },
     /// Stage has no worktree (nothing to merge)
     NoWorktree,
 }
@@ -83,8 +86,14 @@ pub fn attempt_auto_merge(
         return Ok(AutoMergeResult::NoWorktree);
     }
 
-    let merge_result =
-        merge_stage(&stage.id, target_branch, repo_root, work_dir).context("Auto-merge failed")?;
+    let merge_result = merge_stage(
+        &stage.id,
+        target_branch,
+        repo_root,
+        work_dir,
+        MergeGate::Enforce,
+    )
+    .context("Auto-merge failed")?;
     Ok(match merge_result {
         MergeResult::Success {
             files_changed,
@@ -102,6 +111,7 @@ pub fn attempt_auto_merge(
             AutoMergeResult::Conflict { conflicting_files }
         }
         MergeResult::Blocked(block) => AutoMergeResult::Blocked(block),
+        MergeResult::Held { reason } => AutoMergeResult::Held { reason },
     })
 }
 

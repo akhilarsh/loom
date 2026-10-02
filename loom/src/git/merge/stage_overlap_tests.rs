@@ -8,7 +8,7 @@ use super::test_support::{
 use super::*;
 
 fn merge(root: &Path, work: &tempfile::TempDir) -> MergeResult {
-    merge_stage("s1", "main", root, work.path()).unwrap()
+    merge_stage("s1", "main", root, work.path(), MergeGate::Enforce).unwrap()
 }
 
 /// `loom/s1` from `main` with `files` committed (parents created, ignore

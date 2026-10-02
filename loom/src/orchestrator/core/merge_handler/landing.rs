@@ -1,6 +1,6 @@
 //! Landing a stage's merge from the daemon after a resolver worked on it or a
-//! block cleared: the merge gate, `merge_stage`, and recording what came
-//! back. The `--resolved` handler, the resolver-exit path and the per-tick
+//! block cleared: `merge_stage` (control-path gate included) and recording
+//! what came back. The `--resolved` handler, the resolver-exit path and the per-tick
 //! retry of a blocked merge all land through [`Orchestrator::land_stage_merge`].
 //!
 //! PHANTOM-MERGE INVARIANT: `merged = true` is written only by
@@ -10,7 +10,7 @@
 use crate::git::branch::branch_name_for_stage;
 use crate::git::cleanup::CleanupConfig;
 use crate::git::merge::{
-    merge_stage, verify_merge_succeeded, MergeBlock, MergeResult, StashReapply,
+    merge_stage, verify_merge_succeeded, MergeBlock, MergeGate, MergeResult, StashReapply,
 };
 use crate::models::stage::{Stage, StageStatus};
 use crate::orchestrator::core::persistence::Persistence;
@@ -25,7 +25,7 @@ pub(in crate::orchestrator::core) enum Landing {
     /// The merge landed and ancestry proved it: the stage is `Completed` and
     /// `merged`.
     Merged,
-    /// The merge gate held the branch and routed the stage to human review.
+    /// The control-path gate held the branch and routed the stage to human review.
     Held,
     /// The merge conflicts in these paths; the stage is `MergeConflict`.
     Conflict(Vec<String>),
@@ -54,8 +54,9 @@ pub(in crate::orchestrator::core) fn report_stash(stage_id: &str, stash: Option<
 }
 
 impl Orchestrator {
-    /// Merge `stage_id` into `target`: the merge gate, then `merge_stage`, and
-    /// the stage is left in the status the result calls for.
+    /// Merge `stage_id` into `target` with `merge_stage`, whose control-path
+    /// gate reads the commits it merges, and leave the stage in the status
+    /// the result calls for.
     pub(in crate::orchestrator::core) fn land_stage_merge(
         &mut self,
         stage_id: &str,
@@ -65,12 +66,9 @@ impl Orchestrator {
             Ok(stage) => stage,
             Err(error) => return Landing::Failed(format!("{error:#}")),
         };
-        if self.merge_gate_blocks(stage_id, &branch_name_for_stage(stage_id), target) {
-            return Landing::Held;
-        }
         let repo_root = self.config.repo_root.clone();
         let work_dir = self.config.work_dir.clone();
-        match merge_stage(stage_id, target, &repo_root, &work_dir) {
+        match merge_stage(stage_id, target, &repo_root, &work_dir, MergeGate::Enforce) {
             Ok(MergeResult::Success { stash, .. }) => {
                 report_stash(stage_id, stash.as_ref());
                 self.verify_landing(&mut stage, stage_id, target)
@@ -83,6 +81,10 @@ impl Orchestrator {
             Ok(MergeResult::Blocked(block)) => {
                 self.record_merge_block(stage_id, block.clone());
                 Landing::Blocked(block)
+            }
+            Ok(MergeResult::Held { reason }) => {
+                self.route_to_human_review(stage_id, reason, None);
+                Landing::Held
             }
             Err(error) => Landing::Failed(format!("{error:#}")),
         }

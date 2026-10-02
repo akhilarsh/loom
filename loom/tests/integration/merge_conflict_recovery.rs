@@ -22,7 +22,7 @@ use serial_test::serial;
 use tempfile::TempDir;
 
 use loom::commands::stage::complete::{route_complete_for_conflicts, CompleteConflictRoute};
-use loom::git::merge::{merge_head_exists, merge_stage, MergeBlock, MergeResult};
+use loom::git::merge::{merge_head_exists, merge_stage, MergeBlock, MergeGate, MergeResult};
 use loom::models::stage::{Stage, StageStatus, StageType};
 use loom::orchestrator::merge_attribution::{
     reconcile_main_repo_active_merge, ReconciliationOutcome,
@@ -212,7 +212,7 @@ fn merge_stage_refuses_when_merge_head_set_main_repo() {
     start_active_merge_in_main("blockee", root);
 
     let work_dir = make_work_dir(root);
-    let result = merge_stage("blockee", "main", root, &work_dir);
+    let result = merge_stage("blockee", "main", root, &work_dir, MergeGate::Enforce);
     assert!(
         matches!(
             result,

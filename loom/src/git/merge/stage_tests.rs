@@ -9,7 +9,7 @@ use super::*;
 const LINES: &str = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n";
 
 fn merge(root: &Path, work: &tempfile::TempDir) -> MergeResult {
-    merge_stage("s1", "main", root, work.path()).unwrap()
+    merge_stage("s1", "main", root, work.path(), MergeGate::Enforce).unwrap()
 }
 
 fn overlap_paths(result: MergeResult) -> Vec<String> {

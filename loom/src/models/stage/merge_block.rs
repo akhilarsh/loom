@@ -24,6 +24,15 @@ impl Stage {
         }
     }
 
+    /// Move the stage to `NeedsHumanReview` with `reason`, whatever its
+    /// status, clearing any merge block. The merge gate uses it for a branch
+    /// that touches a control path.
+    pub fn route_to_review(&mut self, reason: &str) {
+        self.clear_merge_block();
+        self.force_status_with_reason(StageStatus::NeedsHumanReview, reason);
+        self.review_reason = Some(reason.to_string());
+    }
+
     /// Forget the typed merge block. Every transition out of a blocked merge
     /// calls this, so a stale reason never outlives the status it explained.
     pub fn clear_merge_block(&mut self) {
@@ -81,6 +90,16 @@ mod tests {
         stage.enter_merge_conflict();
         assert_eq!(stage.status, StageStatus::MergeConflict);
         assert!(stage.merge_conflict);
+        assert_eq!(stage.merge_block, None);
+    }
+
+    #[test]
+    fn route_to_review_records_the_reason_and_clears_the_block() {
+        let mut stage = stage_in(StageStatus::Completed);
+        stage.block_merge(MergeBlock::TargetMoved);
+        stage.route_to_review("touches .claude/");
+        assert_eq!(stage.status, StageStatus::NeedsHumanReview);
+        assert_eq!(stage.review_reason.as_deref(), Some("touches .claude/"));
         assert_eq!(stage.merge_block, None);
     }
 

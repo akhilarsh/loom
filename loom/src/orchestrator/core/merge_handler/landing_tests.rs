@@ -244,3 +244,22 @@ fn the_resolver_exit_with_an_unresolved_worktree_merges_nothing() {
     assert!(worktree(&repo).is_dir());
     assert_eq!(main_tip(&repo), main_before);
 }
+
+#[test]
+fn landing_a_control_path_branch_holds_it_for_human_review() {
+    let (repo, mut orchestrator) = worktree_stage();
+    std::fs::create_dir_all(worktree(&repo).join(".claude")).unwrap();
+    commit_file(&worktree(&repo), ".claude/settings.json", "{}");
+    let main_before = main_tip(&repo);
+
+    assert_eq!(orchestrator.land_stage_merge(ID, "main"), Landing::Held);
+
+    let stage = on_disk(&orchestrator);
+    assert_eq!(stage.status, StageStatus::NeedsHumanReview);
+    assert!(!stage.merged);
+    assert!(stage
+        .review_reason
+        .unwrap()
+        .contains(".claude/settings.json"));
+    assert_eq!(main_tip(&repo), main_before);
+}

@@ -22,9 +22,11 @@ use std::process::Command;
 use tempfile::TempDir;
 
 use super::super::progressive_complete::{
-    attempt_progressive_merge, should_defer_cleanup, MergeOutcome,
+    attempt_progressive_merge, complete_with_merge, should_defer_cleanup, MergeOutcome,
 };
+use crate::git::MergeGate;
 use crate::models::stage::{Stage, StageStatus};
+use crate::verify::transitions::{load_stage, save_stage};
 
 /// Build a real git repo with a `.loom/work` directory and a `config.toml` that
 /// points at `main` as the base branch. Returns the repo root TempDir.
@@ -102,7 +104,7 @@ fn no_branch_does_not_mark_merged() {
     // No loom/stage-no-branch branch exists. The progressive merge should
     // refuse to mark the stage merged regardless of how the missing branch
     // surfaces (Blocked outcome, or an Err from the deeper git call).
-    let outcome = attempt_progressive_merge(&mut stage, repo_root, &work_dir);
+    let outcome = attempt_progressive_merge(&mut stage, repo_root, &work_dir, MergeGate::Enforce);
 
     match outcome {
         Ok(MergeOutcome::Blocked) => {
@@ -114,8 +116,8 @@ fn no_branch_does_not_mark_merged() {
                 stage.merged
             );
         }
-        Ok(MergeOutcome::Conflict) => {
-            panic!("unexpected Conflict from missing branch");
+        Ok(MergeOutcome::Conflict | MergeOutcome::Held) => {
+            panic!("unexpected Conflict or Held from missing branch");
         }
         Err(_) => {
             // Some implementations may surface missing branch as an error
@@ -185,4 +187,64 @@ fn should_not_defer_cleanup_when_worktree_path_does_not_exist() {
     // stage-1's worktree was never created on disk.
 
     assert!(!should_defer_cleanup(repo_root, repo_root, "stage-1"));
+}
+
+/// A stage branch `loom/<id>` one commit ahead of `main`, adding
+/// `.claude/settings.json`, and the stage saved as `Executing`.
+fn control_path_stage(repo_root: &std::path::Path, id: &str) -> Stage {
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(repo_root)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}");
+    };
+    git(&["checkout", "-q", "-b", &format!("loom/{id}")]);
+    std::fs::create_dir_all(repo_root.join(".claude")).expect("mkdir .claude");
+    std::fs::write(repo_root.join(".claude/settings.json"), "{}\n").expect("write settings");
+    git(&["add", ".claude/settings.json"]);
+    git(&["commit", "-q", "-m", "stage work"]);
+    git(&["checkout", "-q", "main"]);
+    let stage = make_stage(id);
+    save_stage(&stage, &repo_root.join(".loom").join("work")).expect("save stage");
+    stage
+}
+
+#[test]
+fn complete_with_merge_holds_a_control_path_branch_for_review() {
+    let repo = init_repo_with_work_dir();
+    let repo_root = repo.path();
+    let work_dir = repo_root.join(".loom").join("work");
+    let mut stage = control_path_stage(repo_root, "ctl-hold");
+
+    let error = complete_with_merge(&mut stage, repo_root, &work_dir, MergeGate::Enforce)
+        .expect_err("a control-path branch must not complete");
+
+    assert!(error.to_string().contains("control path"), "{error}");
+    let on_disk = load_stage("ctl-hold", &work_dir).unwrap();
+    assert_eq!(on_disk.status, StageStatus::NeedsHumanReview);
+    assert!(!on_disk.merged);
+    assert!(on_disk
+        .review_reason
+        .unwrap()
+        .contains(".claude/settings.json"));
+    assert!(!repo_root.join(".claude").exists(), "nothing was merged");
+}
+
+#[test]
+fn complete_with_merge_bypass_lands_a_control_path_branch() {
+    let repo = init_repo_with_work_dir();
+    let repo_root = repo.path();
+    let work_dir = repo_root.join(".loom").join("work");
+    let mut stage = control_path_stage(repo_root, "ctl-bypass");
+
+    let completed = complete_with_merge(&mut stage, repo_root, &work_dir, MergeGate::Bypass)
+        .expect("the operator's override merges");
+
+    assert!(completed);
+    let on_disk = load_stage("ctl-bypass", &work_dir).unwrap();
+    assert_eq!(on_disk.status, StageStatus::Completed);
+    assert!(on_disk.merged);
+    assert!(repo_root.join(".claude/settings.json").exists());
 }

@@ -3,17 +3,18 @@
 //! This module handles the git merge operations that occur when a stage
 //! completes successfully with passing acceptance criteria.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use std::path::Path;
 
 use crate::git::branch::branch_name_for_stage;
-use crate::git::cleanup::CleanupConfig;
 use crate::git::get_branch_head;
-use crate::git::merge::{MergeBlock, StashReapply};
+use crate::git::merge::{MergeBlock, MergeGate, StashReapply};
 use crate::models::stage::Stage;
-use crate::orchestrator::merge_lifecycle::{CleanupOutcome, MergeLifecycle};
+use crate::orchestrator::merge_lifecycle::MergeLifecycle;
 use crate::orchestrator::{get_merge_point, merge_completed_stage, ProgressiveMergeResult};
 use crate::verify::transitions::update_stage;
+
+mod finish;
 
 /// Result of attempting to merge a completed stage
 pub enum MergeOutcome {
@@ -23,6 +24,9 @@ pub enum MergeOutcome {
     Conflict,
     /// Merge blocked - stage should be marked MergeBlocked
     Blocked,
+    /// The control-path gate held the branch - stage already routed to
+    /// NeedsHumanReview
+    Held,
 }
 
 /// Attempt to progressively merge a completed stage into the merge point.
@@ -47,17 +51,20 @@ pub enum MergeOutcome {
 /// - `MergeOutcome::Success` if merge succeeded (stage should be marked Completed)
 /// - `MergeOutcome::Conflict` if merge conflict (stage already marked MergeConflict)
 /// - `MergeOutcome::Blocked` if merge failed (stage already marked MergeBlocked)
+/// - `MergeOutcome::Held` if `gate` is `Enforce` and the branch touches a control
+///   path (stage already routed to NeedsHumanReview)
 pub fn attempt_progressive_merge(
     stage: &mut Stage,
     repo_root: &Path,
     work_dir: &Path,
+    gate: MergeGate,
 ) -> Result<MergeOutcome> {
     let merge_point = get_merge_point(work_dir)?;
 
     let completed_commit = capture_completed_commit(stage, repo_root);
 
     println!("Attempting progressive merge into '{merge_point}'...");
-    match merge_completed_stage(stage, repo_root, &merge_point) {
+    match merge_completed_stage(stage, repo_root, &merge_point, gate) {
         Ok(ProgressiveMergeResult::Success {
             files_changed,
             stash,
@@ -78,6 +85,9 @@ pub fn attempt_progressive_merge(
         Ok(ProgressiveMergeResult::Blocked(block)) => {
             hold_blocked_merge(stage, work_dir, completed_commit, block)
         }
+        Ok(ProgressiveMergeResult::Held { reason }) => {
+            hold_for_review(stage, work_dir, completed_commit, &reason)
+        }
         Ok(ProgressiveMergeResult::Conflict { conflicting_files }) => {
             let at = ConflictTarget {
                 merge_point: &merge_point,
@@ -86,13 +96,7 @@ pub fn attempt_progressive_merge(
             };
             record_conflict(stage, &conflicting_files, completed_commit, &at)
         }
-        Err(e) => {
-            eprintln!("Progressive merge failed: {e}");
-            let outcome = mark_blocked(stage, work_dir, completed_commit)?;
-            eprintln!("Stage '{}' marked as MergeBlocked", stage.id);
-            eprintln!("  Fix the issue and run: loom stage retry {}", stage.id);
-            Ok(outcome)
-        }
+        Err(e) => block_failed_merge(stage, work_dir, completed_commit, &e),
     }
 }
 
@@ -105,6 +109,20 @@ fn capture_completed_commit(stage: &mut Stage, repo_root: &Path) -> Option<Strin
         stage.completed_commit = Some(commit);
     }
     stage.completed_commit.clone()
+}
+
+/// The merge could not be attempted: block the stage and say how to retry.
+fn block_failed_merge(
+    stage: &mut Stage,
+    work_dir: &Path,
+    completed_commit: Option<String>,
+    error: &anyhow::Error,
+) -> Result<MergeOutcome> {
+    eprintln!("Progressive merge failed: {error}");
+    let outcome = mark_blocked(stage, work_dir, completed_commit)?;
+    eprintln!("Stage '{}' marked as MergeBlocked", stage.id);
+    eprintln!("  Fix the issue and run: loom stage retry {}", stage.id);
+    Ok(outcome)
 }
 
 /// A missing stage branch cannot prove anything landed: block the merge
@@ -153,6 +171,46 @@ pub(super) fn report_merge_block(stage_id: &str, block: &MergeBlock) {
     println!(
         "  A running daemon retries the merge every tick; otherwise run `loom stage merge {stage_id}`"
     );
+}
+
+/// Print why the control-path gate held the merge and how an operator
+/// releases it.
+pub(super) fn report_merge_hold(stage_id: &str, reason: &str) {
+    println!("  Merge held: {reason}");
+    println!(
+        "  In .worktrees/{stage_id} review the change, then run \
+         `loom stage human-review {stage_id} --force-complete`"
+    );
+}
+
+/// Route `stage_id` to `NeedsHumanReview` on the fresh on-disk stage and
+/// report the hold. For the commands that hold a branch without the progressive
+/// merge's captured commit.
+pub(super) fn route_held_to_review(stage_id: &str, work_dir: &Path, reason: &str) -> Result<()> {
+    update_stage(stage_id, work_dir, |s| {
+        s.route_to_review(reason);
+        Ok(())
+    })?;
+    report_merge_hold(stage_id, reason);
+    Ok(())
+}
+
+/// Route the stage to `NeedsHumanReview` on the fresh on-disk stage (A-5)
+/// together with the captured commit, and report the hold. Nothing was merged.
+fn hold_for_review(
+    stage: &mut Stage,
+    work_dir: &Path,
+    completed_commit: Option<String>,
+    reason: &str,
+) -> Result<MergeOutcome> {
+    stage.route_to_review(reason);
+    update_stage(&stage.id, work_dir, |s| {
+        s.completed_commit = completed_commit.clone();
+        s.route_to_review(reason);
+        Ok(())
+    })?;
+    report_merge_hold(&stage.id, reason);
+    Ok(MergeOutcome::Held)
 }
 
 /// Persist a typed merge block on the fresh on-disk stage (A-5) together with
@@ -258,67 +316,18 @@ pub(super) fn should_defer_cleanup(cwd: &Path, repo_root: &Path, stage_id: &str)
 /// Complete a stage with merge, triggering dependents on success.
 ///
 /// This is the standard completion path for stages after acceptance criteria pass.
-/// It attempts progressive merge and marks the stage as completed.
-pub fn complete_with_merge(stage: &mut Stage, repo_root: &Path, work_dir: &Path) -> Result<bool> {
+/// It attempts progressive merge and marks the stage as completed. `gate` is
+/// `Bypass` only for an operator's forced completion of a reviewed branch.
+pub fn complete_with_merge(
+    stage: &mut Stage,
+    repo_root: &Path,
+    work_dir: &Path,
+    gate: MergeGate,
+) -> Result<bool> {
     MergeLifecycle::new(&stage.id, repo_root, work_dir).reconcile_overlay();
 
-    match attempt_progressive_merge(stage, repo_root, work_dir)? {
-        MergeOutcome::Success => {
-            // Mark stage as completed - only after merge succeeds.
-            stage.try_complete(None)?;
-            // Re-apply only the completion-owned fields (merged, completed_commit,
-            // and the Completed transition) onto the FRESH on-disk stage, so a
-            // concurrent daemon/dispute write during the multi-minute acceptance
-            // run is not reverted (A-5). `try_complete` recomputes duration from
-            // the on-disk `started_at` (owned by the executor) and validates the
-            // transition against the current on-disk status — if a dispute moved
-            // the stage to NeedsAdjudication meanwhile, it correctly refuses.
-            let completed_commit = stage.completed_commit.clone();
-            update_stage(&stage.id, work_dir, |s| {
-                s.completed_commit = completed_commit.clone();
-                s.merged = true;
-                s.try_complete(None)
-            })?;
-
-            println!("Stage '{}' completed!", stage.id);
-
-            let target_branch = crate::fs::resolve_target_branch_from_config(work_dir, repo_root)?;
-            MergeLifecycle::new(&stage.id, repo_root, work_dir).reconcile_base(&target_branch);
-
-            // Trigger dependent stages
-            let triggered = crate::verify::transitions::trigger_dependents(
-                &stage.id,
-                work_dir,
-                repo_root,
-                &target_branch,
-            )
-            .context("Failed to trigger dependent stages")?;
-
-            if !triggered.is_empty() {
-                println!("Triggered {} dependent stage(s):", triggered.len());
-                for dep_id in &triggered {
-                    println!("  → {dep_id}");
-                }
-            }
-
-            // Clean up worktree, branch and source-graph overlay after a
-            // verified merge (see `MergeLifecycle::cleanup`); it honours the
-            // in-worktree deferral itself. `verbose: false` because
-            // `print_cleanup_outcome` below is the single place that reports
-            // what cleanup did — `cleanup_after_merge` would otherwise print
-            // the same "Removed worktree"/"Deleted branch" lines itself.
-            let cleanup_config = CleanupConfig {
-                verbose: false,
-                force_worktree_removal: false,
-                force_branch_deletion: false,
-                prune_worktrees: true,
-            };
-            let outcome = MergeLifecycle::new(&stage.id, repo_root, work_dir)
-                .cleanup(&target_branch, &cleanup_config);
-            print_cleanup_outcome(&stage.id, outcome);
-
-            Ok(true)
-        }
+    match attempt_progressive_merge(stage, repo_root, work_dir, gate)? {
+        MergeOutcome::Success => finish::finish_completion(stage, repo_root, work_dir),
         MergeOutcome::Conflict => {
             bail!(
                 "Merge conflict detected for stage '{}'.\n\
@@ -337,41 +346,13 @@ pub fn complete_with_merge(stage: &mut Stage, repo_root: &Path, work_dir: &Path)
                 stage.id
             );
         }
-    }
-}
-
-/// Print `complete_with_merge`'s post-merge cleanup summary for `outcome`,
-/// matching the pre-refactor `cleanup_after_merge` output.
-fn print_cleanup_outcome(stage_id: &str, outcome: CleanupOutcome) {
-    match outcome {
-        CleanupOutcome::NothingToDo => {}
-        CleanupOutcome::Deferred => {
-            println!(
-                "  Worktree cleanup deferred to the orchestrator (session is running inside the worktree)"
+        MergeOutcome::Held => {
+            bail!(
+                "Merge held for stage '{}': the branch touches a control path.\n\
+                 The stage has been routed to NeedsHumanReview.\n\
+                 This session should exit now; a person releases it.",
+                stage.id
             );
-            println!(
-                "  If no daemon is running, clean up manually with: loom worktree remove {stage_id}"
-            );
-        }
-        CleanupOutcome::Refused { reason } => {
-            eprintln!("  Warning: Cleanup refused: {reason}");
-            eprintln!("  You can manually clean up with: loom worktree remove {stage_id}");
-        }
-        // `result.warnings` is not surfaced: `MergeLifecycle::cleanup` reaches
-        // `Done` only via `cleanup_after_merge`, which always builds an empty
-        // `warnings` vec on its `Ok` path (only `cleanup_multiple_stages`
-        // ever populates it) — dead on this path.
-        CleanupOutcome::Done(result) => {
-            if result.worktree_removed {
-                println!("  Removed worktree: .worktrees/{stage_id}");
-            }
-            if result.branch_deleted {
-                println!("  Deleted branch: {}", branch_name_for_stage(stage_id));
-            }
-        }
-        CleanupOutcome::Failed(e) => {
-            eprintln!("  Warning: Failed to clean up stage resources: {e}");
-            eprintln!("  You can manually clean up with: loom worktree remove {stage_id}");
         }
     }
 }
