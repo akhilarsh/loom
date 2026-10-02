@@ -576,7 +576,9 @@ loom hook user-prompt                                                        # U
 loom request status <id> [--session <id>]                                    # Plumbing: has the daemon applied a request relayed through the sandbox? <id> is printed after the originating command
 loom skill-index                                                             # Plumbing: rebuild the skill keyword index the skill-trigger hook reads
 loom repair [--fix]
-loom clean [--all|--worktrees|--sessions|--state]
+loom clean [--all|--worktrees|--sessions|--state]                            # --state and --all refuse while the target branch is held (see loom target)
+loom target status                                                           # Accepted tip, current tip, attestation state, hold reasons and the review and restore commands
+loom target accept --to <commit>                                             # Accept the target's current tip after review; refuses inside a loom session
 loom update
 loom config [-k <key> [<value>] | --list | --print]                          # Read or write ~/.loom/config.toml; bare in a terminal it opens the settings screen (see Configuration)
 loom install-assets [--claude-dir <path>] [--codex-dir <path>] [--skills core|all]  # Install loom's agents, skills, commands, hooks and doctrine files; see Install script below for what --skills core|all installs where
@@ -584,6 +586,8 @@ loom completions [<shell>] [--install] [--migrate]
 ```
 
 `loom handoff` writes the document a successor session resumes from, under `.loom/work/handoffs/`. Loom's `pre-compact` hook calls it automatically before a compaction, and an agent that reaches its context ceiling calls it explicitly with `--trigger ceiling`.
+
+`loom target` is the operator side of the target guard. Loom records the last tip of the target branch (`[plan] base_branch`, normally `main`) it accepted, and a git `reference-transaction` hook installed by `loom init` and `loom repair --fix` attests moves made by host-side git. A move loom did not make that rewrites history, touches a merge-gate control path, carries unmerged `loom/*` stage work, or (with attestation on) has no hook record holds every merge into the target and shows a warning in `loom status`; running stages continue, and new worktrees start at the accepted tip. Loom never restores the ref: review the move with `loom target status`, then either run `loom target accept --to <commit>` or restore the ref with the command `status` prints. `loom clean --state|--all` and `loom init --clean` refuse while a target is held, because deleting the record would let the next run trust an unreviewed move. Where `core.hooksPath` is set (husky and similar), git ignores `.git/hooks`, attestation is off, and only the history, control-path and stage-work checks apply.
 
 `loom request status` and `loom skill-index` are plumbing for loom's own hooks and its sandbox relay rather than commands a plan author types; they are listed so hook output that names them is traceable.
 

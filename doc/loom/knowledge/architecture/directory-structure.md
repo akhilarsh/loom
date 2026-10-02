@@ -1,6 +1,6 @@
 # Directory Structure
 
-> loom/src module tree, state layout, root assets
+> Module tree, state layout, root assets
 
 ## Directory Structure
 

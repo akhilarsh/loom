@@ -179,3 +179,63 @@ and commit the tree with `commit-tree`.
 **Prevention:** a status a daemon loop still acts on must not count as terminal for the daemon's exit; the loop itself must move it to a terminal status or keep a session alive. When a failure is retried "next tick", check that a next tick exists.
 
 **Fix:** merge states are never terminal, and the spawn loop ends each in a resolver or `NeedsHumanReview`; see [Merge Resolver Spawn Loop](../patterns/merge-and-recovery.md#merge-resolver-spawn-loop). `loom stage merge` records `MergeConflict` and says what the daemon will do.
+
+## Daemon Paths Settled a Stage From Ancestry Against a Ref Any Session Could Move (2026-10-03)
+
+**What happened:** the Completed-stage sweep, the phantom-merge revert and the `NoWorktree` finalize marked a stage merged when `is_ancestor(stage commit, refs/heads/<target>)` held. Every linked-worktree session can write `refs/heads/<target>` and `refs/replace/*`, `info/grafts` and the commit-graph in the common dir, so a session could move `main` onto its own branch (or graft its commit into `main`'s history) and have loom settle the stage and delete its branch with the merge gate and review never run. The merge gate's `changed_paths` diff read the same replaceable objects.
+
+**Why:** the ancestry test trusted a ref and an object graph that the sandbox leaves writable to the session being judged. "Ancestry proves the merge landed" holds only for a ref and a history only loom writes.
+
+**Prevention:** any daemon decision that marks work landed must read a value only loom wrote: the guard's accepted tip (`target_guard::merged_into_accepted`), never the live ref. Every git call that decides ancestry or a diff goes through `crate::git::runner`, which ignores replace refs, grafts and the commit-graph. A new `Command::new("git")` in production code that decides ancestry or a merge is a defect; see the open list in [Sandbox gaps](../concerns/sandbox-and-confinement-gaps.md).
+
+**Fix:** [Target Guard](../architecture/target-guard.md): `merged_into_accepted` at every ancestry settle, the `TargetHeld` block, and the runner's three settings.
+
+## `GIT_GRAFT_FILE=/dev/null` Breaks Git's Stderr Contract (2026-10-02)
+
+**What happened:** the brief and the plan said to disable grafts with `GIT_GRAFT_FILE=/dev/null`. Under git 2.53 that makes git open the file and print an `info/grafts is deprecated` advice on stderr for every command that parses commits, which broke `a_refusal_without_paths_is_fast_forward_refused` (`FastForwardRefused.detail` is git's stderr). The hook would have printed it to the operator on every ref update.
+
+**Why:** the value was taken from the design text, not measured against the shipped git with stderr captured.
+
+**Prevention:** disable grafts with a path that cannot exist (`fopen` ENOTDIR/ENOENT is silent). Measure an environment override on the pinned git version and assert stderr is empty; a brief's literal value is a claim.
+
+**Fix:** `GIT_GRAFT_FILE=/dev/null/loom-no-grafts` (`NO_GRAFT_FILE` in `git/runner.rs`, and in the hook script). `-c core.commitGraph=false` goes in `global_args` (`NO_COMMIT_GRAPH_ARGS`), not `git_command`, because `git_command` also builds non-git commands.
+
+## A Guard Check That Can Error or Be Contended Must Fail Closed (2026-10-03)
+
+**What happened:** three review findings had one shape. A contended merge lock made the daemon keep its previous state, which is "clear" when no hold was recorded; a session holding `merge.lock` could freeze the verdict clear. An unreadable `target-guard.json` only warned and started stage worktrees from the live, possibly moved, tip. `loom clean` read the plan config and the refs file, so a malformed config blocked the recovery path while a deleted record let the next run trust an unreviewed move.
+
+**Why:** each "keep the previous state" or "warn and continue" branch is fail-open exactly when the previous state is clear, which is the state an attacker wants.
+
+**Prevention:** for a security check, a read error, a contended lock and an unreadable record each produce a hold (a synthesised `Unevaluable` hold, `pending_hold` read-only judging, a `BlockReason`), never a silent clear. Recovery refusals read only the record. Pin each with a test that goes red when the branch is mutated (the integration-verify mutation list M1-M10 did).
+
+**Fix:** `check_target_guard`/`judge_without_lock`/`fail_closed` in `orchestrator/core/target_hold.rs`; `spawn_setup.rs` blocks the spawn on an unreadable record; `begin_clean` and `refuse_unreviewed_move` read `recorded_targets`.
+
+## A Bare `: >>file` Exits a POSIX Shell (2026-10-02)
+
+**What happened:** the hook's first draft tested ledger writability with `: >>"$ledger"`. A failed redirection on a special builtin exits a non-interactive POSIX shell, so the hook died before it could refuse.
+
+**Prevention:** test writability and write in one step inside a subshell, `(printf ... >>"$ledger") 2>/dev/null`, as `append()` in `loom-hooks/git-reference-transaction-hook.sh` does.
+
+## A Forged Commit-Graph Test Must Forge a Commit the Walk Reaches (2026-10-03)
+
+**What happened:** a test forged the commit-graph entry of a commit named on the command line (`merge-base --is-ancestor A B`) and expected plain git to see the forged parents. It did not: git parses a commit named on the command line from its object, and only commits reached in a walk come from the graph.
+
+**Prevention:** forge the commit strictly between the two named ones (three commits, forge the middle). Assert the precondition (plain git sees the forgery) before asserting the refusal, since a commit hook blocks probing `git commit` strings from a subagent and the semantics cannot be probed by shell.
+
+## New Untracked Directory Named `target/` Is Gitignored (2026-10-02)
+
+**What happened:** `.gitignore` carries `target/`, which also ignores `loom/src/commands/target/`. The files needed `git add -f`; until then the review change fingerprint skipped them, and adding them changed the fingerprint with no content change and cost one more review round.
+
+**Prevention:** run `git check-ignore -v` on a new directory named after a build output (`target`, `build`, `dist`) before the first review round, and `git add -f` it up front.
+
+## The Pre-Commit Markdown Linter Rewrites Unrelated Plan Files (2026-10-02)
+
+**What happened:** the repo pre-commit hook's markdown linter rewrote unstaged `doc/plans/*` files on every commit (renumbered an ordered list, stripped a meaningful trailing space inside a code span). The rewrite changes the review fingerprint.
+
+**Prevention:** after each commit run `git status` and `git checkout -- doc/plans` for files the stage did not edit, before checking the review fingerprint or completing.
+
+## Wiring a New Check Into Startup Repair Turns Piecemeal Fixtures Red (2026-10-03)
+
+**What happened:** adding the reference-transaction hook to `loom repair`'s check made `init_repair_renders_no_line_for_a_clean_workspace` red: its fixture installed only the pre-commit hook, so the unattended startup repair reported the missing hook. The file belonged to no worker row.
+
+**Prevention:** when a brief adds a check to a repair or doctor path, grep for tests that render that path's clean output and put their fixtures in the brief's ownership table. Install every checked artifact in the fixture (`install_reference_transaction_hook(root)` beside `install_pre_commit_hook(root)`).

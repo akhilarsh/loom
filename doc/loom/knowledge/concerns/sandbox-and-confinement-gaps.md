@@ -285,16 +285,19 @@ Git's `reference-transaction` hook, measured on the same host:
 - Run from a worktree under bwrap with `.loom/` read-only, a hook that appends to a ledger under `.loom/` cannot write it; the hook fails and git refuses the update (exit 128, ref unmoved) (H3). The same command with `-c core.hooksPath=/dev/null` moves the ref and writes nothing (H4).
 - An interactive operator Claude Code session in the main checkout can write `.loom/work` (H5).
 
-A git hook is therefore no gate against a sandboxed session, which can skip it.
+A git hook is therefore no gate against a sandboxed session, which can skip it. The [Target Guard](../architecture/target-guard.md) uses the hook as an attestation source for host-side moves and as a refusal for sessions that do not skip it, never as the only barrier.
 
 ## Session-Planted Replace Refs and Grafts Change What Loom's Git Sees
 
-A session can write `<common>/refs/replace/*` and `<common>/info/grafts`: the capsule denies only `.git/hooks`, `.git/config` and each `config.worktree` in the common dir (`loom/src/sandbox/control_surfaces/session_denies.rs`). `crate::git::runner::git_command` (`loom/src/git/runner.rs`) sets only `LC_ALL`/`LANG` and the `-c core.hooksPath=/dev/null -c core.fsmonitor=false` prefix, so git honors both in every `diff`, `merge-base` and ancestry test loom runs.
+A session can write `<common>/refs/replace/*`, `<common>/info/grafts`, `<common>/objects/info/commit-graph` and `<common>/shallow`: the capsule denies only `.git/hooks`, `.git/config` and each `config.worktree` in the common dir (`loom/src/sandbox/control_surfaces/session_denies.rs`). Git honors all of them in every `diff`, `merge-base` and ancestry test unless told otherwise.
 
 Measured on git 2.53:
 
 - `git replace X D` makes `git diff -z --name-only --no-renames A X` print only D's paths, hiding X's real change from `control_paths::changed_paths`, the merge gate's input.
-- A graft line `<A> <S>` makes `git merge-base --is-ancestor S A` succeed for a stage commit S that is not in A. `verify_merge_succeeded` then lets `sync_graph_with_stage_files` (`loom/src/orchestrator/core/recovery.rs`) mark the stage merged without the target moving, and the leftover sweep deletes its branch.
-- `GIT_NO_REPLACE_OBJECTS=1` (or `--no-replace-objects`) disables replace refs but NOT grafts. Only `GIT_GRAFT_FILE` pointed at an empty or missing file disables grafts (`/dev/null` works).
+- A graft line `<A> <S>` makes `git merge-base --is-ancestor S A` succeed for a stage commit S that is not in A. Settling a stage from ancestry would then mark it merged without the target moving.
+- `GIT_NO_REPLACE_OBJECTS=1` (or `--no-replace-objects`) disables replace refs but NOT grafts. Only `GIT_GRAFT_FILE` pointing at a file that cannot be opened disables grafts. `/dev/null` itself makes git 2.53 print a deprecation advice on stderr, so loom uses `/dev/null/loom-no-grafts`.
+- A forged commit-graph entry changes the parents or tree git reads for a commit reached in a walk; a commit named on the command line is parsed from its object, not the graph.
 
-Fix: set `GIT_NO_REPLACE_OBJECTS=1` and `GIT_GRAFT_FILE=/dev/null` in `git_command`; loom uses neither mechanism.
+**What the tree does.** `crate::git::runner` (`loom/src/git/runner.rs`) sets `GIT_NO_REPLACE_OBJECTS=1` and `GIT_GRAFT_FILE=/dev/null/loom-no-grafts` (`NO_GRAFT_FILE`) on every command in `git_command`, and `global_args` prepends `-c core.hooksPath=/dev/null -c core.fsmonitor=false` plus `-c core.commitGraph=false` (`NO_COMMIT_GRAPH_ARGS`), so a session-written commit-graph cannot forge parents either. The evaluation, `merged_into_accepted`, `verify_merge_succeeded` and `changed_paths` all run through the runner. See [Target Guard](../architecture/target-guard.md).
+
+**Still open.** Production git spawned with `Command::new("git")` outside the runner gets none of the three settings: `version/derive.rs`, `verify/criteria/cache_ignore.rs`, `commands/handoff/create.rs`, `orchestrator/adjudication/prompt/sources.rs`, `git/worktree/checks.rs`, `git/cleanup/batch.rs`, `commands/knowledge/annotate.rs`, `commands/pressure/paths.rs`, and `git/branch/cleanup.rs` (`cleanup_merged_branches`, exported and apparently unused). None decides ancestry or a merge. `<common>/shallow` is session-writable and not neutralised: it can only cut history edges (extra holds, or `stage_work` seeing no branches); whether git honors `GIT_SHALLOW_FILE` for the runner is unverified. Git run by the operator honors every one of these files.

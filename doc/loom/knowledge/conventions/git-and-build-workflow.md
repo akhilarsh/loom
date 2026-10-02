@@ -2,7 +2,7 @@
 ---
 # Git And Build Workflow
 
-> Git/worktree ops, cargo, maintainability ledger
+> Git/worktree ops, cargo, size ledger
 
 ## Git Operations
 

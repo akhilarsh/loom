@@ -20,7 +20,7 @@ Full `loom/src/` module tree, `.loom/work/` state layout, repo-root asset direct
 
 → [Core Abstractions, Data Flow & File Ownership](architecture/core-abstractions.md)
 
-## Worktree Isolation (4-Layer Defense)
+## Worktree Isolation (4-Layer Defense) and Security Model
 
 → [Worktree Isolation & Security](architecture/security-and-isolation.md)
 
@@ -30,13 +30,11 @@ Full `loom/src/` module tree, `.loom/work/` state layout, repo-root asset direct
 
 → [Context Ceiling](architecture/context-ceiling.md)
 
-## Security Model
-
-→ [Worktree Isolation & Security](architecture/security-and-isolation.md)
-
 ## Merge Flow (post-completion auto-merge) [DETAILED]
 
 → [Merge Flow](architecture/merge-flow.md), [Merge Checkout State](architecture/merge-checkout-state.md)
+
+**Target guard** (`git/target_guard/`, `loom-hooks/git-reference-transaction-hook.sh`): a daemon-owned record of the last target tip loom accepted plus a git `reference-transaction` hook that attests host-side moves. A move loom did not make is evaluated (history rewrite, control paths, unattested gap, unmerged `loom/*` work); a hit holds every merge (`MergeBlock::TargetHeld`) until `loom target accept` or a restore, and loom never restores. → [Target Guard](architecture/target-guard.md)
 
 ## Skills Module (loom/src/skills/)
 

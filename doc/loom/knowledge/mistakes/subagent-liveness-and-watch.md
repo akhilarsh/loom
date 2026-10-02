@@ -325,3 +325,11 @@ declined", not "the workers finished".
 **What happened:** a watch bound to two workers exited 6 (stalled) for one that had returned through `SubagentHandback` and completed about 15 minutes earlier. The watch did not take the handback as terminal evidence, kept waiting on the sibling, then judged the finished worker hung after 902 s (`.loom/work/subagents/<stage>/starts.jsonl`).
 
 **Prevention:** exit 6 is not proof of a dead worker. Harvest from disk (`loom subagents harvest`) and check the worker's handback before re-delegating its work.
+
+## SubagentStop Delivery Is Intermittent, and One Reviewer Can Record Two Rounds (2026-10-03)
+
+**What happened:** in the target-guard plan, `loom subagents watch` exited 6 (hung) for an engineer that had already ended through a `SubagentHandback` call, and the first reviewer's round was never recorded (no `SubagentStop` lifecycle row) while the second reviewer's was. In integration-verify one reviewer spawn was recorded as two review rounds (identical 16 findings under `F-1-*` and `F-3-*`), leaving every finding open twice.
+
+**Why:** a hand-back ending does not reliably deliver `SubagentStop` (replaying `subagent-stop.sh` with a well-formed payload against a scratch work dir reaches the harvest, so the hook logic is sound); the double record is probably the hand-back record and the final-message record both harvesting.
+
+**Prevention:** treat an exit 6 for a worker whose hand-back report arrived as returned, not failed. Re-review briefs paste the full open-id list from `loom stage review status`, and name both id sets under `resolved` when one reviewer is recorded twice. The commit-filter hook blocks any `git commit` string from a subagent, even in a scratch repository under `TMPDIR`, so a brief must not ask a subagent to probe commit semantics by shell.

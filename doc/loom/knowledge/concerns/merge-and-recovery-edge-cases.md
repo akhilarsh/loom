@@ -141,3 +141,7 @@ Scope spans the daemon (retry policy, block record), the CLI (block and dispute 
 ## A Stale `review_reason` Renders as the Block Reason
 
 `commands/status/render/attention.rs:95-96` prints `review_reason` as `Reason:` for every problem stage. A dispute sets it (`models/stage/methods.rs::try_request_adjudication`), and on guard-core neither the verdict nor the later `loom stage block` cleared it, so `loom status` showed the integrity dispute's text ("tightening only: execute shrank...") as the block reason. The real reason was only in the `Note:` line.
+
+## `list_loom_branches` May Return Linked-Worktree Branches With a `+` Prefix
+
+`list_loom_branches` (`loom/src/git/branch/operations.rs`) parses `git branch --list loom/*` and strips only the `*` current-branch marker. Git marks a branch checked out in another linked worktree with `+`, so a stage branch with a live worktree would come back as `+ loom/<id>`. Suspected from git's output format, not tested; the guard's stage-work listing avoids it with `for-each-ref --format=%(refname)` and strips `refs/heads/` itself. Fix direction: list with `for-each-ref` here too.

@@ -107,7 +107,14 @@ sandbox, commit the secret. The daemon opens each file itself with a no-follow w
   operator's next plain `git commit` in `R` becomes a merge with the agent's history; rewrite
   `R/.git/index`, which that commit then records. The merge gate fails open besides
   (`merge_handler/merge_gate.rs` and the `commits_ahead_of` probe in `merge_handler.rs` log and
-  proceed when they cannot compute the diff). The same write access to `refs/heads/main` also bypasses the merge gate.
+  proceed when they cannot compute the diff).
+- **The target ref is guarded.** A move of `refs/heads/<target>` loom did not make is attested by a
+  `reference-transaction` hook and held by the daemon until the operator accepts or restores it
+  ([Target Guard](../architecture/target-guard.md)). Loom's own git ignores session-planted replace
+  refs, grafts and commit-graphs ([Sandbox gaps](sandbox-and-confinement-gaps.md)).
+- **Still open:** sibling branches, tags and other refs; objects; `R`'s index, `HEAD` and
+  `MERGE_HEAD`; a planted `commondir`; host-side git following `T/.git` (below); daemon-owned
+  commits. The guard's own residuals: [Target Guard, Residuals](../architecture/target-guard.md).
 - **No deny-list narrows it:** denies cannot be reopened for the stage's own ref, write globs are
   skipped on Linux, an absent-path deny shows the host an empty placeholder file, and a commit
   needs `R/.git` itself writable for `packed-refs.lock`.
@@ -126,7 +133,7 @@ sandbox, commit the secret. The daemon opens each file itself with a no-follow w
   `GIT_COMMON_DIR` stops it, `GIT_DIR` alone does not. Checkout-rooted sessions (knowledge stages,
   merge resolution, an adjudicator in `R`) can plant it.
 
-**Fix direction (not planned):** deny the whole common directory to stage, contract and
+**Fix direction for the rest (not planned):** deny the whole common directory to stage, contract and
 adjudication sessions and let the daemon commit, pin host-side git, verify checkout-rooted
 sessions' effect on `R/.git`, and fail the merge gate closed.
 
