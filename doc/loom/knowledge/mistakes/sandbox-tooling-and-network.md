@@ -244,4 +244,4 @@ cleanup pass should also check that scope, not just local.
 
 **Prevention:** when the same failure is recorded a second time, fix the cause instead of adding another workaround entry.
 
-**Fix:** `build_settings` drops in-tree non-glob entries (see [Execution Containment](../architecture/execution-containment.md), "In-Tree allow_write Entries Are Not Emitted"); the plan-writer and pressure-review guidance now say `allow_write` is for paths outside the worktree. Moving merge resolution off the main checkout is planned in `doc/plans/PLAN-merge-off-main-checkout.md`.
+**Fix:** `build_settings` drops in-tree non-glob entries (see [Execution Containment](../architecture/execution-containment.md), "In-Tree allow_write Entries Are Not Emitted"); the plan-writer and pressure-review guidance now say `allow_write` is for paths outside the worktree. Merge resolution no longer runs in the main checkout ([Merge Flow](../architecture/merge-flow.md)).

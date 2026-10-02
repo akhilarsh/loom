@@ -25,8 +25,8 @@ verified: 499b09b6297aeee4896a66df3da86d00f652a618
 Found during the plan's stages and integration-verify, verified against the tree at this page's
 `verified` revision, and not fixed by the plan. Each names its owner.
 
-- **Git runner does not isolate git's environment.** `run_git_program` (`loom/src/git/runner.rs:26`)
-  sets only `LC_ALL`/`LANG`, so an inherited `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE`
+- **Git runner does not isolate git's environment.** `git_command` (`loom/src/git/runner.rs`)
+  sets `LC_ALL`/`LANG` and the replace-ref and graft shutoff but removes no `GIT_*` repository variable, so an inherited `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE`
   redirects every loom git call, knowledge evidence freshness included, to another repository.
   Owner: `git/runner.rs`; `env_remove` the `GIT_*` repository variables.
 - **`process::run_bounded_output` bounds time, not bytes.** Its reader threads `read_to_end` with

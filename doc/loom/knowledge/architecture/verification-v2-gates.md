@@ -131,5 +131,5 @@ line to stay at the ledgered 445 lines, and two `sandbox::settings::tests` pin t
 **Aggregated wiring in integration-verify** (`run_aggregated_check`) re-reads every completed stage's `wiring`
 from the plan file and re-runs it on the merged tree, and re-verifies every v2 stage's `reachable`. It returns
 early for any other stage type. A stage that moves a call another stage's wiring pins must amend that wiring
-(operator `loom stage amend --field wiring`) or leave the call in place; pin wiring to the entry module or use
-`reachable`.
+(operator `loom stage amend --field wiring`), leave the call in place, or name it in a comment at its new site
+([pinned literals](../mistakes/pinned-literals-ledgers-and-wiring.md)); pin wiring to the entry module or use `reachable`.

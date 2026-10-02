@@ -2,7 +2,7 @@
 ---
 # Context And Source Graph
 
-> Context retrieval pipeline, source-graph channel
+> Context retrieval, source-graph channel
 
 ## Context Retrieval Subsystem
 

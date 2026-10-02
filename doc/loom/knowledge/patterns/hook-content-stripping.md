@@ -64,8 +64,10 @@ Full hook inventory (24 top-level scripts in `loom-hooks/`; 64 including `loom-h
 - PreCompact: pre-compact.sh
 - UserPromptSubmit: skill-trigger.sh
 - Library: \_common.sh (sourced, not registered)
-- Git-side: git-pre-commit-hook.sh (appended to `.git/hooks/pre-commit` by `loom init`;
-  the only top-level script not in `LOOM_HOOKS`)
+- Git-side: git-pre-commit-hook.sh (appended to `.git/hooks/pre-commit` by `loom init`) and
+  git-reference-transaction-hook.sh (installed as `.git/hooks/reference-transaction`, see
+  [Target Guard](../architecture/target-guard.md)); both are embedded with `include_str!` in
+  `git/hooks*.rs`, never in `LOOM_HOOKS`, and neither strips command text: git runs them, not the harness
 
 The `PreToolUse` array in `fs/permissions/hooks/config.rs` has **35 entries** — most hooks are
 registered against more than one matcher (worktree-file-guard on Edit/MultiEdit/Write/

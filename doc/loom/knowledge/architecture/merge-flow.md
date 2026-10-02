@@ -44,16 +44,21 @@ untracked-file removal of the reapply path:
 
 1. An operator operation in progress in R (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`,
    `rebase-merge/`, `rebase-apply/`) returns `Blocked(OperatorOperation { marker })`.
-2. `T0 = rev-parse refs/heads/<target>`, `B = rev-parse refs/heads/loom/<id>`; names are qualified because a tag named like a branch would shadow it (see [Branch resolution](#branch-resolution)). `B` already in `T0` is `AlreadyUpToDate`.
-3. `merge_tree` (`git/merge/tree.rs`) runs `git merge-tree --write-tree --name-only --no-messages -z T0 B`.
+2. The target guard (`target_guard::check_locked`, see [Target Guard](target-guard.md)) returns
+   `Blocked(TargetHeld { target, accepted, observed })` while the target moved outside loom and the
+   operator has not accepted it. It runs before the `AlreadyUpToDate` check and for every gate mode: the
+   control-path bypass covers a stage's own paths, never a moved target. `accepted` is empty when the
+   record cannot be read, `observed` when the live tip cannot be read.
+3. `T0 = rev-parse refs/heads/<target>`, `B = rev-parse refs/heads/loom/<id>`; names are qualified because a tag named like a branch would shadow it (see [Branch resolution](#branch-resolution)). `B` already in `T0` is `AlreadyUpToDate`.
+4. `merge_tree` (`git/merge/tree.rs`) runs `git merge-tree --write-tree --name-only --no-messages -z T0 B`.
    Exit 0 is clean (tree id first), exit 1 is a conflict (tree id, then the conflicted paths). Exit 1
    with empty stdout (bad revision) or any other code is an error. A conflict returns
    `Conflict { conflicting_files }` and R is untouched. After a clean tree, the control-path gate
    checks the exact landing diff (see [The merge gate](#the-merge-gate)).
-4. Clean: `commit_merge` (lazily, through `PendingMerge`) runs `git commit-tree <tree> -p T0 -p B -m "Merge loom/<id> into <target>"`.
+5. Clean: `commit_merge` (lazily, through `PendingMerge`) runs `git commit-tree <tree> -p T0 -p B -m "Merge loom/<id> into <target>"`.
    The commit always has two parents, even when `B` already contains `T0` after a resolver merged the
    target in. Stats come from `git diff --shortstat T0 M`.
-5. `advance_target` (`tree.rs`) moves the target to the merge commit `M`, by where the target is
+6. `advance_target` (`tree.rs`) moves the target to the merge commit `M`, by where the target is
    checked out (`git worktree list --porcelain`):
    - nowhere (R on another branch or detached included): `git update-ref -m "loom: merge loom/<id>"
      refs/heads/<target> M T0`. A refusal because the target moved is `Blocked(TargetMoved)`.
@@ -61,12 +66,21 @@ untracked-file removal of the reapply path:
    - in R: `advance_in_checkout` (`git/merge/checkout_apply.rs`), a guarded fast-forward that keeps the
      operator's uncommitted work. See [merge-checkout-state](merge-checkout-state.md).
 
+   After the advance `record_merge` calls `record_advance`, which moves the guard's accepted tip to `M`;
+   a failed `record_advance` only warns, and the next guard check evaluates the move.
+
 `MergeResult` is `Success { files_changed, insertions, deletions, backup_ref, stash }`,
-`Conflict { conflicting_files }`, `AlreadyUpToDate`, `Held { reason }` or `Blocked(MergeBlock)`. `MergeBlock` is stored on
+`Conflict { conflicting_files }`, `AlreadyUpToDate`, `Held { reason }` or `Blocked(MergeBlock)`. `MergeBlock`
+(`git/merge/tree.rs`) is `OperatorOperation { marker }`, `TargetCheckedOutElsewhere { path }`, `TargetMoved`,
+`UncommittedOverlap { paths }`, `FastForwardRefused { detail }`, `StashNotRestored { backup_ref }` or
+`TargetHeld { target, accepted, observed }`. `MergeBlock` is stored on
 the stage (`Stage.merge.block`, `#[serde(tag = "kind")]`) and has an operator-facing `Display`.
 `loom run` refuses git older than 2.40 (`commands/run/git_preflight.rs`, called from
 `run_startup_preflights`) because `merge-tree --write-tree` needs it. `git/runner.rs` gives
-`merge-tree`, `commit-tree`, `update-ref` and `stash` the 120 s mutation timeout.
+`merge-tree`, `commit-tree`, `update-ref` and `stash` the 120 s mutation timeout. Every runner command also sets
+`GIT_NO_REPLACE_OBJECTS=1` and `GIT_GRAFT_FILE=/dev/null/loom-no-grafts` and passes `-c core.commitGraph=false`, so a
+session-planted `refs/replace/*`, `info/grafts` or commit-graph cannot change the merge gate's diff or an ancestry
+test ([Sandbox gaps](../concerns/sandbox-and-confinement-gaps.md)).
 
 ## Outcomes
 
@@ -77,7 +91,7 @@ the stage (`Stage.merge.block`, `#[serde(tag = "kind")]`) and has an operator-fa
 | Success or `AlreadyUpToDate`, and `verify_merge_succeeded` proves ancestry | `Completed`, `merged: true`; `finalize_auto_merge` runs `finish_verified_merge`, which reconciles the base and removes worktree and branch; a backup ref is printed and logged | continues |
 | Conflict | `record_merge_conflict` forces `MergeConflict`; nothing is spawned here | stays alive; the spawn loop starts a resolver in the stage worktree |
 | Held (control path) | `NeedsHumanReview` with the gate's reason | exits; NEEDS REVIEW |
-| Blocked (`MergeBlock`) | `record_merge_block` forces `MergeBlocked` with `Stage.merge.block` and `failure_info` carrying the block sentence as evidence, so `loom status` shows it | stays alive; the loop retries the merge |
+| Blocked (`MergeBlock`, including `TargetHeld`) | `record_merge_block` forces `MergeBlocked` with `Stage.merge.block` and `failure_info` carrying the block sentence as evidence, so `loom status` shows it | stays alive; the loop retries the merge (a `TargetHeld` block is never memoised, so the first retry after the hold clears lands it) |
 | Git error (lock timeout, missing branch) | forced to `MergeBlocked`, `failure_info` type `InfrastructureError` with the git error as evidence | last stage: exits; `loom status` shows MERGE ERROR |
 | Merge ran but ancestry cannot be verified | forced to `MergeBlocked`, reason in `failure_info` | same |
 | Branch has zero commits beyond target | forced to `NeedsHumanReview`, `review_reason` says the agent never committed | exits; NEEDS REVIEW |
@@ -85,7 +99,11 @@ the stage (`Stage.merge.block`, `#[serde(tag = "kind")]`) and has an operator-fa
 
 `persist_merge_blocked` is the writer for the infrastructure outcomes and `route_to_human_review`
 for the review outcome; both use `force_status_with_reason` because `Completed` has no legal exits.
-Nothing on the daemon path writes `merged: true` without `is_ancestor_of` returning true.
+Nothing on the daemon path writes `merged: true` without `is_ancestor_of` returning true. The
+daemon's ancestry settles of a stage (the sweep and phantom-merge revert in `sync_graph_with_stage_files`, the
+`NoWorktree` finalize in `merge_handler.rs`) tests against the guard's accepted tip through
+`merged_into_accepted`, never the live ref: a ref any session could move would mark a stage merged without its work
+landing; other consumers still read the live ref ([open list](target-guard.md#unimplemented-review-suggestions)). The auto-merge precheck records `TargetHeld` before the gate, the zero-commits route and the finalize.
 
 ## Recovery from every non-merged outcome
 
