@@ -350,5 +350,8 @@ mod tests;
 #[path = "tests_confinement_e2e.rs"]
 mod tests_confinement_e2e;
 #[cfg(test)]
+#[path = "tests_confinement_target.rs"]
+mod tests_confinement_target;
+#[cfg(test)]
 #[path = "tests_launch_capsule.rs"]
 mod tests_launch_capsule;
