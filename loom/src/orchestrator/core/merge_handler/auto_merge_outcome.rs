@@ -4,23 +4,38 @@
 use anyhow::Result;
 
 use crate::git::branch::{branch_name_for_stage, commits_ahead_of};
+use crate::git::MergeBlock;
 use crate::models::stage::Stage;
 use crate::orchestrator::auto_merge::AutoMergeResult;
 use crate::orchestrator::core::{clear_status_line, Orchestrator};
 
 impl Orchestrator {
     /// Returns true when a guard stops the auto-merge of `stage_id` into
-    /// `target_branch`: the merge gate holds the branch, or the branch has no
-    /// commit beyond the target.
+    /// `target`: the target guard holds the target, the merge gate holds the
+    /// branch, or the branch has no commit beyond the target.
+    ///
+    /// A held target comes first, from a fresh guard check: the stage stays
+    /// `MergeBlocked` with a `TargetHeld` block, before the ancestry finalize
+    /// of a stage with no worktree or the zero-commit route below could take
+    /// a target an agent moved as the stage's merge.
     ///
     /// Phantom-merge guard: an existing branch with zero commits beyond the
     /// target would "merge" as a no-op, `completed_commit` would be filled from
     /// the branch HEAD (equal to the target HEAD), ancestry would pass, and
     /// `merged: true` would stand for work that was never committed. Such a
     /// stage goes to human review, so dependents do not unblock. A missing
-    /// branch skips the guards: the merge attempt reports it with its own
-    /// recovery handling.
+    /// branch skips the branch guards: the merge attempt reports it with its
+    /// own recovery handling.
     pub(super) fn auto_merge_precheck_blocks(&mut self, stage_id: &str, target: &str) -> bool {
+        if let Some(hold) = self.check_target_guard() {
+            let block = MergeBlock::TargetHeld {
+                target: target.into(),
+                accepted: hold.accepted,
+                observed: hold.observed,
+            };
+            self.record_merge_block(stage_id, block);
+            return true;
+        }
         let branch = branch_name_for_stage(stage_id);
         let exists =
             crate::git::branch::branch_exists(&branch, &self.config.repo_root).unwrap_or(false);

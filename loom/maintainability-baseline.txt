@@ -22,8 +22,8 @@ file src/git/worktree/settings.rs 462
 file src/models/stage/methods.rs 639
 file src/models/stage/types.rs 696
 file src/orchestrator/core/merge_handler.rs 616
-file src/orchestrator/core/recovery.rs 1462
-file src/orchestrator/core/stage_executor.rs 597
+file src/orchestrator/core/recovery.rs 1457
+file src/orchestrator/core/stage_executor.rs 596
 file src/orchestrator/merge_attribution.rs 543
 file src/orchestrator/signals/cache.rs 524
 file src/orchestrator/signals/format/sections.rs 569
@@ -51,7 +51,7 @@ file tests/failure_resume.rs 468
 file tests/integration/merge_conflict_recovery.rs 414
 file tests/integration/plan_verify.rs 1028
 
-function src/cli/dispatch.rs dispatch 86
+function src/cli/dispatch.rs dispatch 73
 function src/commands/clean/mod.rs print_summary 52
 function src/commands/clean/sessions.rs test_clean_sessions_reaps_live_only_when_destroying_state 57
 function src/commands/clean/worktrees.rs clean_worktrees 110
@@ -111,7 +111,7 @@ function src/fs/work_integrity.rs validate_work_dir_state 60
 function src/fs/worktree_files/sessions.rs cleanup_sessions_for_stage 79
 function src/git/worktree/base.rs resolve_base_branch 92
 function src/git/worktree/discovery.rs find_worktree_by_prefix 55
-function src/git/worktree/operations.rs create_worktree 115
+function src/git/worktree/operations.rs create_worktree 68
 function src/git/worktree/settings.rs create_worktree_settings 115
 function src/git/worktree/tests_settings_env.rs test_worktree_gitignore_actually_hides_loom_runtime_paths 57
 function src/handoff/generator/formatter.rs format_handoff_markdown 112
@@ -125,12 +125,12 @@ function src/orchestrator/core/merge_handler.rs verify_and_finalize_merge 65
 function src/orchestrator/core/recovery.rs orphan_with_commits_ahead_signals_handoff_input 64
 function src/orchestrator/core/recovery.rs recover_orphaned_sessions 160
 function src/orchestrator/core/recovery.rs recovery_commit_and_merge_reconciliation_preserve_each_other 57
-function src/orchestrator/core/recovery.rs sync_graph_with_stage_files 508
-function src/orchestrator/core/recovery.rs verify_merged_true_or_revert 56
+function src/orchestrator/core/recovery.rs sync_graph_with_stage_files 504
+function src/orchestrator/core/recovery.rs verify_merged_true_or_revert 54
 function src/orchestrator/core/stage_executor.rs before_stage_gate_passed 62
 function src/orchestrator/core/stage_executor.rs start_knowledge_stage 99
 function src/orchestrator/core/stage_executor.rs start_ready_stages 65
-function src/orchestrator/core/stage_executor.rs start_stage 149
+function src/orchestrator/core/stage_executor.rs start_stage 148
 function src/orchestrator/merge_attribution.rs attribute_main_repo_merge 101
 function src/orchestrator/merge_attribution.rs reconcile_main_repo_active_merge 64
 function src/orchestrator/monitor/detection.rs detect_stage_changes 56

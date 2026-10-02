@@ -273,5 +273,5 @@ pub fn create_worktree_isolated(
 ) -> anyhow::Result<loom::models::worktree::Worktree> {
     let home = TempDir::new().expect("create scratch HOME");
     let _guard = EnvVarGuard::set("HOME", home.path());
-    loom::git::create_worktree(stage_id, repo_root, base_branch)
+    loom::git::create_worktree(stage_id, repo_root, base_branch, None)
 }

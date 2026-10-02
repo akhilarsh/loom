@@ -172,10 +172,9 @@ impl StageExecutor for Orchestrator {
             return Ok(());
         }
 
-        // Skip if stage is held
-        if stage.held {
-            self.spawn_blocks
-                .insert(stage_id.to_string(), BlockReason::Held);
+        // Skip a held stage, and a knowledge stage while the target is held
+        if let Some(reason) = self.spawn_hold_reason(&stage) {
+            self.spawn_blocks.insert(stage_id.to_string(), reason);
             return Ok(());
         }
 

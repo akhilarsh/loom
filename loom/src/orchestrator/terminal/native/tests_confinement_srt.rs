@@ -33,7 +33,7 @@ const PROBE: &str = "confinement-e2e-probe";
 /// The line a sandboxed shell prints first: proof that srt started it.
 const ALIVE: &str = "LOOM_PROBE_ALIVE";
 /// The prefix of the line carrying a probe write's own exit code.
-const RC_PREFIX: &str = "LOOM_PROBE_RC=";
+pub(crate) const RC_PREFIX: &str = "LOOM_PROBE_RC=";
 /// How much of srt's stderr a failure message quotes.
 const STDERR_LINES: usize = 40;
 
@@ -41,7 +41,7 @@ const STDERR_LINES: usize = 40;
 /// Linux, `bwrap`, `socat` or `srt` is missing from PATH, or a trivial
 /// `srt -c true` fails, as it does where a nested sandbox refuses the
 /// namespaces or the sockets srt needs.
-pub(super) fn skip(test_name: &str) -> bool {
+pub(crate) fn skip(test_name: &str) -> bool {
     let reason = srt_unavailable();
     skip_unless(reason.is_none(), test_name, reason.unwrap_or_default())
 }
@@ -91,7 +91,7 @@ fn on_path(tool: &str) -> bool {
 /// `STDERR_LINES` lines), for a failure message. A crashed srt prints its
 /// exception above Node's closing version line, so the last line alone
 /// hides it.
-pub(super) fn diagnostics(output: &Output) -> String {
+pub(crate) fn diagnostics(output: &Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let lines: Vec<&str> = stderr.lines().collect();
     let cut = lines.len().saturating_sub(STDERR_LINES);
@@ -117,7 +117,7 @@ fn started(output: &Output) -> bool {
 
 /// The probe write's exit code from its `RC_PREFIX` line, `None` when the
 /// shell died before printing one.
-fn write_rc(output: &Output) -> Option<i32> {
+pub(crate) fn write_rc(output: &Output) -> Option<i32> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let rc = stdout
         .lines()
@@ -246,14 +246,14 @@ fn srt_path(entry: &str, cwd: &Path, home: &Path) -> Option<String> {
 }
 
 /// One launched session's capsule, translated for srt.
-pub(super) struct Confined {
-    pub(super) label: String,
+pub(crate) struct Confined {
+    pub(crate) label: String,
     /// The srt settings file `write_settings` wrote.
-    pub(super) settings: PathBuf,
+    pub(crate) settings: PathBuf,
     /// The session's working directory.
-    pub(super) cwd: PathBuf,
+    pub(crate) cwd: PathBuf,
     /// The session's own scratch directory.
-    pub(super) scratch: PathBuf,
+    pub(crate) scratch: PathBuf,
 }
 
 /// One write probe, from a shell srt is known to have started.
@@ -283,7 +283,7 @@ impl Confined {
     /// Run `command` under this capsule after an `echo` of `ALIVE`, and
     /// fail, quoting srt's output, when that line is missing: srt never
     /// started the shell, so nothing `command` was meant to show happened.
-    pub(super) fn run_alive(&self, command: &str) -> Output {
+    pub(crate) fn run_alive(&self, command: &str) -> Output {
         let output = self.run(&format!("echo {ALIVE}; {command}"));
         assert!(
             started(&output),
@@ -307,7 +307,7 @@ impl Confined {
     /// Each of `denied` whose write was not proven refused: that takes a
     /// non-zero exit code from the write itself and the path left as it
     /// was, or still absent.
-    pub(super) fn refusals_missed(&self, denied: &[PathBuf]) -> Vec<String> {
+    pub(crate) fn refusals_missed(&self, denied: &[PathBuf]) -> Vec<String> {
         let mut missed = Vec::new();
         for path in denied {
             let before = std::fs::read(path).ok();
@@ -330,7 +330,7 @@ impl Confined {
 
     /// Each of `allowed` whose write was not proven to land: that takes
     /// exit code 0 from the write itself and the probe in the file.
-    pub(super) fn writes_missed(&self, allowed: &[PathBuf]) -> Vec<String> {
+    pub(crate) fn writes_missed(&self, allowed: &[PathBuf]) -> Vec<String> {
         let mut missed = Vec::new();
         for path in allowed {
             let probe = self.write(path);

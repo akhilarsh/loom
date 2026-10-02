@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 
 use crate::git;
+use crate::git::target_guard;
 use crate::git::BaseBranchError;
 use crate::hooks::find_hooks_dir;
 use crate::models::failure::FailureType;
@@ -65,10 +66,15 @@ impl Orchestrator {
     /// Resolve the base branch and create (or reuse) the worktree for a
     /// worktree-backed stage, BEFORE the stage is marked Executing.
     ///
+    /// A new stage branch based on the target starts at the tip the target
+    /// guard accepted: while the target is held, that is not its live tip.
+    /// When the guard record cannot be read the spawn waits rather than
+    /// starting from the live tip.
+    ///
     /// Returns `Ok(None)` if the spawn should stop here without an error —
     /// either a transient scheduling condition (see
-    /// `resolve_stage_base_branch`) or a worktree failure that has already
-    /// marked the stage Blocked.
+    /// `resolve_stage_base_branch`), an unreadable guard record, or a
+    /// worktree failure that has already marked the stage Blocked.
     pub(super) fn resolve_worktree(
         &mut self,
         stage_id: &str,
@@ -77,11 +83,15 @@ impl Orchestrator {
         let Some(resolved) = self.resolve_stage_base_branch(stage_id, stage)? else {
             return Ok(None);
         };
+        let Some(start_point) = self.worktree_start_point(stage_id, &resolved) else {
+            return Ok(None);
+        };
 
         let worktree = match git::get_or_create_worktree(
             stage_id,
             &self.config.repo_root,
             Some(resolved.branch_name()),
+            start_point.as_deref(),
         ) {
             Ok(wt) => wt,
             Err(e) => {
@@ -99,6 +109,39 @@ impl Orchestrator {
         };
 
         Ok(Some((resolved, worktree)))
+    }
+
+    /// Start point for the stage branch: the guard-accepted target tip for a
+    /// target base, `None` for a branch base. The outer `None` means the guard
+    /// record is unreadable, the target is held and the spawn waits.
+    fn worktree_start_point(
+        &mut self,
+        stage_id: &str,
+        resolved: &git::ResolvedBase,
+    ) -> Option<Option<String>> {
+        match resolved {
+            git::ResolvedBase::Main(target) => {
+                match target_guard::accepted_tip(&self.config.work_dir, target) {
+                    Ok(tip) => Some(tip),
+                    Err(error) => {
+                        // Fail closed: cutting the branch from the live tip
+                        // could start it from an unreviewed commit.
+                        if self.spawn_skip_logged.insert(stage_id.to_string()) {
+                            eprintln!(
+                                "Warning: cannot read the target guard record for stage \
+                                 '{stage_id}': {error:#}; the spawn waits"
+                            );
+                            tracing::warn!(%stage_id, %error, "target guard record unreadable");
+                        }
+                        // An unreadable record holds the target (Unevaluable).
+                        self.spawn_blocks
+                            .insert(stage_id.to_string(), BlockReason::TargetHeld);
+                        None
+                    }
+                }
+            }
+            git::ResolvedBase::Branch(_) => Some(None),
+        }
     }
 
     /// Merge and re-validate this knowledge stage's sandbox config at spawn

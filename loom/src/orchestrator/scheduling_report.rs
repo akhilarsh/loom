@@ -21,6 +21,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::git::target_guard::{hold_alert, recorded_holds};
+
 /// File name inside `.loom/work/` holding the report.
 const REPORT_FILE: &str = "scheduling.json";
 
@@ -50,6 +52,9 @@ pub enum BlockReason {
     DependencyCheckFailed { detail: String },
     /// Base-branch resolution reported the stage as not schedulable.
     SchedulingNotReady { detail: String },
+    /// A knowledge stage waits while the target branch is held. Resolves
+    /// once the operator accepts or restores the target.
+    TargetHeld,
 }
 
 impl BlockReason {
@@ -61,6 +66,7 @@ impl BlockReason {
             BlockReason::Dependency { self_resolving, .. } => *self_resolving,
             BlockReason::DependencyCheckFailed { .. } => false,
             BlockReason::SchedulingNotReady { .. } => true,
+            BlockReason::TargetHeld => false,
         }
     }
 
@@ -78,6 +84,9 @@ impl BlockReason {
                 format!("dependency check failed: {detail}")
             }
             BlockReason::SchedulingNotReady { detail } => detail.clone(),
+            BlockReason::TargetHeld => {
+                "waiting while the target branch is held (loom target status)".to_string()
+            }
         }
     }
 }
@@ -158,12 +167,22 @@ pub struct Alert {
 /// Both dashboards call this so their wording and thresholds cannot drift
 /// apart.
 ///
-/// Everything here is gated on `daemon_running`. Both files describe live
-/// scheduling, and a daemon killed with SIGKILL leaves both behind: without
-/// the gate, a stopped daemon would report its final tick as a stall and its
-/// last blocked stages as though they were still waiting.
+/// A target hold recorded by the target guard comes first, as a warning,
+/// whether the daemon runs or not: it is a recorded fact that outlives the
+/// daemon. Everything else is gated on `daemon_running`. The tick and the
+/// scheduling report describe live scheduling, and a daemon killed with
+/// SIGKILL leaves both behind: without the gate, a stopped daemon would
+/// report its final tick as a stall and its last blocked stages as though
+/// they were still waiting.
 pub fn alerts(work_dir: &Path, daemon_running: bool) -> Vec<Alert> {
-    let mut alerts = Vec::new();
+    let mut alerts: Vec<Alert> = recorded_holds(work_dir)
+        .unwrap_or_default()
+        .iter()
+        .map(|(target, hold)| Alert {
+            severity: Severity::Warning,
+            text: hold_alert(target, hold),
+        })
+        .collect();
     if !daemon_running {
         return alerts;
     }

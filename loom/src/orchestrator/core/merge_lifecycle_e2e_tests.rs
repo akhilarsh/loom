@@ -9,5 +9,7 @@
 mod merge_lifecycle_e2e_tests_blocked;
 #[path = "merge_lifecycle_e2e_tests_conflict.rs"]
 mod merge_lifecycle_e2e_tests_conflict;
+#[path = "merge_lifecycle_e2e_tests_guard_contracts.rs"]
+mod merge_lifecycle_e2e_tests_guard_contracts;
 #[path = "merge_lifecycle_e2e_tests_support.rs"]
 mod merge_lifecycle_e2e_tests_support;

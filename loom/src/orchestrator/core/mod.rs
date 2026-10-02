@@ -40,6 +40,7 @@ mod stage_handoff;
 mod stage_spawn;
 mod stage_telemetry;
 pub mod state_identity;
+mod target_hold;
 mod verdict_apply;
 
 pub(crate) use crash_classification::spawn_failure_type;

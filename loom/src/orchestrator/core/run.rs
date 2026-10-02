@@ -46,6 +46,8 @@ impl Orchestrator {
         self.assert_state_identity();
         validate_work_dir_state(&self.config.repo_root)
             .context("Work directory integrity check failed")?;
+        // Ahead of reconcile, the sync and the spawn pass, which can all merge.
+        self.start_target_guard();
         self.reconcile_and_update_graph()
             .context("Failed to reconcile active main-repo merge")?;
         self.sync_graph_with_stage_files()
@@ -74,6 +76,7 @@ impl Orchestrator {
     // which also hands frozen contract phases on here: it polls no monitor.
     fn run_tick(&mut self, printed_view_instructions: &mut bool) -> Result<usize> {
         tick::record(&self.config.work_dir, tick::Phase::Sync);
+        self.check_target_guard();
         self.reconcile_and_update_graph()
             .context("Failed to reconcile active main-repo merge")?;
         self.sync_graph_with_stage_files()

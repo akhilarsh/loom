@@ -184,6 +184,9 @@ pub fn execute(
 /// plan's files. Then prune worktrees left behind by a previous run.
 fn stop_daemon_and_prune(repo_root: &Path, clean: bool) -> Result<()> {
     if clean {
+        // Before the daemon stops and sessions are reaped: deleting the target
+        // guard record would make the next run trust an unreviewed move.
+        crate::commands::target::refuse_unreviewed_move(repo_root)?;
         crate::commands::stop::ensure_daemon_stopped(&resolve_state_dir(repo_root))?;
     }
     prune_stale_worktrees(repo_root)
@@ -341,4 +344,19 @@ fn print_summary(plan_path: Option<&Path>, stage_count: usize) {
     println!("  {}  Start execution", "loom run".cyan());
     println!("  {}  View dashboard", "loom status".cyan());
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stop_daemon_and_prune;
+
+    #[test]
+    fn clean_refuses_before_stopping_anything_while_the_target_is_held() {
+        let (repo, _accepted, _moved) = crate::commands::target::tests::held_repo(true);
+
+        let error = stop_daemon_and_prune(&repo.root, true).unwrap_err();
+
+        assert!(error.to_string().contains("loom target status"), "{error}");
+        assert!(repo.work.join("target-guard.json").is_file());
+    }
 }

@@ -96,7 +96,7 @@ pub(super) fn mark_plan_in_progress(work_dir: &WorkDir) -> Result<()> {
     };
     let old = old.to_str().context("Plan path is not UTF-8")?;
     let new = new.to_str().context("Plan path is not UTF-8")?;
-    commit_rename(root, old, new).with_context(|| {
+    commit_rename(work_dir, root, old, new).with_context(|| {
         format!(
             "Could not commit Loom's plan rename. Commit the rename from '{old}' to \
              '{new}', then run loom run again; no stage has started"
@@ -104,7 +104,7 @@ pub(super) fn mark_plan_in_progress(work_dir: &WorkDir) -> Result<()> {
     })
 }
 
-fn commit_rename(root: &Path, old: &str, new: &str) -> Result<()> {
+fn commit_rename(work_dir: &WorkDir, root: &Path, old: &str, new: &str) -> Result<()> {
     let paths = [format!(":(literal){old}"), format!(":(literal){new}")];
     run_git_checked(&["add", "--", &paths[0], &paths[1]], root)?;
     run_git_checked(
@@ -126,6 +126,13 @@ fn commit_rename(root: &Path, old: &str, new: &str) -> Result<()> {
     )?;
     if !status.status.success() {
         bail!("Plan rename still differs from HEAD after committing");
+    }
+    // Loom's git runs without hooks, so the `reference-transaction` hook never
+    // attests this commit; attest it here when it holds only the rename.
+    let renamed = [Path::new(old), Path::new(new)];
+    if let Err(error) = plan_lifecycle::commit::attest_plan_commit(work_dir.root(), root, &renamed)
+    {
+        tracing::warn!("could not attest the plan rename commit: {error:#}");
     }
     Ok(())
 }

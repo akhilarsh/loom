@@ -28,9 +28,9 @@ use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
 
 #[path = "tests_confinement_srt.rs"]
-mod srt;
+pub(super) mod srt;
 
-const STAGE_ID: &str = "stage-1";
+pub(super) const STAGE_ID: &str = "stage-1";
 /// Twenty timed runs of `/bin/true` inside one shell, one microsecond count
 /// per line, so srt's own startup stays out of the samples.
 const LATENCY_SCRIPT: &str = r#"for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -51,14 +51,14 @@ const LATENCY_FLOOR_MICROS: u64 = 5_000;
 /// lives under `target/`, never `/tmp` or `$TMPDIR`: those are
 /// session-writable, so the spawn preflight refuses hooks or a loom binary
 /// there, and the relay refuses a scratch root under `/tmp`.
-struct Fixture {
-    _temp: TempDir,
-    base: PathBuf,
-    home: PathBuf,
-    repo: PathBuf,
-    work_dir: PathBuf,
-    worktree: PathBuf,
-    host: LaunchHost,
+pub(super) struct Fixture {
+    pub(super) _temp: TempDir,
+    pub(super) base: PathBuf,
+    pub(super) home: PathBuf,
+    pub(super) repo: PathBuf,
+    pub(super) work_dir: PathBuf,
+    pub(super) worktree: PathBuf,
+    pub(super) host: LaunchHost,
 }
 
 fn tempdir_outside_tmp() -> TempDir {
@@ -72,7 +72,7 @@ fn tempdir_outside_tmp() -> TempDir {
         .unwrap()
 }
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     let temp = tempdir_outside_tmp();
     let base = temp.path().canonicalize().unwrap();
     let home = base.join("home");
@@ -195,7 +195,7 @@ fn writable_roots(repo: &Path, scratch_root: &Path, home: &Path) -> Vec<PathBuf>
     })
 }
 
-fn stage(stage_type: StageType, lanes: Vec<Implementer>) -> Stage {
+pub(super) fn stage(stage_type: StageType, lanes: Vec<Implementer>) -> Stage {
     Stage {
         id: STAGE_ID.to_string(),
         name: "Stage One".to_string(),
@@ -208,7 +208,7 @@ fn stage(stage_type: StageType, lanes: Vec<Implementer>) -> Stage {
 /// Launch `kind` for `stage` through the real launch path, from where that
 /// kind runs (the worktree for a Stage session, the repository otherwise),
 /// translate the capsule it wrote, and check srt starts a shell under it.
-fn confine(f: &Fixture, kind: SessionType, stage: &Stage) -> Confined {
+pub(super) fn confine(f: &Fixture, kind: SessionType, stage: &Stage) -> Confined {
     let cwd = if kind == SessionType::Stage {
         f.worktree.clone()
     } else {

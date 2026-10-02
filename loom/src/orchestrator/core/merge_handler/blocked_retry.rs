@@ -84,8 +84,14 @@ impl Orchestrator {
     /// writes git objects even when the target cannot advance. An attempt
     /// that watches a directory is never skipped, and a `FastForwardRefused`
     /// one is retried at most once a minute. A stage whose operator work
-    /// still sits in a backup stash is not retried at all.
+    /// still sits in a backup stash is not retried at all, and no stage is
+    /// while the tick's target guard check left the target held: the retry
+    /// resumes on the first tick after the operator accepts or restores it.
     pub(super) fn retry_blocked_merge_at(&mut self, stage: &Stage, now: Instant) {
+        if self.target_held() {
+            tracing::debug!(stage_id = %stage.id, "Target is held; merge retry paused");
+            return;
+        }
         let stage_id = stage.id.as_str();
         if holds_backup_stash(&self.config.repo_root, stage) {
             tracing::debug!(stage_id = %stage_id, "Operator changes are in a backup stash; retry paused");
@@ -168,7 +174,8 @@ impl Orchestrator {
     /// that only a change of those inputs can clear (a blocked attempt
     /// changes nothing in the main checkout); `FastForwardRefused` is timed
     /// instead, since a transient lock leaves no trace in the inputs. Every
-    /// other outcome drops both entries.
+    /// other outcome drops both entries; `TargetHeld` is never memoised, so
+    /// the retry runs on the first tick after the hold clears.
     fn remember_blocked_inputs(
         &mut self,
         stage_id: &str,

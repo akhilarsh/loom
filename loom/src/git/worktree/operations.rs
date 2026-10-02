@@ -6,7 +6,9 @@ use anyhow::{bail, Context, Result};
 use std::path::Path;
 
 use crate::fs::permissions::{trust_worktree, untrust_worktree};
-use crate::git::branch::{branch_name_for_stage, commits_ahead_of, default_branch};
+use crate::git::branch::{
+    branch_name_for_stage, branch_ref, commits_ahead_of, commits_between, default_branch,
+};
 use crate::git::runner::{run_git, run_git_checked};
 use crate::models::worktree::Worktree;
 use crate::validation::validate_id;
@@ -24,9 +26,11 @@ use super::settings::{
 /// .worktrees/{stage_id}/.loom/work -> main .loom/work/ (or, on a legacy
 /// workspace, .worktrees/{stage_id}/.work -> main .work/)
 ///
-/// If `base_branch` is Some(branch), the new branch is created from that branch:
+/// If `start_point` is Some(rev), the new branch is created at that revision:
+///   git worktree add -b loom/{stage_id} .worktrees/{stage_id} {rev}
+/// Otherwise, if `base_branch` is Some(branch), it is created from that branch:
 ///   git worktree add -b loom/{stage_id} .worktrees/{stage_id} {branch}
-/// If `base_branch` is None, the new branch is created from HEAD (current behavior).
+/// If both are None, the new branch is created from HEAD.
 ///
 /// Also excludes `.claude/settings.local.json` and loom's own runtime paths
 /// from git's view of this worktree, by writing to the repo's common
@@ -39,6 +43,7 @@ pub fn create_worktree(
     stage_id: &str,
     repo_root: &Path,
     base_branch: Option<&str>,
+    start_point: Option<&str>,
 ) -> Result<Worktree> {
     // Validate stage_id before using in paths
     validate_id(stage_id).context("Invalid stage ID for worktree")?;
@@ -58,72 +63,24 @@ pub fn create_worktree(
         bail!("Worktree already exists at {}", worktree_path.display());
     }
 
-    // Create the worktree with a new branch
-    // If base_branch is Some: git worktree add -b loom/{stage_id} .worktrees/{stage_id} {base_branch}
-    // If base_branch is None: git worktree add -b loom/{stage_id} .worktrees/{stage_id} (from HEAD)
+    // Create the worktree with a new branch at the start point, else the base
+    // branch, else HEAD:
+    // git worktree add -b loom/{stage_id} .worktrees/{stage_id} [{start}]
     let worktree_path_str = worktree_path.to_string_lossy().to_string();
     let mut args: Vec<&str> = vec!["worktree", "add", "-b", &branch_name];
     args.push(&worktree_path_str);
-    if let Some(base) = base_branch {
-        args.push(base);
+    if let Some(start) = start_point.or(base_branch) {
+        args.push(start);
     }
 
     let output = run_git(&args, repo_root)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-
-        // The branch loom/<stage-id> already exists but has no worktree (cleanup
-        // or manual removal left the branch behind, then the stage was re-queued).
-        // Force-deleting it unconditionally — as the old code did — silently
-        // destroys any unmerged commits the branch holds (reflog-only recovery).
-        // The daemon's orphan-recovery routes commits-ahead branches to
-        // NeedsHandoff precisely because they hold value; this path must not undo
-        // that. So: only force-delete when the branch has NO commits ahead of its
-        // base. Otherwise REUSE the existing branch (worktree add without -b),
-        // preserving the work and letting the stage resume against it.
-        if stderr.contains("already exists") {
-            // Determine the base to measure "commits ahead" against. Prefer the
-            // explicit base_branch; fall back to the repo default (main/master).
-            let base = match base_branch {
-                Some(b) => b.to_string(),
-                None => default_branch(repo_root).unwrap_or_else(|_| "main".to_string()),
-            };
-
-            // Fail closed: if commits_ahead_of errors (it now surfaces real git
-            // errors per C-9), do NOT force-delete — reuse instead.
-            let ahead = commits_ahead_of(&branch_name, &base, repo_root).unwrap_or(1);
-
-            if ahead == 0 {
-                // No unmerged work — safe to recreate from the correct base.
-                run_git_checked(&["branch", "-D", &branch_name], repo_root)?;
-
-                let retry_output = run_git(&args, repo_root)?;
-                if !retry_output.status.success() {
-                    let retry_stderr = String::from_utf8_lossy(&retry_output.stderr);
-                    bail!("git worktree add failed after branch deletion: {retry_stderr}");
-                }
-            } else {
-                // Branch holds unmerged commits — reuse it rather than destroy it.
-                // `git worktree add <path> <branch>` (no -b) checks the existing
-                // branch out into the new worktree.
-                let reuse_args: Vec<&str> =
-                    vec!["worktree", "add", &worktree_path_str, &branch_name];
-                let reuse_output = run_git(&reuse_args, repo_root)?;
-                if !reuse_output.status.success() {
-                    let reuse_stderr = String::from_utf8_lossy(&reuse_output.stderr);
-                    bail!(
-                        "branch '{branch_name}' has {ahead} unmerged commit(s) ahead of \
-                         '{base}'; refusing to delete it. Tried to reuse the existing branch \
-                         but `git worktree add` failed: {reuse_stderr}. \
-                         Resolve via `loom stage merge {stage_id}` or retry canonical completion \
-                         with `loom stage complete {stage_id}`."
-                    );
-                }
-            }
-        } else {
+        if !stderr.contains("already exists") {
             bail!("git worktree add failed: {stderr}");
         }
+        recreate_or_reuse_branch(stage_id, repo_root, &args, base_branch, start_point)?;
     }
 
     // Create symlink to the main repo's state root (.loom/work, or .work on
@@ -149,6 +106,77 @@ pub fn create_worktree(
     worktree.mark_active();
 
     Ok(worktree)
+}
+
+/// Finish a `worktree add -b` (`add_args`) that failed because the branch
+/// `loom/<stage_id>` already exists with no worktree: cleanup or manual
+/// removal left the branch behind, then the stage was re-queued.
+///
+/// Force-deleting the branch unconditionally would silently destroy any
+/// unmerged commits it holds (reflog-only recovery), and the daemon's orphan
+/// recovery routes commits-ahead branches to NeedsHandoff precisely because
+/// they hold value. So the branch is deleted and `add_args` rerun only when
+/// it has no commits beyond its base; otherwise the existing branch is
+/// checked out into the new worktree (`worktree add` without `-b`),
+/// preserving the work and letting the stage resume against it.
+fn recreate_or_reuse_branch(
+    stage_id: &str,
+    repo_root: &Path,
+    add_args: &[&str],
+    base_branch: Option<&str>,
+    start_point: Option<&str>,
+) -> Result<()> {
+    let branch_name = branch_name_for_stage(stage_id);
+    let (base, ahead) = commits_beyond_base(&branch_name, repo_root, base_branch, start_point);
+    if ahead == 0 {
+        // No unmerged work — safe to recreate from the correct base.
+        run_git_checked(&["branch", "-D", &branch_name], repo_root)?;
+        let retry_output = run_git(add_args, repo_root)?;
+        if !retry_output.status.success() {
+            let retry_stderr = String::from_utf8_lossy(&retry_output.stderr);
+            bail!("git worktree add failed after branch deletion: {retry_stderr}");
+        }
+        return Ok(());
+    }
+    let worktree_path = repo_root.join(".worktrees").join(stage_id);
+    let worktree_path_str = worktree_path.to_string_lossy();
+    let reuse_args: [&str; 4] = ["worktree", "add", &worktree_path_str, &branch_name];
+    let reuse_output = run_git(&reuse_args, repo_root)?;
+    if !reuse_output.status.success() {
+        let reuse_stderr = String::from_utf8_lossy(&reuse_output.stderr);
+        bail!(
+            "branch '{branch_name}' has {ahead} unmerged commit(s) ahead of \
+             '{base}'; refusing to delete it. Tried to reuse the existing branch \
+             but `git worktree add` failed: {reuse_stderr}. \
+             Resolve via `loom stage merge {stage_id}` or retry canonical completion \
+             with `loom stage complete {stage_id}`."
+        );
+    }
+    Ok(())
+}
+
+/// The base `branch_name` is measured against and its count of commits
+/// beyond that base. With a start point the base is that revision: measured
+/// against a held target moved onto the branch's own commit instead, the
+/// branch would count zero and lose its only ref. Otherwise the base is
+/// `base_branch`, else the repository's default branch. Fails closed: a
+/// count that errors is 1, so the branch is reused, never deleted.
+fn commits_beyond_base(
+    branch_name: &str,
+    repo_root: &Path,
+    base_branch: Option<&str>,
+    start_point: Option<&str>,
+) -> (String, usize) {
+    if let Some(start) = start_point {
+        let ahead = commits_between(&branch_ref(branch_name), start, repo_root);
+        return (start.to_string(), ahead.unwrap_or(1));
+    }
+    let base = match base_branch {
+        Some(b) => b.to_string(),
+        None => default_branch(repo_root).unwrap_or_else(|_| "main".to_string()),
+    };
+    let ahead = commits_ahead_of(branch_name, &base, repo_root).unwrap_or(1);
+    (base, ahead)
 }
 
 /// Remove a worktree
@@ -207,14 +235,15 @@ pub fn clean_worktrees(repo_root: &Path) -> Result<()> {
 /// If the directory exists but is not a valid worktree, removes it and recreates.
 /// Otherwise, creates a new worktree.
 ///
-/// If `base_branch` is Some(branch), new worktrees will branch from that branch.
-/// If `base_branch` is None, new worktrees will branch from HEAD.
+/// A new worktree branches from `start_point` when given, else from
+/// `base_branch`, else from HEAD (see [`create_worktree`]).
 ///
 /// This function is idempotent and safe to call multiple times for the same stage.
 pub fn get_or_create_worktree(
     stage_id: &str,
     repo_root: &Path,
     base_branch: Option<&str>,
+    start_point: Option<&str>,
 ) -> Result<Worktree> {
     // Validate stage_id before using in paths
     validate_id(stage_id).context("Invalid stage ID for worktree")?;
@@ -250,5 +279,5 @@ pub fn get_or_create_worktree(
     }
 
     // Create new worktree
-    create_worktree(stage_id, repo_root, base_branch)
+    create_worktree(stage_id, repo_root, base_branch, start_point)
 }
