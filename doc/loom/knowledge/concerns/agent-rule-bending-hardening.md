@@ -107,7 +107,7 @@ sandbox, commit the secret. The daemon opens each file itself with a no-follow w
   operator's next plain `git commit` in `R` becomes a merge with the agent's history; rewrite
   `R/.git/index`, which that commit then records. The merge gate fails open besides
   (`merge_handler/merge_gate.rs` and the `commits_ahead_of` probe in `merge_handler.rs` log and
-  proceed when they cannot compute the diff).
+  proceed when they cannot compute the diff). The same write access to `refs/heads/main` also bypasses the merge gate.
 - **No deny-list narrows it:** denies cannot be reopened for the stage's own ref, write globs are
   skipped on Linux, an absent-path deny shows the host an empty placeholder file, and a commit
   needs `R/.git` itself writable for `packed-refs.lock`.

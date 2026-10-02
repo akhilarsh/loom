@@ -35,7 +35,7 @@
 | [contract-phase](architecture/contract-phase.md) | Contract session, freeze, handover | 144 |
 | [core-abstractions](architecture/core-abstractions.md) | ExecutionGraph, Stage, Session, data flow | 136 |
 | [directory-structure](architecture/directory-structure.md) | loom/src module tree, state layout, root assets | 49 |
-| [execution-containment](architecture/execution-containment.md) | Sandboxed command containment, limits | 399 |
+| [execution-containment](architecture/execution-containment.md) | Sandboxed command containment, limits | 400 |
 | [hook-system](architecture/hook-system.md) | Hook embedding, SessionStart contract | 245 |
 | [knowledge-bootstrap](architecture/knowledge-bootstrap.md) | Deterministic phase, digest, receipts | 86 |
 | [knowledge-hierarchy](architecture/knowledge-hierarchy.md) | fs/knowledge, INDEX.md, checks | 261 |
@@ -47,7 +47,7 @@
 | [plan-lifecycle-and-fields](architecture/plan-lifecycle-and-fields.md) | Plan fields v1/v2, checks, lints | 252 |
 | [quota-poller](architecture/quota-poller.md) | Usage-quota polling, caching, rendering | 31 |
 | [remote-control](architecture/remote-control.md) | Capability detection, preflight, naming | 82 |
-| [security-and-isolation](architecture/security-and-isolation.md) | 4-layer worktree defense | 185 |
+| [security-and-isolation](architecture/security-and-isolation.md) | 4-layer worktree defense | 194 |
 | [signal-generation](architecture/signal-generation.md) | Signal assembly: cache, append helpers, prefixes | 202 |
 | [skill-catalog](architecture/skill-catalog.md) | Two skill roots; 63 catalogued skills | 148 |
 | [source-graph](architecture/source-graph.md) | Source graph honesty contract, extractor, limits | 367 |
@@ -69,7 +69,7 @@
 | --- | --- | --- |
 | [cli-and-plan-pipeline](entry-points/cli-and-plan-pipeline.md) | CLI dispatch, plan pipeline | 192 |
 | [context-and-source-graph](entry-points/context-and-source-graph.md) | Context retrieval pipeline, source-graph channel | 79 |
-| [filesystem-and-integration-modules](entry-points/filesystem-and-integration-modules.md) | Git, fs, handoff, sandbox, remote | 125 |
+| [filesystem-and-integration-modules](entry-points/filesystem-and-integration-modules.md) | Git, fs, handoff, sandbox, remote | 126 |
 | [hooks](entry-points/hooks.md) | Hook scripts, their events, command matching | 146 |
 | [orchestrator-daemon-and-sessions](entry-points/orchestrator-daemon-and-sessions.md) | Orchestrator, daemon, signals, merges | 230 |
 | [remote-control](entry-points/remote-control.md) | Remote-control capability detection call sites | 99 |
@@ -171,9 +171,9 @@
 | [codex-heartbeat-starvation](concerns/codex-heartbeat-starvation.md) | Heartbeat starvation from long codex runs | 73 |
 | [iterm2-window-teardown](concerns/iterm2-window-teardown.md) | iTerm2 window never named | 48 |
 | [knowledge-cli-gaps](concerns/knowledge-cli-gaps.md) | Knowledge CLI gaps and housekeeping | 105 |
-| [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 126 |
+| [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 122 |
 | [runtime-and-session-safety](concerns/runtime-and-session-safety.md) | Runtime edge cases: tmux, orphan adoption | 150 |
-| [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: canary, creds, codex home | 260 |
+| [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: canary, creds, codex home | 264 |
 | [source-graph-known-gaps](concerns/source-graph-known-gaps.md) | Language limits, open decisions | 79 |
 | [source-graph-review-backlog](concerns/source-graph-review-backlog.md) | Unimplemented reviewer suggestions | 242 |
 | [state-confinement-gaps](concerns/state-confinement-gaps.md) | Shared package caches session-writable | 17 |

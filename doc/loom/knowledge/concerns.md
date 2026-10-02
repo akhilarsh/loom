@@ -153,8 +153,8 @@ The merge/recovery edge cases: `loom stage merge`'s worktree-cwd requirement, a 
 revert path, the `BranchMissing` phantom-merge risk, the heuristic `BaseConflict` carve-out,
 `retry --force` racing orphan-recovery, `started_at` not resetting on retry, the completion-broker's
 post-transition nonce-burn ordering, the attribution code that has nothing left to attribute, the
-editor residual between stash and pop, the `update-ref` window, `extensions.worktreeConfig` repositories,
-accumulating autostash backup refs, `human-review --force-complete` carrying no operator proof, and a
+editor residual between stash and pop, the `update-ref` window,
+accumulating autostash backup refs, `human-review --force-complete` requiring no operator proof by design, and a
 newline inside a refused fast-forward path.
 
 → [Merge and Recovery Edge Cases](concerns/merge-and-recovery-edge-cases.md)

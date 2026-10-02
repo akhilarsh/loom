@@ -105,17 +105,13 @@ Accepted residual: the reapply stashes, fast-forwards, then pops. An editor that
 
 `advance_target` checks where the target is checked out, then runs `update-ref`. An operator who checks the target out in that window leaves R's index behind HEAD. This cannot be detected without racing again.
 
-## Repositories With `extensions.worktreeConfig` Cannot Land a Resolver's Work Automatically
-
-`check_resolved_worktree` refuses when the main repo enables `extensions.worktreeConfig`; the operator merges by hand. Other users of `WorktreeGit::pinned` outside the merge code still read `config.worktree` in such repositories.
-
 ## Autostash Backup Refs Accumulate
 
 A successful reapply keeps its backup ref under `refs/loom/autostash/` as a safety copy and nothing prunes them. Delete them with `git update-ref -d` once the work is confirmed.
 
-## `human-review --force-complete` Has No Operator Proof of Its Own
+## `human-review --force-complete` Requires No Operator Proof, by Design
 
-It passes `MergeGate::Bypass`. It is operator-only because the sandbox denies writes to the state directory, so a stage agent cannot write the stage file the command changes first; the command itself checks no operator credential.
+It passes `MergeGate::Bypass`. Its authority rests on the capsule: every session kind denies writes to `.loom/`, so a stage agent cannot write the stage file the command changes first (pinned by `orchestrator/terminal/native/tests_capsule_denies.rs`, `every_session_kind_denies_writes_to_the_state_directory`). `human-review` is not relayed to the daemon, and the command checks no operator credential.
 
 ## Stage-Id Auto-Detection Fails Closed When a Tag Shares the Branch Name
 

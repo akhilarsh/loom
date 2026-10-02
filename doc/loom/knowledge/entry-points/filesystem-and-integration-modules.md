@@ -7,6 +7,7 @@
 ## Git Operations
 
 - `git/worktree/operations.rs` - Create/remove worktrees at `.worktrees/{stage-id}/`
+- `git/worktree/config_worktree.rs` - `worktree_admin_dirs` (admin dirs whose `config.worktree` the capsule denies), `check_worktree_config` (pinned git refuses unexpected `config.worktree` keys)
 - `git/worktree/base.rs` - Base branch resolution for dependencies
 - `git/worktree/settings.rs` - Worktree symlinks (.loom/work, .claude/CLAUDE.md, CLAUDE.md)
 - `git/merge/mod.rs` - `merge_stage`: `merge-tree` + `commit-tree`, never git in the operator's checkout; `MergeResult`, `MergeBlock`

@@ -95,6 +95,10 @@ of escape at the point of use, independently of these validators.
 tests. **Leaving `pub`-but-uncalled validators is the worst of the three, because it reads as
 protection.**
 
+## A Check-Then-Use Window Around the `config.worktree` Check
+
+`WorktreeGit::run` (`git/worktree/pinned.rs`) calls `check_worktree_config` before each git command, for a worktree created after an agent's session spawned (the capsule's `config.worktree` deny covers only worktrees that existed when it was built). An agent with write access to that worktree's admin directory can rewrite `config.worktree` between the check and the command it guards. Closing it needs the file unwritable to the agent for the whole command, which the grant of the git common directory prevents (G2 in [Agent Rule-Bending Hardening](agent-rule-bending-hardening.md)).
+
 ## Accepted Gaps From the State-Confinement Work (2026-09-13)
 
 Two gaps from PLAN-loom-state-confinement were accepted, not closed:

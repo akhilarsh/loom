@@ -100,7 +100,7 @@ The resolver works in the stage worktree `.worktrees/<id>`, never in R: it merge
 --resolved`. The relayed request reaches `resolve_merge_from_inbox`
 (`orchestrator/core/inbox_drain/merge_resolved.rs`): status check, `check_resolved_worktree`
 (`git/merge/resolved.rs`: worktree on `loom/<id>`, no `MERGE_HEAD`, no unmerged path, no tracked
-change, the recorded `completed_commit` an ancestor of HEAD; untracked files are allowed because sandboxes leave stubs),
+change, the recorded `completed_commit` an ancestor of HEAD; untracked files are allowed because sandboxes leave stubs; pinned git's `config.worktree` check applies),
 then `land_stage_merge` (`merge_handler/landing.rs`): `merge_stage` with `MergeGate::Enforce`, record. The reply mapping is the pure
 `settle_for_landing` in `merge_resolved.rs`. A merged
 result is applied with no cleanup, because the resolver still runs in the worktree; if the target

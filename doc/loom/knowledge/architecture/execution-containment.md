@@ -391,6 +391,7 @@ repository), these sandbox rules decide what loom's capsule can and cannot expre
 
 What this exposes, and why no deny-list can narrow it, is in
 [Agent Rule-Bending Hardening](../concerns/agent-rule-bending-hardening.md), G2.
+Loom's own `config.worktree` deny and check: [Loom's `config.worktree` Deny and Check](security-and-isolation.md#looms-configworktree-deny-and-check).
 
 ## In-Tree `allow_write` Entries Are Not Emitted
 

@@ -183,3 +183,13 @@ The hooks directory comes from a SCOPED read of `core.hooksPath` (local, then gl
 loom's own git runner prepends `-c core.hooksPath=/dev/null -c core.fsmonitor=false` to every git call
 it makes (`git/runner.rs` `NO_HOOKS_ARGS`, owner decision 10), which silently wins over an UNSCOPED read of the same key. See
 [`-c core.hooksPath=/dev/null` Silently Overrides a Scoped Read](../mistakes/sandbox-tooling-and-network.md#-c-corehookspathdevnull-silently-overrides-a-scoped-corehookspath-read-2026-09-13).
+
+## Loom's `config.worktree` Deny and Check
+>
+> config.worktree deny and check
+
+The capsule (`session_denies` in `sandbox/control_surfaces/session_denies.rs`) denies, for every session kind, `<common>/worktrees/<name>/config.worktree` of every worktree that exists when the capsule is built (`worktree_admin_dirs` in `git/worktree/config_worktree.rs`). For a linked-worktree session this duplicates Claude Code's own `worktrees/*/config.worktree` deny. For a checkout-rooted session (knowledge, adjudication, base-conflict: `.git` is a directory and Claude Code denies only `.git/hooks` and `.git/config`) it is the only deny.
+
+A worktree created after a session spawned is covered by neither, so the daemon checks before running git there: `WorktreeGit::run` (`git/worktree/pinned.rs`) calls `check_worktree_config`. When the main repository enables `extensions.worktreeConfig` and `<admin>/config.worktree` is non-empty, the check lists its keys as data (`git config --file .. --name-only --list` in the main repository) and refuses unless every key is one git itself writes there: `core.sparseCheckout`, `core.sparseCheckoutCone`, `index.sparse`, and the keys `git worktree add` copies from a sparse main worktree. An empty regular file is accepted without spawning git; a symlink goes through the full check. The remaining race is recorded in [Sandbox and Confinement Gaps](../concerns/sandbox-and-confinement-gaps.md).
+
+The srt confinement e2e (`orchestrator/terminal/native/tests_confinement_e2e.rs`, `tests_confinement_srt.rs`) emulates Claude Code's linked-worktree grant and its denies, so stage probes run against what production grants; the knowledge-capsule probe is the one that proves loom's `config.worktree` deny.
