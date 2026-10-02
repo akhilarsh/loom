@@ -184,8 +184,8 @@ impl Orchestrator {
     /// Re-verify a `Completed + merged=true` non-knowledge stage at sync time.
     ///
     /// Derives `completed_commit` from `loom/<id>` HEAD when missing, then
-    /// checks ancestry against the (pre-resolved) target branch. If the
-    /// ancestry check fails OR the branch is also missing, reverts
+    /// checks ancestry with `merged_into_accepted()` against the accepted tip of
+    /// the (pre-resolved) target. If that check fails OR the branch is missing, reverts
     /// `merged=false` so dependents don't treat the stage as satisfied. A
     /// guard that cannot be evaluated leaves the flag unchanged.
     ///

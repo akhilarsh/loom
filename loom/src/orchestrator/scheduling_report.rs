@@ -179,6 +179,7 @@ pub struct Alert {
 /// report its final tick as a stall and its last blocked stages as though
 /// they were still waiting.
 pub fn alerts(work_dir: &Path, daemon_running: bool) -> Vec<Alert> {
+    // guard_alerts (scheduling_report_guard.rs) renders each recorded hold with hold_alert().
     let mut alerts = guard::guard_alerts(work_dir);
     if !daemon_running {
         return alerts;
