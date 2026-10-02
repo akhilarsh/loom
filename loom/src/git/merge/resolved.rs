@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use crate::git::branch::branch_name_for_stage;
-use crate::git::runner::run_git_checked;
+use crate::git::runner::run_git;
 use crate::git::worktree::WorktreeGit;
 
 /// Verify that the resolver left the worktree of `stage_id` ready to merge
@@ -18,13 +18,28 @@ use crate::git::worktree::WorktreeGit;
 ///
 /// The worktree must be registered, sit on `loom/<stage_id>`, have no merge
 /// in progress, no unmerged paths and no tracked change, and its HEAD must
-/// contain the current tip of `target_branch`. Untracked files are allowed:
-/// a sandbox leaves stub files behind.
+/// still contain `completed_commit`, the stage's own work: a rebase, squash or
+/// reset would drop it and the ancestry proof after the merge would follow the
+/// rewritten history. Untracked files are allowed: a sandbox leaves stub files
+/// behind. A target that moved since the resolver merged it is not refused:
+/// `merge_stage` merges the new commits or reports a conflict.
+///
+/// The check also refuses a repository with `extensions.worktreeConfig`: git
+/// would then read the worktree's own `config.worktree`, which the agent
+/// writes, and could run a filter it defines.
 pub fn check_resolved_worktree(
     repo_root: &Path,
     stage_id: &str,
     target_branch: &str,
+    completed_commit: Option<&str>,
 ) -> Result<(), String> {
+    refuse_worktree_config(repo_root, stage_id, target_branch)?;
+    let commit = completed_commit.ok_or_else(|| {
+        format!(
+            "no completed commit is recorded for stage '{stage_id}'; loom cannot prove its \
+             work survived the resolution"
+        )
+    })?;
     let path = repo_root.join(".worktrees").join(stage_id);
     let git = WorktreeGit::pinned(repo_root, &path).map_err(|error| {
         format!(
@@ -32,8 +47,46 @@ pub fn check_resolved_worktree(
             path.display()
         )
     })?;
+    check_branch_and_index(&git, stage_id)?;
+    check_work_survived(&git, commit)
+}
+
+/// Refuse when the main repository enables `extensions.worktreeConfig`.
+fn refuse_worktree_config(
+    repo_root: &Path,
+    stage_id: &str,
+    target_branch: &str,
+) -> Result<(), String> {
+    let output = run_git(
+        &[
+            "config",
+            "--type=bool",
+            "--get",
+            "extensions.worktreeConfig",
+        ],
+        repo_root,
+    )
+    .map_err(|error| format!("cannot read the repository configuration: {error:#}"))?;
+    match output.status.code() {
+        Some(1) => Ok(()),
+        Some(0) if String::from_utf8_lossy(&output.stdout).trim() != "true" => Ok(()),
+        Some(0) => Err(format!(
+            "the repository enables extensions.worktreeConfig, so loom cannot inspect the \
+             stage worktree safely; merge it by hand: merge loom/{stage_id} into \
+             '{target_branch}' from a clean checkout of '{target_branch}'"
+        )),
+        _ => Err(format!(
+            "cannot read the repository configuration: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
+/// HEAD on `loom/<stage_id>`, no merge in progress, no unmerged path, no
+/// tracked change.
+fn check_branch_and_index(git: &WorktreeGit, stage_id: &str) -> Result<(), String> {
     let branch = branch_name_for_stage(stage_id);
-    let (_, head_ref) = query(&git, &["symbolic-ref", "-q", "HEAD"])?;
+    let (_, head_ref) = query(git, &["symbolic-ref", "-q", "HEAD"])?;
     if head_ref != format!("refs/heads/{branch}") {
         return Err(format!(
             "the worktree is not on {branch} (HEAD is {}); switch back to it",
@@ -44,26 +97,60 @@ pub fn check_resolved_worktree(
             }
         ));
     }
-    if query(&git, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])?.0 {
+    if query(git, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])?.0 {
         return Err(
             "a merge is still in progress (MERGE_HEAD exists); commit it first".to_string(),
         );
     }
-    let (_, unmerged) = query(&git, &["ls-files", "-u"])?;
+    let (_, unmerged) = query(git, &["ls-files", "-u"])?;
     if !unmerged.is_empty() {
         return Err(format!(
             "unmerged paths remain: {}",
             unmerged_paths(&unmerged)
         ));
     }
-    let (_, changes) = query(&git, &["status", "--porcelain=v1", "--untracked-files=no"])?;
+    // `--no-optional-locks`: the resolver may be working in this worktree, and
+    // the daemon must not take its index lock for a refresh.
+    let (_, changes) = query(
+        git,
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=no",
+        ],
+    )?;
     if !changes.is_empty() {
         return Err(format!(
             "tracked files have uncommitted changes; commit them: {}",
             changes.lines().collect::<Vec<_>>().join(", ")
         ));
     }
-    target_tip_is_merged_in(repo_root, &git, target_branch)
+    Ok(())
+}
+
+/// `commit`, the stage's own work, must be an ancestor of the worktree's HEAD.
+fn check_work_survived(git: &WorktreeGit, commit: &str) -> Result<(), String> {
+    if commit.is_empty() || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "the recorded completed commit '{commit}' is not a commit id"
+        ));
+    }
+    let output = git
+        .run(&["merge-base", "--is-ancestor", commit, "HEAD"])
+        .map_err(|error| format!("git merge-base failed in the stage worktree: {error:#}"))?;
+    match output.status.code() {
+        Some(0) => Ok(()),
+        Some(1) => Err(format!(
+            "the stage's own commit {commit} is no longer in the branch history; do not \
+             rebase, reset, squash or amend: restore the branch to include it, merge the \
+             target in, resolve, and commit"
+        )),
+        _ => Err(format!(
+            "git merge-base failed in the stage worktree: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
 }
 
 /// Run `args` in the worktree: whether git exited 0, and its trimmed stdout.
@@ -89,32 +176,6 @@ fn unmerged_paths(listing: &str) -> String {
     paths.join(", ")
 }
 
-/// The current tip of `target_branch` must be an ancestor of the worktree's
-/// HEAD: otherwise the target moved after the resolver merged it.
-fn target_tip_is_merged_in(
-    repo_root: &Path,
-    git: &WorktreeGit,
-    target_branch: &str,
-) -> Result<(), String> {
-    let spec = format!("refs/heads/{target_branch}^{{commit}}");
-    let tip = run_git_checked(&["rev-parse", "--verify", &spec], repo_root)
-        .map_err(|error| format!("cannot read the tip of '{target_branch}': {error:#}"))?;
-    let output = git
-        .run(&["merge-base", "--is-ancestor", &tip, "HEAD"])
-        .map_err(|error| format!("git merge-base failed in the stage worktree: {error:#}"))?;
-    match output.status.code() {
-        Some(0) => Ok(()),
-        Some(1) => Err(format!(
-            "'{target_branch}' has commits this worktree does not contain: merge \
-             {target_branch} into it again, resolve, and commit"
-        )),
-        _ => Err(format!(
-            "git merge-base failed in the stage worktree: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,7 +185,8 @@ mod tests {
 
     /// A repository with a linked worktree for stage `s` on `loom/s`, which
     /// holds one commit of its own so merging `main` makes a merge commit.
-    fn repo_with_worktree() -> (TempDir, PathBuf) {
+    /// The third value is that commit, the stage's `completed_commit`.
+    fn repo_with_worktree() -> (TempDir, PathBuf, String) {
         let repo = init_repo();
         let root = repo.path();
         let wt = root.join(".worktrees").join("s");
@@ -133,65 +195,117 @@ mod tests {
             &["worktree", "add", "-b", "loom/s", wt.to_str().unwrap()],
         );
         commit_file(&wt, "stage.txt", "stage", "stage work");
-        (repo, wt)
+        let commit = git_out(&wt, &["rev-parse", "HEAD"]);
+        (repo, wt, commit)
     }
 
-    fn check(repo: &TempDir) -> Result<(), String> {
-        check_resolved_worktree(repo.path(), "s", "main")
+    fn check(repo: &TempDir, commit: &str) -> Result<(), String> {
+        check_resolved_worktree(repo.path(), "s", "main", Some(commit))
     }
 
-    fn refusal(repo: &TempDir) -> String {
-        check(repo).expect_err("the check must refuse")
+    fn refusal(repo: &TempDir, commit: &str) -> String {
+        check(repo, commit).expect_err("the check must refuse")
     }
 
     #[test]
     fn a_merged_clean_worktree_passes_and_untracked_files_are_allowed() {
-        let (repo, wt) = repo_with_worktree();
+        let (repo, wt, commit) = repo_with_worktree();
         commit_file(repo.path(), "m.txt", "main", "main work");
         git_ok(&wt, &["merge", "main", "-m", "merge main"]);
-        assert_eq!(check(&repo), Ok(()));
+        assert_eq!(check(&repo, &commit), Ok(()));
         std::fs::write(wt.join("stub.txt"), "sandbox stub").unwrap();
-        assert_eq!(check(&repo), Ok(()));
+        assert_eq!(check(&repo, &commit), Ok(()));
+    }
+
+    #[test]
+    fn a_target_that_moved_after_the_resolution_is_not_refused() {
+        let (repo, wt, commit) = repo_with_worktree();
+        commit_file(repo.path(), "m.txt", "main", "main work");
+        git_ok(&wt, &["merge", "main", "-m", "merge main"]);
+        commit_file(repo.path(), "later.txt", "later", "unrelated work");
+        assert_eq!(check(&repo, &commit), Ok(()));
+    }
+
+    #[test]
+    fn a_rebase_that_drops_the_completed_commit_is_refused() {
+        let (repo, wt, commit) = repo_with_worktree();
+        commit_file(repo.path(), "m.txt", "main", "main work");
+        git_ok(&wt, &["rebase", "main"]);
+        assert!(refusal(&repo, &commit).contains("no longer in the branch history"));
+    }
+
+    #[test]
+    fn an_amend_that_rewrites_the_completed_commit_is_refused() {
+        let (repo, wt, commit) = repo_with_worktree();
+        git_ok(&wt, &["commit", "--amend", "-m", "squashed"]);
+        assert!(refusal(&repo, &commit).contains("no longer in the branch history"));
+    }
+
+    #[test]
+    fn a_reset_to_the_target_is_refused() {
+        let (repo, wt, commit) = repo_with_worktree();
+        git_ok(&wt, &["reset", "--hard", "main"]);
+        assert!(refusal(&repo, &commit).contains("no longer in the branch history"));
+    }
+
+    #[test]
+    fn a_missing_completed_commit_is_refused() {
+        let (repo, _wt, _commit) = repo_with_worktree();
+        let reason = check_resolved_worktree(repo.path(), "s", "main", None).unwrap_err();
+        assert_eq!(
+            reason,
+            "no completed commit is recorded for stage 's'; loom cannot prove its work \
+             survived the resolution"
+        );
+    }
+
+    #[test]
+    fn a_completed_commit_that_is_not_a_commit_id_is_refused() {
+        let (repo, _wt, _commit) = repo_with_worktree();
+        assert!(refusal(&repo, "--all").contains("is not a commit id"));
+    }
+
+    #[test]
+    fn a_repository_with_worktree_config_enabled_is_refused() {
+        let (repo, _wt, commit) = repo_with_worktree();
+        git_ok(
+            repo.path(),
+            &["config", "extensions.worktreeConfig", "true"],
+        );
+        assert!(refusal(&repo, &commit).contains("extensions.worktreeConfig"));
     }
 
     #[test]
     fn an_unregistered_worktree_is_refused() {
         let repo = init_repo();
         std::fs::create_dir_all(repo.path().join(".worktrees").join("s")).unwrap();
-        assert!(refusal(&repo).contains("cannot be checked"));
+        assert!(refusal(&repo, "abc123").contains("cannot be checked"));
     }
 
     #[test]
     fn a_worktree_on_another_branch_is_refused() {
-        let (repo, wt) = repo_with_worktree();
+        let (repo, wt, commit) = repo_with_worktree();
         git_ok(&wt, &["checkout", "-b", "other"]);
-        assert!(refusal(&repo).contains("not on loom/s"));
+        assert!(refusal(&repo, &commit).contains("not on loom/s"));
     }
 
     #[test]
     fn a_merge_in_progress_is_refused_with_its_unmerged_paths() {
-        let (repo, wt) = repo_with_worktree();
+        let (repo, wt, commit) = repo_with_worktree();
         commit_file(&wt, "a.txt", "stage side", "stage edit");
         commit_file(repo.path(), "a.txt", "main side", "main edit");
         let merge = crate::git::runner::run_git(&["merge", "main"], &wt).unwrap();
         assert!(!merge.status.success(), "the merge must conflict");
-        assert!(refusal(&repo).contains("MERGE_HEAD"));
+        assert!(refusal(&repo, &commit).contains("MERGE_HEAD"));
         let git_dir = git_out(&wt, &["rev-parse", "--absolute-git-dir"]);
         std::fs::remove_file(Path::new(&git_dir).join("MERGE_HEAD")).unwrap();
-        assert!(refusal(&repo).contains("unmerged paths remain: a.txt"));
+        assert!(refusal(&repo, &commit).contains("unmerged paths remain: a.txt"));
     }
 
     #[test]
     fn an_uncommitted_tracked_change_is_refused() {
-        let (repo, wt) = repo_with_worktree();
+        let (repo, wt, commit) = repo_with_worktree();
         std::fs::write(wt.join("a.txt"), "edited").unwrap();
-        assert!(refusal(&repo).contains("uncommitted changes"));
-    }
-
-    #[test]
-    fn a_target_tip_missing_from_the_worktree_is_refused() {
-        let (repo, _wt) = repo_with_worktree();
-        commit_file(repo.path(), "m.txt", "main", "main moved on");
-        assert!(refusal(&repo).contains("has commits this worktree does not contain"));
+        assert!(refusal(&repo, &commit).contains("uncommitted changes"));
     }
 }

@@ -189,8 +189,14 @@ impl Orchestrator {
         stage_id: &str,
         conflicts: usize,
     ) {
+        // The branch head now is the stage's own work, before any resolver
+        // touches the branch; `check_resolved_worktree` holds it to that.
+        let head =
+            crate::git::get_branch_head(&branch_name_for_stage(stage_id), &self.config.repo_root)
+                .ok();
         let saved = self.update_stage(stage_id, |current| {
             ensure_unmerged(current)?;
+            current.record_completed_commit_if_missing(head.as_deref());
             current.enter_merge_conflict();
             Ok(())
         });

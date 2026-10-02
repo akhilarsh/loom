@@ -3,7 +3,7 @@
 //! The resolver merged the target into the stage branch in the stage
 //! worktree. The daemon checks that worktree through pinned git
 //! (`check_resolved_worktree`: no merge in progress, no unmerged path, no
-//! tracked change, the current target tip contained), then lands the merge
+//! tracked change, the stage's recorded commit still in the branch), then lands the merge
 //! with `merge_stage` through the merge gate. `merged = true` is written only
 //! after ancestry proves the stage's commit is in the target. The worktree is
 //! not removed here: the resolver is still running in it, and its exit
@@ -42,29 +42,39 @@ impl Orchestrator {
             &self.config.base_branch,
             &self.config.repo_root,
         );
-        if let Err(reason) = check_resolved_worktree(&self.config.repo_root, stage_id, &target) {
+        if let Err(reason) = check_resolved_worktree(
+            &self.config.repo_root,
+            stage_id,
+            &target,
+            stage.completed_commit.as_deref(),
+        ) {
             return Settle::Refused(reason);
         }
-        match self.land_stage_merge(stage_id, &target) {
-            Landing::Merged => Settle::Applied(Some(format!(
-                "merged into '{target}'; the worktree is removed after this session exits"
-            ))),
-            Landing::Held => Settle::Refused(format!(
-                "routed to human review: the stage branch touches a control path ({})",
-                Self::CONTROL_PATHS
-            )),
-            Landing::Conflict(paths) => Settle::Refused(format!(
-                "'{target}' moved and conflicts again in {}: merge it into this worktree \
-                 again, resolve, commit, then rerun --resolved",
-                paths.join(", ")
-            )),
-            Landing::Blocked(block) => Settle::Applied(Some(format!(
-                "resolution accepted; the merge is blocked: {block}. Loom retries it every tick"
-            ))),
-            Landing::Unproven => Settle::Refused(format!(
-                "no ancestry proof that stage '{stage_id}' landed in '{target}'; merged stays false"
-            )),
-            Landing::Failed(error) => Settle::Refused(error),
-        }
+        settle_for_landing(self.land_stage_merge(stage_id, &target), stage_id, &target)
+    }
+}
+
+/// The reply for how landing the resolved merge ended.
+pub(super) fn settle_for_landing(landing: Landing, stage_id: &str, target: &str) -> Settle {
+    match landing {
+        Landing::Merged => Settle::Applied(Some(format!(
+            "merged into '{target}'; the worktree is removed after this session exits"
+        ))),
+        Landing::Held => Settle::Refused(format!(
+            "routed to human review: the stage branch touches a control path ({})",
+            Orchestrator::CONTROL_PATHS
+        )),
+        Landing::Conflict(paths) => Settle::Refused(format!(
+            "'{target}' moved and conflicts again in {}: merge it into this worktree \
+             again, resolve, commit, then rerun --resolved",
+            paths.join(", ")
+        )),
+        Landing::Blocked(block) => Settle::Applied(Some(format!(
+            "resolution accepted; the merge is blocked: {block}. Loom retries it every tick"
+        ))),
+        Landing::Unproven => Settle::Refused(format!(
+            "no ancestry proof that stage '{stage_id}' landed in '{target}'; merged stays false"
+        )),
+        Landing::Failed(error) => Settle::Refused(error),
     }
 }

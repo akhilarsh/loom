@@ -58,6 +58,15 @@ pub fn spawn_merge_resolver(
         );
     }
 
+    // A typed block is not a conflict: no resolver can clear it.
+    if let (StageStatus::MergeBlocked, Some(block)) = (&stage.status, &stage.merge_block) {
+        bail!(
+            "stage '{id}' is blocked ({block}), not in conflict: it needs no resolver; loom \
+             retries the merge once that changes, or run `loom stage merge {id}`",
+            id = stage.id
+        );
+    }
+
     // If daemon is running, it handles merge resolution automatically
     if DaemonServer::is_running(work_dir) {
         return Ok(MergeResolverResult::DaemonManaged);

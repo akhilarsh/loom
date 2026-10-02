@@ -35,8 +35,21 @@ impl Stage {
 
     /// Forget the typed merge block. Every transition out of a blocked merge
     /// calls this, so a stale reason never outlives the status it explained.
+    /// The `failure_info` that `block_merge` wrote goes with the block; with
+    /// no block recorded, an unrelated `failure_info` stays.
     pub fn clear_merge_block(&mut self) {
-        self.merge_block = None;
+        if self.merge_block.take().is_some() {
+            self.failure_info = None;
+        }
+    }
+
+    /// Record `commit`, the stage branch head, as `completed_commit` unless one
+    /// is already recorded. A stage entering a merge conflict calls this before
+    /// any resolver touches the branch, so the stage's own work stays provable.
+    pub fn record_completed_commit_if_missing(&mut self, commit: Option<&str>) {
+        if self.completed_commit.is_none() {
+            self.completed_commit = commit.map(str::to_string);
+        }
     }
 
     /// Move the stage to `MergeConflict`, clearing any merge block.
@@ -91,6 +104,37 @@ mod tests {
         assert_eq!(stage.status, StageStatus::MergeConflict);
         assert!(stage.merge_conflict);
         assert_eq!(stage.merge_block, None);
+    }
+
+    #[test]
+    fn clear_merge_block_clears_the_failure_info_the_block_wrote() {
+        let mut stage = stage_in(StageStatus::Completed);
+        stage.block_merge(MergeBlock::TargetMoved);
+        stage.clear_merge_block();
+        assert_eq!(stage.merge_block, None);
+        assert!(stage.failure_info.is_none());
+    }
+
+    #[test]
+    fn clear_merge_block_keeps_an_unrelated_failure_info() {
+        let mut stage = stage_in(StageStatus::Completed);
+        stage.failure_info = Some(FailureInfo {
+            failure_type: FailureType::InfrastructureError,
+            detected_at: Utc::now(),
+            evidence: vec!["disk full".to_string()],
+        });
+        stage.clear_merge_block();
+        assert_eq!(stage.failure_info.expect("kept").evidence, ["disk full"]);
+    }
+
+    #[test]
+    fn a_missing_completed_commit_is_recorded_and_an_existing_one_kept() {
+        let mut stage = stage_in(StageStatus::Completed);
+        stage.record_completed_commit_if_missing(Some("aaa"));
+        assert_eq!(stage.completed_commit.as_deref(), Some("aaa"));
+        stage.record_completed_commit_if_missing(Some("bbb"));
+        stage.record_completed_commit_if_missing(None);
+        assert_eq!(stage.completed_commit.as_deref(), Some("aaa"));
     }
 
     #[test]

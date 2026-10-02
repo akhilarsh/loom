@@ -121,16 +121,18 @@ fn conflicting_stage_with_dirty_main() -> (TempDir, PathBuf) {
 
 /// What the resolver does in its worktree: merge `main`, resolve, commit.
 fn resolve_in_worktree(root: &Path, wt: &Path) {
+    let own = git_out(wt, &["rev-parse", "HEAD"]);
+    let own = Some(own.as_str());
     assert!(
         !run_git(wt, &["merge", "main"]).status.success(),
         "the merge must conflict"
     );
-    let reason = check_resolved_worktree(root, "s1", "main").expect_err("merge in progress");
+    let reason = check_resolved_worktree(root, "s1", "main", own).expect_err("merge in progress");
     assert!(reason.contains("MERGE_HEAD"), "{reason}");
     std::fs::write(wt.join("conflict.txt"), "resolved\n").unwrap();
     git(wt, &["add", "conflict.txt"]);
     git(wt, &["commit", "--no-edit"]);
-    assert_eq!(check_resolved_worktree(root, "s1", "main"), Ok(()));
+    assert_eq!(check_resolved_worktree(root, "s1", "main", own), Ok(()));
 }
 
 #[test]

@@ -55,6 +55,21 @@ fn set_status(orchestrator: &Orchestrator, status: StageStatus) {
     .unwrap();
 }
 
+/// The stage in `MergeConflict` with the worktree's current head recorded as
+/// its `completed_commit`, as the conflict entry does.
+fn enter_conflict(orchestrator: &Orchestrator, repo: &TempDir) -> String {
+    let head =
+        crate::git::runner::run_git_checked(&["rev-parse", "HEAD"], &worktree(repo)).unwrap();
+    let recorded = head.clone();
+    update_stage(ID, &orchestrator.config.work_dir, |stage| {
+        stage.status = StageStatus::MergeConflict;
+        stage.completed_commit = Some(recorded.clone());
+        Ok(())
+    })
+    .unwrap();
+    head
+}
+
 fn on_disk(orchestrator: &Orchestrator) -> Stage {
     load_stage(ID, &orchestrator.config.work_dir).unwrap()
 }
@@ -214,7 +229,7 @@ fn the_resolver_exit_removes_the_worktree_of_a_merge_already_landed() {
 #[test]
 fn the_resolver_exit_lands_a_resolved_worktree_and_cleans_up() {
     let (repo, mut orchestrator) = worktree_stage();
-    set_status(&orchestrator, StageStatus::MergeConflict);
+    enter_conflict(&orchestrator, &repo);
     resolve_in_worktree(&repo);
 
     orchestrator
@@ -228,10 +243,10 @@ fn the_resolver_exit_lands_a_resolved_worktree_and_cleans_up() {
 }
 
 #[test]
-fn the_resolver_exit_with_an_unresolved_worktree_merges_nothing() {
+fn the_resolver_exit_without_a_recorded_commit_merges_nothing() {
     let (repo, mut orchestrator) = worktree_stage();
     set_status(&orchestrator, StageStatus::MergeConflict);
-    commit_file(repo.path(), "m.txt", "main moved on");
+    resolve_in_worktree(&repo);
     let main_before = main_tip(&repo);
 
     orchestrator
@@ -243,6 +258,39 @@ fn the_resolver_exit_with_an_unresolved_worktree_merges_nothing() {
     assert!(!stage.merged);
     assert!(worktree(&repo).is_dir());
     assert_eq!(main_tip(&repo), main_before);
+}
+
+#[test]
+fn the_resolver_exit_refuses_a_worktree_that_dropped_the_recorded_commit() {
+    let (repo, mut orchestrator) = worktree_stage();
+    enter_conflict(&orchestrator, &repo);
+    commit_file(repo.path(), "m.txt", "main moved on");
+    git_ok(&worktree(&repo), &["reset", "-q", "--hard", "main"]);
+    let main_before = main_tip(&repo);
+
+    orchestrator
+        .handle_merge_session_completed("session", ID)
+        .unwrap();
+
+    let stage = on_disk(&orchestrator);
+    assert_eq!(stage.status, StageStatus::MergeConflict);
+    assert!(!stage.merged);
+    assert_eq!(main_tip(&repo), main_before);
+}
+
+#[test]
+fn a_conflict_records_the_branch_head_once() {
+    let (repo, mut orchestrator) = worktree_stage();
+    make_conflict(&repo);
+    let head = crate::git::runner::run_git_checked(&["rev-parse", "loom/s"], repo.path()).unwrap();
+
+    orchestrator.record_merge_conflict(ID, 1);
+
+    assert_eq!(on_disk(&orchestrator).completed_commit, Some(head.clone()));
+    commit_file(&worktree(&repo), "later.txt", "resolver work");
+    set_status(&orchestrator, StageStatus::MergeBlocked);
+    orchestrator.record_merge_conflict(ID, 1);
+    assert_eq!(on_disk(&orchestrator).completed_commit, Some(head));
 }
 
 #[test]

@@ -116,8 +116,8 @@ fn no_branch_does_not_mark_merged() {
                 stage.merged
             );
         }
-        Ok(MergeOutcome::Conflict | MergeOutcome::Held) => {
-            panic!("unexpected Conflict or Held from missing branch");
+        Ok(MergeOutcome::Conflict | MergeOutcome::Held | MergeOutcome::NoCommits) => {
+            panic!("unexpected Conflict, Held or NoCommits from missing branch");
         }
         Err(_) => {
             // Some implementations may surface missing branch as an error
@@ -247,4 +247,53 @@ fn complete_with_merge_bypass_lands_a_control_path_branch() {
     assert_eq!(on_disk.status, StageStatus::Completed);
     assert!(on_disk.merged);
     assert!(repo_root.join(".claude/settings.json").exists());
+}
+
+/// A stage branch `loom/<id>` at the tip of `main`, with no commit of its own,
+/// and the stage saved as `Executing`.
+fn zero_commit_stage(repo_root: &std::path::Path, id: &str) -> Stage {
+    let out = Command::new("git")
+        .args(["branch", &format!("loom/{id}")])
+        .current_dir(repo_root)
+        .output()
+        .expect("git branch");
+    assert!(out.status.success(), "git branch");
+    let stage = make_stage(id);
+    save_stage(&stage, &repo_root.join(".loom").join("work")).expect("save stage");
+    stage
+}
+
+#[test]
+fn complete_with_merge_routes_a_zero_commit_branch_to_review() {
+    let repo = init_repo_with_work_dir();
+    let repo_root = repo.path();
+    let work_dir = repo_root.join(".loom").join("work");
+    let mut stage = zero_commit_stage(repo_root, "zero");
+
+    let error = complete_with_merge(&mut stage, repo_root, &work_dir, MergeGate::Enforce)
+        .expect_err("a branch without commits must not complete");
+
+    assert!(error.to_string().contains("no commits"), "{error}");
+    let on_disk = load_stage("zero", &work_dir).unwrap();
+    assert_eq!(on_disk.status, StageStatus::NeedsHumanReview);
+    assert!(!on_disk.merged);
+    assert!(on_disk
+        .review_reason
+        .unwrap()
+        .contains("zero commits beyond main"));
+    assert!(!stage.merged);
+}
+
+#[test]
+fn a_zero_commit_branch_whose_recorded_commit_is_in_the_target_is_not_held() {
+    let repo = init_repo_with_work_dir();
+    let repo_root = repo.path();
+    let mut stage = zero_commit_stage(repo_root, "landed");
+    stage.completed_commit =
+        Some(crate::git::runner::run_git_checked(&["rev-parse", "main"], repo_root).unwrap());
+
+    assert!(
+        super::super::progressive_complete::zero_commit_review_reason(&stage, "main", repo_root)
+            .is_none()
+    );
 }

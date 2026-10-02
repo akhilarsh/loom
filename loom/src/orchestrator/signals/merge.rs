@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::context::untrusted::inline_safe;
 use crate::fs::session_files::load_session_exact;
 use crate::models::session::{Session, SessionType};
 use crate::models::stage::Stage;
@@ -160,6 +161,7 @@ pub(super) fn format_merge_signal_content(
     content.push_str(&helpers::format_conflicting_files_section(
         conflicting_files,
     ));
+    content.push_str(&format_failure_section(stage, conflicting_files));
     content.push_str(&format_merge_task(stage, target_branch));
     content.push_str(&format_acceptance_section(stage));
     content.push_str(&format_merge_important());
@@ -203,6 +205,36 @@ fn format_merge_task(stage: &Stage, target_branch: &str) -> String {
     )
 }
 
+/// How many evidence lines of the last failed merge attempt the signal quotes.
+const MAX_FAILURE_LINES: usize = 5;
+
+/// Why the last merge attempt failed, for a stage whose merge was predicted
+/// to conflict nowhere: the resolver would otherwise learn nothing. Empty when
+/// conflicting files are known or the stage records no failure. The evidence is
+/// git or process output, so each line goes through `inline_safe`.
+fn format_failure_section(stage: &Stage, conflicting_files: &[String]) -> String {
+    let Some(info) = stage
+        .failure_info
+        .as_ref()
+        .filter(|_| conflicting_files.is_empty())
+    else {
+        return String::new();
+    };
+    let mut content = String::from("## Why the Last Merge Attempt Failed\n\n");
+    content.push_str(
+        "No conflict was predicted, so no conflicting files are listed. The last attempt \
+         failed with:\n\n",
+    );
+    for line in info.evidence.iter().take(MAX_FAILURE_LINES) {
+        content.push_str(&format!("- {}\n", inline_safe(line)));
+    }
+    content.push_str(
+        "\nStill merge the target branch into this worktree, rerun the acceptance criteria, \
+         commit, and run `--resolved`; loom then retries the merge.\n\n",
+    );
+    content
+}
+
 /// The stage's acceptance criteria; empty when the stage has none.
 fn format_acceptance_section(stage: &Stage) -> String {
     if stage.acceptance.is_empty() {
@@ -222,6 +254,8 @@ fn format_merge_important() -> String {
      - Preserve intent from BOTH branches where possible\n\
      - If unclear how to resolve, ask the user for guidance\n\
      - Never touch the main checkout\n\
+     - Do not rebase, reset, squash, amend or force-push: the stage's existing commits must \
+     stay in the branch history, so merge only. Loom refuses a worktree that lost them\n\
      - Do not run `loom worktree remove`: the orchestrator removes the worktree after this \
      session exits and the merge has landed\n\n"
         .to_string()
@@ -238,7 +272,8 @@ fn format_inherited_responsibilities(
          exited.\n\n\
          - `loom stage merge {stage_id} --resolved` makes loom re-run the merge, which lands \
          `{source_branch}` on `{target_branch}`\n\
-         - If `{target_branch}` moved meanwhile and conflicts again, loom spawns another resolver\n\
+         - If `{target_branch}` moved meanwhile and the merge conflicts again, loom keeps the \
+         stage in conflict and another resolver round starts\n\
          - If this session exits without resolving, loom spawns a new resolver, up to the \
          attempt cap\n\n"
     )

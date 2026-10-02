@@ -47,7 +47,9 @@ impl Orchestrator {
                 // resolver being gone.
                 tracing::info!(stage_id = %stage_id, "Resolver exited; the blocked merge is retried each tick");
             }
-            ref status if awaits_merge(status) => self.land_resolved_worktree(stage_id, &target),
+            ref status if awaits_merge(status) => {
+                self.land_resolved_worktree(stage_id, &target, stage.completed_commit.as_deref());
+            }
             ref status => tracing::info!(
                 stage_id = %stage_id,
                 %status,
@@ -98,8 +100,15 @@ impl Orchestrator {
     /// A worktree that is not ready, or a merge that does not land, leaves the
     /// stage as it is: the spawn loop gives it another counted resolver, or
     /// routes it to human review once the budget is spent.
-    fn land_resolved_worktree(&mut self, stage_id: &str, target: &str) {
-        if let Err(reason) = check_resolved_worktree(&self.config.repo_root, stage_id, target) {
+    fn land_resolved_worktree(
+        &mut self,
+        stage_id: &str,
+        target: &str,
+        completed_commit: Option<&str>,
+    ) {
+        if let Err(reason) =
+            check_resolved_worktree(&self.config.repo_root, stage_id, target, completed_commit)
+        {
             self.report_unresolved_merge(stage_id, &reason);
             return;
         }

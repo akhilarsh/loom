@@ -14,7 +14,7 @@ use crate::models::stage::StageStatus;
 use crate::orchestrator::core::{Orchestrator, OrchestratorConfig};
 use crate::plan::ExecutionGraph;
 use crate::relay::RequestKind;
-use crate::verify::transitions::load_stage;
+use crate::verify::transitions::{load_stage, update_stage};
 
 use super::test_support::{entry_for, fixture, payload_for, Fixture, STAGE};
 use super::{run_pass, Tick};
@@ -110,16 +110,27 @@ fn resolve(fx: &Fixture, orchestrator: &mut Orchestrator) -> Option<LedgerOutcom
     fx.outcome(&record.id, &entry.id)
 }
 
+/// The stage in `MergeConflict` with `completed_commit` recorded as given.
+fn conflict_stage(fx: &Fixture, completed_commit: Option<&str>) {
+    fx.stage(StageStatus::MergeConflict, None);
+    update_stage(STAGE, &fx.work_dir, |stage| {
+        stage.completed_commit = completed_commit.map(str::to_string);
+        Ok(())
+    })
+    .unwrap();
+}
+
 /// The stage as the daemon meets it after a resolver merged the (moved) target
 /// into the worktree: `main` advanced, and the worktree merged it.
 fn resolved_stage(fx: &Fixture) -> Orchestrator {
     repository(fx);
+    let own_commit = git(&worktree_of(fx), &["rev-parse", "HEAD"]);
     advance_main(fx, "m.txt", "m\n");
     git(
         &worktree_of(fx),
         &["merge", "-q", "main", "-m", "merge main"],
     );
-    fx.stage(StageStatus::MergeConflict, None);
+    conflict_stage(fx, Some(&own_commit));
     orchestrator(fx)
 }
 
@@ -160,11 +171,37 @@ fn merge_resolved_lands_the_merge_and_leaves_the_worktree_for_the_resolver_exit(
 }
 
 #[test]
-fn merge_resolved_is_refused_while_the_target_tip_is_not_merged_in() {
+fn merge_resolved_lands_when_the_target_moved_after_the_resolution() {
+    let fx = fixture();
+    let mut orchestrator = resolved_stage(&fx);
+    advance_main(&fx, "later.txt", "later\n");
+
+    assert_eq!(
+        resolve(&fx, &mut orchestrator),
+        Some(LedgerOutcome::Applied)
+    );
+
+    let stage = load_stage(STAGE, &fx.work_dir).unwrap();
+    assert!(stage.merged);
+    assert_eq!(
+        git(&fx.repo_root, &["cat-file", "-t", "main:later.txt"]),
+        "blob"
+    );
+}
+
+#[test]
+fn merge_resolved_is_refused_when_the_resolver_dropped_the_stage_commit() {
+    let fx = fixture();
+    let mut orchestrator = resolved_stage(&fx);
+    git(&worktree_of(&fx), &["reset", "-q", "--hard", "main"]);
+    assert_refused(&fx, &mut orchestrator);
+}
+
+#[test]
+fn merge_resolved_is_refused_without_a_recorded_completed_commit() {
     let fx = fixture();
     repository(&fx);
-    advance_main(&fx, "m.txt", "m\n");
-    fx.stage(StageStatus::MergeConflict, None);
+    conflict_stage(&fx, None);
     let mut orchestrator = orchestrator(&fx);
     assert_refused(&fx, &mut orchestrator);
 }
@@ -176,6 +213,7 @@ fn merge_resolved_is_refused_with_a_merge_in_progress_or_unmerged_paths() {
     let worktree = worktree_of(&fx);
     std::fs::write(worktree.join("a.txt"), "stage side\n").unwrap();
     git(&worktree, &["commit", "-q", "-am", "stage edit"]);
+    let own_commit = git(&worktree, &["rev-parse", "HEAD"]);
     advance_main(&fx, "a.txt", "main side\n");
     let merge = Command::new("git")
         .args(["merge", "main"])
@@ -183,7 +221,7 @@ fn merge_resolved_is_refused_with_a_merge_in_progress_or_unmerged_paths() {
         .output()
         .unwrap();
     assert!(!merge.status.success(), "the merge must conflict");
-    fx.stage(StageStatus::MergeConflict, None);
+    conflict_stage(&fx, Some(&own_commit));
     let mut orchestrator = orchestrator(&fx);
     assert_refused(&fx, &mut orchestrator);
 }
@@ -250,4 +288,69 @@ fn merge_resolved_refuses_a_branch_that_touches_a_control_path() {
         .unwrap()
         .contains(".claude/settings.json"));
     assert_eq!(git(&fx.repo_root, &["rev-parse", "main"]), main_before);
+}
+
+mod settle_for_landing {
+    use super::super::merge_resolved::settle_for_landing;
+    use super::super::Settle;
+    use crate::git::merge::MergeBlock;
+    use crate::orchestrator::core::merge_handler::Landing;
+
+    fn settle(landing: Landing) -> Settle {
+        settle_for_landing(landing, "stage-a", "main")
+    }
+
+    #[test]
+    fn merged_applies_with_target() {
+        match settle(Landing::Merged) {
+            Settle::Applied(Some(note)) => assert!(note.contains("merged into 'main'")),
+            _ => panic!("expected Applied with a note"),
+        }
+    }
+
+    #[test]
+    fn held_refuses_with_control_paths() {
+        match settle(Landing::Held) {
+            Settle::Refused(reason) => assert!(reason.contains("human review")),
+            _ => panic!("expected Refused"),
+        }
+    }
+
+    #[test]
+    fn conflict_refuses_with_paths_and_rerun() {
+        let landing = Landing::Conflict(vec!["a.rs".into(), "b.rs".into()]);
+        match settle(landing) {
+            Settle::Refused(reason) => {
+                assert!(reason.contains("a.rs, b.rs"));
+                assert!(reason.contains("rerun --resolved"));
+            }
+            _ => panic!("expected Refused"),
+        }
+    }
+
+    #[test]
+    fn blocked_applies_with_block_text() {
+        match settle(Landing::Blocked(MergeBlock::TargetMoved)) {
+            Settle::Applied(Some(note)) => assert!(note.contains("the merge is blocked")),
+            _ => panic!("expected Applied with a note"),
+        }
+    }
+
+    #[test]
+    fn unproven_refuses_naming_stage_and_target() {
+        match settle(Landing::Unproven) {
+            Settle::Refused(reason) => {
+                assert!(reason.contains("stage-a") && reason.contains("'main'"));
+            }
+            _ => panic!("expected Refused"),
+        }
+    }
+
+    #[test]
+    fn failed_refuses_with_error_text() {
+        match settle(Landing::Failed("boom".into())) {
+            Settle::Refused(reason) => assert_eq!(reason, "boom"),
+            _ => panic!("expected Refused"),
+        }
+    }
 }

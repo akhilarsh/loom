@@ -46,8 +46,8 @@ pub fn merge(stage_id: Option<String>, resolved: bool) -> Result<()> {
 /// This path:
 /// 1. Resolves stage ID (provided or auto-detected from branch)
 /// 2. Verifies the stage is in MergeConflict or MergeBlocked status
-/// 3. Checks the stage worktree (`check_resolved_worktree`): target merged in,
-///    committed, no unmerged path
+/// 3. Checks the stage worktree (`check_resolved_worktree`): the stage's
+///    recorded commit still in the branch, committed, no unmerged path
 /// 4. Merges the stage into the target with `merge_stage`, which leaves the
 ///    operator's main checkout alone apart from a fast-forward
 /// 5. After ancestry proves the commit landed, marks the stage merged,
@@ -75,8 +75,13 @@ fn merge_resolved(stage_id: Option<String>) -> Result<()> {
     // the main repository the state directory belongs to, not the cwd.
     let repo_root = main_repo_root(work_dir)?;
     let target = crate::fs::resolve_target_branch_from_config(work_dir, &repo_root)?;
-    check_resolved_worktree(&repo_root, &stage_id, &target)
-        .map_err(|reason| anyhow!("The stage worktree is not ready to merge: {reason}"))?;
+    check_resolved_worktree(
+        &repo_root,
+        &stage_id,
+        &target,
+        stage.completed_commit.as_deref(),
+    )
+    .map_err(|reason| anyhow!("The stage worktree is not ready to merge: {reason}"))?;
 
     match merge_stage(&stage_id, &target, &repo_root, work_dir, MergeGate::Enforce)? {
         MergeResult::Success { stash, .. } => {
