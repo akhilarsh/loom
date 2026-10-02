@@ -274,6 +274,9 @@ mod tests_capsule_checkout;
 #[path = "tests_capsule_cwd_grants.rs"]
 mod tests_capsule_cwd_grants;
 #[cfg(test)]
+#[path = "tests_capsule_denies.rs"]
+mod tests_capsule_denies;
+#[cfg(test)]
 #[path = "tests_capsule_interpreters.rs"]
 mod tests_capsule_interpreters;
 #[cfg(test)]

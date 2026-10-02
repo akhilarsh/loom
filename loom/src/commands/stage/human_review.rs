@@ -1,7 +1,7 @@
 //! Human review response for a stage
 //!
 //! Allows a human to respond to a stage flagged for review via dispute-criteria.
-//! Supports three actions: approve (queue a fresh session), force-complete (skip acceptance), reject (block).
+//! Actions: approve (queue a fresh session), force-complete (skip acceptance), reject (block).
 
 use anyhow::{bail, Context, Result};
 use std::path::Path;
@@ -133,19 +133,19 @@ fn refuse_live_worker(stage_id: &str, work_dir: &Path) -> Result<()> {
 
 /// Force-complete the review: skip acceptance criteria and merge, then mark as completed.
 ///
-/// Merge is attempted BEFORE transitioning to Completed so that if a conflict
-/// occurs, the stage can move to MergeConflict/MergeBlocked via the valid
-/// Executing→MergeConflict/MergeBlocked edges instead of the illegal
-/// Completed→MergeConflict path.
+/// Merge runs BEFORE the Completed transition, so a conflict takes the legal
+/// Executing→MergeConflict/MergeBlocked edges. No operator proof guards this command: `human-review` is not relayed and
+/// writes the stage file itself. Its authority rests on every session capsule
+/// denying writes to the state directory, so a sandboxed agent cannot change
+/// the stage file first (`every_session_kind_denies_writes_to_the_state_directory`).
 fn handle_force_complete(stage_id: &str, work_dir: &Path) -> Result<()> {
     eprintln!(
         "WARNING: Force-completing stage '{stage_id}' without acceptance criteria verification."
     );
 
-    // Transition to Executing directly (not via try_approve_review, which now
-    // targets Queued) so all merge-outcome transitions are legal:
-    //   Executing → MergeConflict | MergeBlocked | Completed
-    // complete_with_merge handles Completed via try_complete(None) internally.
+    // Go to Executing directly (try_approve_review targets Queued) so every
+    // merge outcome is a legal transition: Executing → MergeConflict |
+    // MergeBlocked | Completed (complete_with_merge runs try_complete(None)).
     let mut stage = update_stage(stage_id, work_dir, |stage| {
         stage.try_transition(StageStatus::Executing)?;
         stage.review_reason = None;
@@ -155,11 +155,10 @@ fn handle_force_complete(stage_id: &str, work_dir: &Path) -> Result<()> {
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
     let repo_root = find_repo_root_from_cwd(&cwd).unwrap_or_else(|| cwd.clone());
 
-    // Attempt progressive merge + completion. On Success, complete_with_merge
-    // transitions Executing → Completed and triggers dependents. On
-    // Conflict/Blocked it transitions to the appropriate merge state and saves;
-    // those outcomes stay command failures so automation cannot mistake them for
-    // a successful force-completion. The reviewed branch skips the control-path gate.
+    // Progressive merge + completion: Success moves Executing → Completed and
+    // triggers dependents; Conflict/Blocked move to the merge state and save,
+    // and stay command failures so automation cannot mistake them for a
+    // force-completion. The reviewed branch skips the control-path gate.
     complete_with_merge(&mut stage, &repo_root, work_dir, MergeGate::Bypass)?;
     println!("Stage '{stage_id}' force-completed and merged successfully.");
 
