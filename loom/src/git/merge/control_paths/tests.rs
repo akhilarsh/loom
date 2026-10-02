@@ -168,6 +168,23 @@ fn hooks_dir_prefix_reads_a_relative_core_hooks_path() {
 }
 
 #[test]
+fn hooks_dir_prefix_reads_a_worktree_scoped_core_hooks_path() {
+    let repo = init_repo();
+    let root = repo.path();
+    git_ok(root, &["config", "extensions.worktreeConfig", "true"]);
+    git_ok(
+        root,
+        &["config", "--worktree", "core.hooksPath", ".githooks"],
+    );
+
+    assert_eq!(hooks_dir_prefix(root), Some(".githooks/".to_string()));
+    assert!(is_control_path(
+        ".githooks/pre-commit",
+        hooks_dir_prefix(root).as_deref()
+    ));
+}
+
+#[test]
 fn hooks_dir_prefix_is_none_when_unset() {
     let repo = init_repo();
 

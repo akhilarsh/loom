@@ -14,6 +14,7 @@ mod init_blockers;
 pub mod merge;
 pub mod repository;
 pub mod runner;
+pub mod target_guard;
 pub mod worktree;
 
 // Re-export commonly used types and functions

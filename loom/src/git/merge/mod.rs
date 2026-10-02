@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use super::branch::{branch_exists, branch_name_for_stage, branch_ref, is_ancestor_of};
 use crate::git::runner::run_git_checked;
+use crate::git::target_guard::{self, GuardState};
 use lock::MergeLock;
 use operation::operator_operation;
 
@@ -33,6 +34,7 @@ pub use in_progress::{
 pub use inputs::blocked_merge_inputs;
 pub use resolved::check_resolved_worktree;
 pub use status::{build_merge_report, check_merge_state, MergeState, MergeStatusReport};
+pub(crate) use tree::rev_parse;
 pub use tree::{
     advance_target, commit_merge, merge_tree, Advance, MergeBlock, PendingMerge, StashReapply,
     TreeMerge,
@@ -73,15 +75,19 @@ pub enum MergeResult {
 /// Steps, under the merge lock:
 /// 1. Refuse while the operator has a merge, cherry-pick, revert or rebase
 ///    in progress in the checkout.
-/// 2. With [`MergeGate::Enforce`], hold a branch whose diff touches a control
+/// 2. Refuse while the target guard holds the target
+///    ([`MergeBlock::TargetHeld`]), for every gate mode: the bypass covers the
+///    stage's own control paths, never a target that moved outside loom.
+/// 3. With [`MergeGate::Enforce`], hold a branch whose diff touches a control
 ///    path. The gate reads the same two commits that are merged, under the
 ///    lock, so a commit made to the branch while the lock was awaited cannot
 ///    slip past it.
-/// 3. Compute the merge with `git merge-tree`; conflicts leave everything
+/// 4. Compute the merge with `git merge-tree`; conflicts leave everything
 ///    untouched. With the gate enforced, the diff from the target to the
 ///    merged tree is gated as well.
-/// 4. Advance the target with [`advance_target`], which writes the merge
-///    commit with `git commit-tree` only when the advance can happen.
+/// 5. Advance the target with [`advance_target`], which writes the merge
+///    commit with `git commit-tree` only when the advance can happen, and
+///    move the guard's accepted tip along with it.
 pub fn merge_stage(
     stage_id: &str,
     target_branch: &str,
@@ -102,13 +108,10 @@ pub fn merge_stage(
         }));
     }
 
-    let branch_name = branch_name_for_stage(stage_id);
-    if !branch_exists(&branch_name, repo_root)? {
-        bail!("Branch '{branch_name}' does not exist");
+    let (old, branch_tip) = merge_tips(stage_id, target_branch, repo_root)?;
+    if let Some(block) = target_hold(repo_root, work_dir, target_branch, &old)? {
+        return Ok(MergeResult::Blocked(block));
     }
-    // Full ref names: a tag named like the branch must not win.
-    let old = tree::rev_parse(repo_root, &branch_ref(target_branch))?;
-    let branch_tip = tree::rev_parse(repo_root, &branch_ref(&branch_name))?;
     if is_ancestor_of(&branch_tip, &old, repo_root)? {
         return Ok(MergeResult::AlreadyUpToDate);
     }
@@ -122,7 +125,7 @@ pub fn merge_stage(
     }
 
     merge_and_advance(
-        repo_root,
+        (repo_root, work_dir),
         stage_id,
         target_branch,
         (&old, &branch_tip),
@@ -130,9 +133,42 @@ pub fn merge_stage(
     )
 }
 
+/// The target's tip and the stage branch's tip, resolved by full ref name so
+/// a tag named like either branch cannot win. Fails when the stage branch does
+/// not exist.
+fn merge_tips(stage_id: &str, target_branch: &str, repo_root: &Path) -> Result<(String, String)> {
+    let branch_name = branch_name_for_stage(stage_id);
+    if !branch_exists(&branch_name, repo_root)? {
+        bail!("Branch '{branch_name}' does not exist");
+    }
+    let old = tree::rev_parse(repo_root, &branch_ref(target_branch))?;
+    let branch_tip = tree::rev_parse(repo_root, &branch_ref(&branch_name))?;
+    Ok((old, branch_tip))
+}
+
+/// [`MergeBlock::TargetHeld`] when the target guard holds `target_branch` at
+/// `old`. The caller holds the merge lock.
+fn target_hold(
+    repo_root: &Path,
+    work_dir: &Path,
+    target_branch: &str,
+    old: &str,
+) -> Result<Option<MergeBlock>> {
+    Ok(
+        match target_guard::check_locked(repo_root, work_dir, target_branch, old)? {
+            GuardState::Held(hold) => Some(MergeBlock::TargetHeld {
+                target: target_guard::target_key(target_branch).to_string(),
+                accepted: hold.accepted,
+                observed: hold.observed,
+            }),
+            GuardState::Clear { .. } => None,
+        },
+    )
+}
+
 /// Compute and land the merge of `branch_tip` into `old`.
 fn merge_and_advance(
-    repo_root: &Path,
+    (repo_root, work_dir): (&Path, &Path),
     stage_id: &str,
     target_branch: &str,
     (old, branch_tip): (&str, &str),
@@ -161,17 +197,29 @@ fn merge_and_advance(
     let (files_changed, insertions, deletions) = parse_merge_stats(&shortstat);
     let mut pending = PendingMerge::new(repo_root, &merged_tree, [old, branch_tip], &msg);
 
-    Ok(
-        match advance_target(repo_root, target_branch, stage_id, &mut pending)? {
-            Advance::Advanced { stash } => MergeResult::Success {
-                files_changed,
-                insertions,
-                deletions,
-                stash,
-            },
-            Advance::Blocked(block) => MergeResult::Blocked(block),
-        },
-    )
+    let stash = match advance_target(repo_root, target_branch, stage_id, &mut pending)? {
+        Advance::Advanced { stash } => stash,
+        Advance::Blocked(block) => return Ok(MergeResult::Blocked(block)),
+    };
+    record_merge(work_dir, target_branch, old, &mut pending);
+    Ok(MergeResult::Success {
+        files_changed,
+        insertions,
+        deletions,
+        stash,
+    })
+}
+
+/// Move the target guard's accepted tip from `old` to the merge commit loom
+/// just landed. A failure only warns: the merge landed, and the next
+/// evaluation judges the move.
+fn record_merge(work_dir: &Path, target_branch: &str, old: &str, pending: &mut PendingMerge) {
+    let recorded = pending
+        .commit()
+        .and_then(|merge| target_guard::record_advance(work_dir, target_branch, old, &merge));
+    if let Err(error) = recorded {
+        tracing::warn!("target guard: could not record the merge into {target_branch}: {error:#}");
+    }
 }
 
 /// Parse merge statistics from git output
@@ -242,6 +290,8 @@ mod stage_overlap_tests;
 mod stage_tests;
 #[cfg(test)]
 mod tag_shadow_tests;
+#[cfg(test)]
+mod target_guard_tests;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]

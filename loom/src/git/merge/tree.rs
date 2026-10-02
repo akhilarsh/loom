@@ -43,6 +43,13 @@ pub enum MergeBlock {
     /// The merge did not land and the operator's stashed changes could not
     /// be put back: they are in the top stash entry and in `backup_ref`.
     StashNotRestored { backup_ref: String },
+    /// The target guard holds the target: it moved outside loom from
+    /// `accepted` to `observed`, and merges into it wait for the operator.
+    TargetHeld {
+        target: String,
+        accepted: String,
+        observed: String,
+    },
 }
 
 impl fmt::Display for MergeBlock {
@@ -73,6 +80,17 @@ impl fmt::Display for MergeBlock {
             Self::StashNotRestored { backup_ref } => write!(
                 f,
                 "the merge did not land and your uncommitted changes could not be put back: they are in the top `git stash list` entry and in {backup_ref}; restore them with `git stash pop`"
+            ),
+            Self::TargetHeld {
+                target,
+                accepted,
+                observed,
+            } => write!(
+                f,
+                "target {target} moved outside loom ({} → {}); merges into it wait until the \
+                 operator accepts or restores it (loom target status)",
+                accepted.get(..12).unwrap_or(accepted),
+                observed.get(..12).unwrap_or(observed)
             ),
         }
     }
@@ -278,7 +296,7 @@ fn update_ref(
 }
 
 /// Resolve `rev` to a commit id.
-pub(super) fn rev_parse(repo: &Path, rev: &str) -> Result<String> {
+pub(crate) fn rev_parse(repo: &Path, rev: &str) -> Result<String> {
     run_git_checked(
         &["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
         repo,

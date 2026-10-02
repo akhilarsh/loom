@@ -45,6 +45,18 @@ fn git_timeout(args: &[&str]) -> Duration {
     }
 }
 
+/// The graft file every runner call names: it can never exist (`/dev/null`
+/// is not a directory), so git reads no grafts. `/dev/null` itself also
+/// disables them, but git opens it and prints its grafts deprecation advice
+/// on stderr, which loom parses.
+const NO_GRAFT_FILE: &str = "/dev/null/loom-no-grafts";
+
+/// The git command every runner call executes: English output, and replace
+/// refs and grafts ignored. A stage session can write
+/// `<common git dir>/refs/replace/*` and `<common git dir>/info/grafts` (its
+/// capsule denies only `.git/hooks`, `.git/config` and `config.worktree`), and
+/// git honors both in `diff`, `merge-base` and every ancestry test; loom uses
+/// neither. A caller's `env` is applied last, so it still wins.
 fn git_command(
     program: &str,
     exec_args: &[&str],
@@ -56,6 +68,8 @@ fn git_command(
         .args(exec_args)
         .env("LC_ALL", "C")
         .env("LANG", "C")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_GRAFT_FILE", NO_GRAFT_FILE)
         .envs(env.iter().copied())
         .current_dir(repo_root);
     command
