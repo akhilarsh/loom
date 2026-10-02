@@ -101,13 +101,17 @@ pub fn execute(all: bool, worktrees: bool, sessions: bool, state: bool) -> Resul
 /// leaves the old daemon ticking over whatever the next `loom init`/`loom
 /// run` writes there. Must run before `clean_worktrees`/`clean_sessions`,
 /// since a live daemon respawns sessions and recreates worktrees while
-/// they are being removed.
+/// they are being removed. Refuses first while the target branch holds a move
+/// loom did not accept.
 fn stop_daemon_before_destroying_state(
     repo_root: &Path,
     clean_all: bool,
     state: bool,
 ) -> Result<()> {
     if clean_all || state {
+        // Before anything is stopped or deleted: removing the target guard
+        // record would make the next run trust an unreviewed move.
+        crate::commands::target::refuse_unreviewed_move(repo_root)?;
         let work_dir = resolve_state_dir(repo_root);
         if DaemonServer::check_status(&work_dir) != DaemonStatus::NotRunning {
             println!("\n{}", "Daemon".bold());
@@ -324,6 +328,17 @@ mod tests {
             fs::read_to_string(archive.path().join("memory/stage.md")).unwrap(),
             "journal"
         );
+    }
+
+    #[test]
+    fn clean_state_refuses_while_the_target_holds_an_unreviewed_move() {
+        let (repo, _accepted, _moved) = crate::commands::target::tests::held_repo(true);
+
+        let error = stop_daemon_before_destroying_state(&repo.root, false, true).unwrap_err();
+
+        assert!(error.to_string().contains("loom target status"), "{error}");
+        assert!(repo.work.is_dir());
+        assert!(repo.work.join("target-guard.json").is_file());
     }
 
     #[test]

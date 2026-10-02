@@ -1,5 +1,7 @@
 use super::{mark_plan_in_progress, require_committed_plan};
+use crate::commands::target::tests::activate;
 use crate::fs::{plan_lifecycle, work_dir::WorkDir};
+use crate::git::target_guard::{check, GuardState, LEDGER_FILE};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -288,4 +290,34 @@ fn commit_failure_keeps_plan_recoverable_and_stops_startup() {
         .unwrap();
     assert!(active.is_file());
     assert!(require_committed_plan(&work).is_err());
+}
+
+#[test]
+fn rename_commit_is_attested_when_the_target_is_recorded() {
+    let (temp, work) = fixture();
+    let root = temp.path();
+    commit_inputs(root);
+    git(root, &["config", "--unset", "core.hooksPath"]);
+    activate(root);
+    let first = check(root, work.root(), "main").unwrap();
+    assert!(matches!(first, Some(GuardState::Clear { .. })));
+
+    mark_plan_in_progress(&work).unwrap();
+
+    let after = git(root, &["rev-parse", "HEAD"]);
+    let from = git(root, &["rev-parse", "HEAD^"]);
+    let ledger = fs::read_to_string(work.root().join(LEDGER_FILE)).unwrap();
+    assert!(ledger.contains(&format!("attest {from} {after} refs/heads/main\n")));
+    let state = check(root, work.root(), "main").unwrap();
+    assert!(matches!(state, Some(GuardState::Clear { .. })), "{state:?}");
+}
+
+#[test]
+fn rename_commit_writes_no_ledger_line_without_a_record() {
+    let (temp, work) = fixture();
+    commit_inputs(temp.path());
+
+    mark_plan_in_progress(&work).unwrap();
+
+    assert!(!work.root().join(LEDGER_FILE).exists());
 }

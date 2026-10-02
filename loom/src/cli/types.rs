@@ -19,6 +19,10 @@ use status_web::StatusWebArgs;
 mod project;
 pub use project::ProjectCommands;
 
+#[path = "types_target.rs"]
+mod target;
+pub use target::TargetCommands;
+
 #[derive(Parser)]
 #[command(name = "loom")]
 #[command(about = "Agent orchestration CLI", long_about = None)]
@@ -125,6 +129,12 @@ pub enum Commands {
     Worktree {
         #[command(subcommand)]
         command: WorktreeCommands,
+    },
+
+    /// Review a move of the target branch loom did not make
+    Target {
+        #[command(subcommand)]
+        command: TargetCommands,
     },
 
     /// Show the execution graph

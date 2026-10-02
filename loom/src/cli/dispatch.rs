@@ -1,7 +1,7 @@
 use crate::commands::{
     attach, clean, config, context, graph, handoff, hook, init, install_assets, knowledge, map,
     memory, plan, pressure, project, repair, request, resume, review, run, self_update, sessions,
-    skill_index, status, stop, subagents, usage, verify, worktree_cmd,
+    skill_index, status, stop, subagents, target, usage, verify, worktree_cmd,
 };
 use crate::completions::{complete_dynamic, generate_completions, CompletionContext, Shell};
 use anyhow::Result;
@@ -12,7 +12,7 @@ use super::dispatch_admin;
 use super::dispatch_stage;
 use super::types::{
     Commands, ContextCommands, HookCommands, KnowledgeCommands, MemoryCommands, PlanCommands,
-    ProjectCommands, RequestCommands, SessionsCommands, WorktreeCommands,
+    ProjectCommands, RequestCommands, SessionsCommands, TargetCommands, WorktreeCommands,
 };
 
 // `dispatch_stage` reaches these through `super::dispatch::{..}`; re-exporting
@@ -287,6 +287,36 @@ fn dispatch_memory(command: MemoryCommands) -> Result<()> {
     }
 }
 
+/// `loom run` dispatch, extracted so the `loom target` arm fits in the
+/// top-level match without growing its ledgered line count.
+fn dispatch_run(command: Commands) -> Result<()> {
+    let Commands::Run {
+        manual,
+        max_parallel,
+        foreground,
+        watch,
+        no_merge,
+        backend,
+    } = command
+    else {
+        unreachable!("dispatch routes only Run here");
+    };
+    let auto_merge = !no_merge;
+    if foreground {
+        run::execute(manual, max_parallel, watch, auto_merge, backend)
+    } else {
+        run::execute_background(manual, max_parallel, auto_merge, backend)
+    }
+}
+
+/// `loom target <subcommand>` dispatch.
+fn dispatch_target(command: TargetCommands) -> Result<()> {
+    match command {
+        TargetCommands::Status => target::status::execute(),
+        TargetCommands::Accept { to } => target::accept::execute(&to),
+    }
+}
+
 pub fn dispatch(command: Commands) -> Result<()> {
     match command {
         Commands::Init {
@@ -295,21 +325,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             backend,
             no_repair,
         } => init::execute(Some(PathBuf::from(plan_path)), clean, backend, no_repair),
-        Commands::Run {
-            manual,
-            max_parallel,
-            foreground,
-            watch,
-            no_merge,
-            backend,
-        } => {
-            let auto_merge = !no_merge;
-            if foreground {
-                run::execute(manual, max_parallel, watch, auto_merge, backend)
-            } else {
-                run::execute_background(manual, max_parallel, auto_merge, backend)
-            }
-        }
+        cmd @ Commands::Run { .. } => dispatch_run(cmd),
         Commands::Status {
             live,
             compact,
@@ -322,6 +338,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Resume { stage_id } => resume::execute(stage_id),
         cmd @ (Commands::Sessions { .. } | Commands::Worktree { .. }) => dispatch_tools(cmd),
         Commands::Attach { stage_id } => attach::execute(stage_id),
+        Commands::Target { command } => dispatch_target(command),
         Commands::Graph => graph::show(),
         Commands::Handoff {
             stage,

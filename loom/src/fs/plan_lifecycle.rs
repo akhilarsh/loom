@@ -16,7 +16,7 @@ use crate::fs::memory::archive_run_state;
 use crate::fs::work_dir::{self, WorkDir};
 use crate::parser::frontmatter::extract_frontmatter_field;
 
-mod commit;
+pub(crate) mod commit;
 use commit::commit_post_completion_changes;
 
 // Filename prefix constants
