@@ -358,6 +358,14 @@ describe("TUI formatter ports", () => {
     [{ status: "merge-conflict" }, { text: "conflict", tone: "warning" }],
     [{ status: "merge-blocked" }, { text: "error", tone: "blocked" }],
     [
+      { status: "merge-blocked", merge_block: "the target moved" },
+      { text: "blocked", tone: "blocked" },
+    ],
+    [
+      { status: "completed", stage_type: "standard", merged: true, stash_warning: "refs/x" },
+      { text: "stash!", tone: "blocked" },
+    ],
+    [
       { status: "completed", stage_type: "knowledge", cleanup_warning: "leftover" },
       { text: "cleanup!", tone: "warning" },
     ],
@@ -439,7 +447,7 @@ describe("TUI formatter ports", () => {
       executing: 1,
       queued: 0,
       waiting: 2,
-      attention: 3,
+      attention: 4,
       done: 1,
     });
   });

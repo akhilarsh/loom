@@ -114,12 +114,12 @@ mod tests {
     fn a_merge_blocked_stage_becomes_merge_conflict_without_its_old_error() {
         let mut stage = stage_with(StageStatus::MergeBlocked);
         stage.failure_info = Some(infrastructure_failure());
-        stage.merge_block = Some(MergeBlock::TargetMoved);
+        stage.merge.block = Some(MergeBlock::TargetMoved);
         mark_conflict(&mut stage, None).unwrap();
         assert_eq!(stage.status, StageStatus::MergeConflict);
         assert!(stage.merge_conflict);
         assert!(stage.failure_info.is_none());
-        assert!(stage.merge_block.is_none());
+        assert!(stage.merge.block.is_none());
     }
 
     #[test]

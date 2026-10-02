@@ -260,6 +260,43 @@
         "dispute_count": 0,
         "judge_heartbeat_secs": null,
         "session_backend": null
+      },
+      {
+        "id": "merge-gate",
+        "name": "Merge Gate",
+        "description": null,
+        "summary": null,
+        "status": "merge-blocked",
+        "stage_type": "standard",
+        "dependencies": ["knowledge-bootstrap"],
+        "context_tokens": null,
+        "elapsed_secs": 200,
+        "execution_secs": 190,
+        "base_branch": null,
+        "base_merged_from": [],
+        "failure_info": null,
+        "activity_status": "Idle",
+        "last_tool": null,
+        "last_activity": null,
+        "staleness_secs": null,
+        "context_ceiling_tokens": null,
+        "review_reason": null,
+        "review_notes": null,
+        "merged": false,
+        "merge_assumed": false,
+        "merge_block": "the target branch moved while the merge was being prepared; it will be retried",
+        "held": false,
+        "retry_count": 0,
+        "max_retries": null,
+        "pid": null,
+        "session_alive": false,
+        "model": "sonnet",
+        "session_type": null,
+        "incoherence": null,
+        "execution_models": [],
+        "dispute_count": 0,
+        "judge_heartbeat_secs": null,
+        "session_backend": null
       }
     ],
     "merge": {
@@ -268,11 +305,11 @@
       "conflicts": ["docs"]
     },
     "progress": {
-      "total": 7,
+      "total": 8,
       "completed": 1,
       "executing": 1,
       "pending": 3,
-      "blocked": 2
+      "blocked": 3
     },
     "plan_name": "Web Dashboard Fixture",
     "quota": {
@@ -343,6 +380,22 @@
       "review_reason": "acceptance criterion 3 disputed twice",
       "cleanup_warning": null,
       "has_human_review_choices": true,
+      "dispute_count": null,
+      "judge_heartbeat_secs": null
+    },
+    {
+      "id": "merge-gate",
+      "name": "Merge Gate",
+      "label": "MERGE BLOCKED",
+      "command": null,
+      "note": "the target branch moved while the merge was being prepared; it will be retried; loom retries the merge automatically once that changes",
+      "automatic": true,
+      "failure_type": null,
+      "failure_label": null,
+      "evidence": [],
+      "review_reason": null,
+      "cleanup_warning": null,
+      "has_human_review_choices": false,
       "dispute_count": null,
       "judge_heartbeat_secs": null
     }

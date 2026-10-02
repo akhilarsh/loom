@@ -54,6 +54,25 @@ pub(in crate::orchestrator::core) fn report_stash(stage_id: &str, stash: Option<
 }
 
 impl Orchestrator {
+    /// Report the stash outcome of a merge that landed and record it on the
+    /// stage, so `loom status` still shows unrestored changes after the
+    /// terminal output is gone.
+    pub(in crate::orchestrator::core) fn note_merge_stash(
+        &mut self,
+        stage_id: &str,
+        stash: Option<StashReapply>,
+    ) {
+        report_stash(stage_id, stash.as_ref());
+        let Some(stash) = stash else { return };
+        let saved = self.update_stage(stage_id, |current| {
+            current.record_merge_stash(stash);
+            Ok(())
+        });
+        if let Err(error) = saved {
+            tracing::warn!(stage_id = %stage_id, %error, "Failed to record the merge stash outcome");
+        }
+    }
+
     /// Merge `stage_id` into `target` with `merge_stage`, whose control-path
     /// gate reads the commits it merges, and leave the stage in the status
     /// the result calls for.
@@ -70,7 +89,7 @@ impl Orchestrator {
         let work_dir = self.config.work_dir.clone();
         match merge_stage(stage_id, target, &repo_root, &work_dir, MergeGate::Enforce) {
             Ok(MergeResult::Success { stash, .. }) => {
-                report_stash(stage_id, stash.as_ref());
+                self.note_merge_stash(stage_id, stash);
                 self.verify_landing(&mut stage, stage_id, target)
             }
             Ok(MergeResult::AlreadyUpToDate) => self.verify_landing(&mut stage, stage_id, target),
@@ -224,7 +243,7 @@ impl Orchestrator {
     ) -> bool {
         if let Ok(current) = self.load_stage(stage_id) {
             if current.status == StageStatus::MergeBlocked
-                && current.merge_block.as_ref() == Some(&block)
+                && current.merge.block.as_ref() == Some(&block)
             {
                 tracing::debug!(stage_id = %stage_id, %block, "Merge still blocked");
                 return false;

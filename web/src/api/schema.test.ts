@@ -19,7 +19,7 @@ describe("snapshot schema", () => {
   it("the fixture parses and terminals is false", () => {
     const snapshot = snapshotSchema.parse(fixtureJson);
 
-    expect(snapshot.status.stages).toHaveLength(7);
+    expect(snapshot.status.stages).toHaveLength(8);
     expect(stageStatusSchema.options).toHaveLength(13);
     expect(snapshot.terminals).toBe(false);
   });

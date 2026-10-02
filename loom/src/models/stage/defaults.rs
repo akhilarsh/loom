@@ -2,6 +2,7 @@
 
 use super::checks::default_plan_version;
 use super::dispute_budgets::DisputeTally;
+use super::merge_block::MergeRecord;
 use super::types::{Implementers, Stage, StageStatus, StageType};
 
 impl Default for Stage {
@@ -47,7 +48,7 @@ impl Default for Stage {
             merged: false,
             merge_assumed: false,
             merge_conflict: false,
-            merge_block: None,
+            merge: MergeRecord::default(),
             verification_status: Default::default(),
             context_ceiling_tokens: None,
             plan_overview: None,

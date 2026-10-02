@@ -59,7 +59,7 @@ pub fn spawn_merge_resolver(
     }
 
     // A typed block is not a conflict: no resolver can clear it.
-    if let (StageStatus::MergeBlocked, Some(block)) = (&stage.status, &stage.merge_block) {
+    if let (StageStatus::MergeBlocked, Some(block)) = (&stage.status, &stage.merge.block) {
         bail!(
             "stage '{id}' is blocked ({block}), not in conflict: it needs no resolver; loom \
              retries the merge once that changes, or run `loom stage merge {id}`",

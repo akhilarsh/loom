@@ -12,7 +12,7 @@ use super::conflict::record_conflict_and_report;
 use super::finish::finish_merge_and_report;
 use super::next_step::report_merge_error;
 use crate::commands::stage::progressive_complete::{
-    report_merge_block, report_stash, route_held_to_review, route_zero_commit_to_review,
+    note_merge_stash, report_merge_block, route_held_to_review, route_zero_commit_to_review,
     zero_commit_review_reason,
 };
 
@@ -81,7 +81,7 @@ pub(super) fn attempt_retried_merge(
         }) => {
             println!("Merge successful!");
             println!("  {files_changed} files changed, +{insertions} -{deletions}");
-            report_stash(stash.as_ref());
+            note_merge_stash(stage_id, work_dir, stash);
             let done = format!("Stage '{stage_id}' merge complete! (Completed, merged: true)");
             complete_retried_merge(stage, work_dir, repo_root, target_branch, &done)
         }

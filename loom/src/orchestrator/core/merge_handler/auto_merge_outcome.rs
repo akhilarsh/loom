@@ -8,8 +8,6 @@ use crate::models::stage::Stage;
 use crate::orchestrator::auto_merge::AutoMergeResult;
 use crate::orchestrator::core::{clear_status_line, Orchestrator};
 
-use super::landing::report_stash;
-
 impl Orchestrator {
     /// Returns true when a guard stops the auto-merge of `stage_id` into
     /// `target_branch`: the merge gate holds the branch, or the branch has no
@@ -76,7 +74,7 @@ impl Orchestrator {
                 deletions,
                 stash,
             }) => {
-                report_stash(stage_id, stash.as_ref());
+                self.note_merge_stash(stage_id, stash);
                 let summary = format!("merged: {files_changed} files, +{insertions} -{deletions}");
                 self.finalize_auto_merge(stage, stage_id, target, &summary)
             }

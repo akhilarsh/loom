@@ -122,6 +122,10 @@ pub fn attention_entries(stages: &[StageSummary]) -> Vec<AttentionEntry> {
 }
 
 fn attention_entry(stage: &StageSummary) -> Option<AttentionEntry> {
+    // Unrestored changes are data at risk, so they outrank every other state.
+    if let Some(backup_ref) = stage.stash_warning.as_deref() {
+        return Some(stash_entry(stage, backup_ref));
+    }
     if stage.cleanup_warning.is_some() {
         return Some(cleanup_entry(stage));
     }
@@ -130,6 +134,20 @@ fn attention_entry(stage: &StageSummary) -> Option<AttentionEntry> {
     }
 
     status_entry(stage)
+}
+
+/// `backup_ref` is the ref the merge kept the stashed changes in.
+fn stash_entry(stage: &StageSummary, backup_ref: &str) -> AttentionEntry {
+    let guidance = Guidance {
+        note: Some(format!(
+            "the merge of {} stashed your uncommitted changes in the main checkout and could \
+             not put them back: restore them with `git stash pop` (or from {backup_ref}), then \
+             delete the backup with `git update-ref -d {backup_ref}`",
+            stage.id
+        )),
+        ..Guidance::run("git stash list")
+    };
+    AttentionEntry::new(stage, "STASH NOT RESTORED", guidance)
 }
 
 fn cleanup_entry(stage: &StageSummary) -> AttentionEntry {
@@ -199,7 +217,10 @@ fn status_guidance(stage: &StageSummary) -> Option<(&'static str, Guidance)> {
         StageStatus::Blocked => ("BLOCKED", blocked_guidance(stage)),
         StageStatus::MergeConflict => ("MERGE CONFLICT", merge_guidance(stage)),
         StageStatus::CompletedWithFailures => ("ACCEPTANCE FAILED", retry_guidance(stage)),
-        StageStatus::MergeBlocked => ("MERGE ERROR", merge_guidance(stage)),
+        StageStatus::MergeBlocked => match stage.merge_block.as_deref() {
+            Some(sentence) => ("MERGE BLOCKED", merge_block_guidance(sentence)),
+            None => ("MERGE ERROR", merge_guidance(stage)),
+        },
         StageStatus::NeedsHumanReview => ("NEEDS REVIEW", Guidance::default()),
         StageStatus::WaitingForInput => ("NEEDS INPUT", Guidance::manual(INPUT_NOTE)),
         StageStatus::NeedsAdjudication => ("ADJUDICATING", Guidance::automatic(ADJUDICATION_NOTE)),
@@ -207,8 +228,9 @@ fn status_guidance(stage: &StageSummary) -> Option<(&'static str, Guidance)> {
     })
 }
 
-/// The daemon spawns a merge resolver for both merge states, up to
-/// [`MAX_MERGE_RESOLVER_ATTEMPTS`], then routes the stage to human review.
+/// The daemon spawns a merge resolver for a conflict and for a merge error
+/// without a typed block, up to [`MAX_MERGE_RESOLVER_ATTEMPTS`], then routes
+/// the stage to human review.
 fn merge_guidance(stage: &StageSummary) -> Guidance {
     let used = stage.merge_resolver_attempts.unwrap_or(0);
     let max = MAX_MERGE_RESOLVER_ATTEMPTS;
@@ -218,6 +240,14 @@ fn merge_guidance(stage: &StageSummary) -> Guidance {
             "waiting for the daemon to start a merge resolver ({used} of {max} attempts used)"
         ),
     })
+}
+
+/// A typed block never gets a merge resolver: the daemon retries the merge
+/// every tick and lands it once the block's cause is gone.
+fn merge_block_guidance(sentence: &str) -> Guidance {
+    Guidance::automatic(format!(
+        "{sentence}; loom retries the merge automatically once that changes"
+    ))
 }
 
 /// A crash or timeout under the retry limit is requeued by the daemon once its

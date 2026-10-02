@@ -48,7 +48,7 @@ describe("ledger route", () => {
     const rail = screen.getByRole("region", { name: "stages" });
     const cell = within(rail).getByText("attention").closest("li");
     if (!cell) throw new Error("the attention cell is missing");
-    expect(snapshot.attention).toHaveLength(3);
+    expect(snapshot.attention).toHaveLength(4);
     expect(within(cell).getByText("2")).toBeTruthy();
   });
 });

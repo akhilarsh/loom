@@ -332,7 +332,7 @@ fn failed_auto_merge_moves_completed_stage_to_merge_blocked() {
     let overlap = MergeBlock::UncommittedOverlap {
         paths: vec!["b.txt".to_string()],
     };
-    assert_eq!(reloaded.merge_block, Some(overlap));
+    assert_eq!(reloaded.merge.block, Some(overlap));
     let info = reloaded.failure_info.expect("a block records failure_info");
     assert_eq!(info.failure_type, FailureType::InfrastructureError);
     assert!(!info.evidence.is_empty(), "failure_info carries the reason");

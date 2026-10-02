@@ -24,11 +24,11 @@ fn fixture_status(stages: Vec<StageSummary>) -> StatusData {
             conflicts: vec!["docs".to_owned()],
         },
         progress: crate::commands::status::data::ProgressSummary {
-            total: 7,
+            total: 8,
             completed: 1,
             executing: 1,
             pending: 3,
-            blocked: 2,
+            blocked: 3,
         },
         plan_name: Some("Web Dashboard Fixture".to_owned()),
         quota: QuotaSnapshot {
@@ -117,7 +117,7 @@ fn fixture_matches_serde_output() {
 #[test]
 fn fixture_deserializes_into_web_snapshot() {
     let snapshot = serde_json::from_str::<WebSnapshot>(FIXTURE).unwrap();
-    assert_eq!(snapshot.status.stages.len(), 7);
+    assert_eq!(snapshot.status.stages.len(), 8);
 }
 
 #[test]

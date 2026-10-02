@@ -14,7 +14,7 @@ use super::landing::Landing;
 /// The paths of the stage's current `UncommittedOverlap` block, which the
 /// retry fingerprint watches: an ignored file among them is not in status.
 fn overlap_paths(stage: &Stage) -> Vec<String> {
-    match &stage.merge_block {
+    match &stage.merge.block {
         Some(MergeBlock::UncommittedOverlap { paths }) => paths.clone(),
         _ => Vec::new(),
     }

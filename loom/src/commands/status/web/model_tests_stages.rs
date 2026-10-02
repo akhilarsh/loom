@@ -34,6 +34,8 @@ macro_rules! stage {
             merged: $merged,
             merge_assumed: false,
             cleanup_warning: $cleanup_warning.map(str::to_owned),
+            merge_block: None,
+            stash_warning: None,
             held: $held,
             retry_count: $retry_count,
             max_retries: $max_retries,
@@ -315,6 +317,43 @@ fn stage_knowledge_distill() -> StageSummary {
     )
 }
 
+fn stage_merge_gate() -> StageSummary {
+    let empty: &[&str] = &[];
+    let mut stage = stage!(
+        "merge-gate",
+        "Merge Gate",
+        StageStatus::MergeBlocked,
+        StageType::Standard,
+        &["knowledge-bootstrap"],
+        None,
+        Some(200),
+        Some(190),
+        None,
+        ActivityStatus::Idle,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        false,
+        0,
+        None,
+        None,
+        false,
+        "sonnet",
+        None,
+        None,
+        empty,
+        0,
+        None,
+        None
+    );
+    stage.merge_block = Some(crate::git::MergeBlock::TargetMoved.to_string());
+    stage
+}
+
 /// The stages behind [`super::fixture_snapshot`], in stage order.
 pub(super) fn fixture_stages() -> Vec<StageSummary> {
     let detected_at = fixed_time();
@@ -326,5 +365,6 @@ pub(super) fn fixture_stages() -> Vec<StageSummary> {
         stage_docs(),
         stage_integration_verify(),
         stage_knowledge_distill(),
+        stage_merge_gate(),
     ]
 }

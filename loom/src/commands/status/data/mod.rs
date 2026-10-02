@@ -2,6 +2,7 @@ mod collector;
 pub(crate) mod completion_view;
 mod execution_models;
 mod heartbeat_facts;
+mod merge_note;
 mod sanitize;
 mod timing;
 
@@ -134,6 +135,14 @@ pub struct StageSummary {
     /// Why the post-merge cleanup failed, if it did (worktree/branch still on disk)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleanup_warning: Option<String>,
+    /// The typed reason the merge is blocked (the block's sentence), while the
+    /// stage is `MergeBlocked`; the daemon retries it every tick
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_block: Option<String>,
+    /// Backup ref holding changes a merge stashed in the main checkout and
+    /// could not restore, while that ref still exists
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stash_warning: Option<String>,
     /// Whether the stage is held
     pub held: bool,
     /// Current retry count

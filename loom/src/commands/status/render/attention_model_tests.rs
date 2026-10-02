@@ -33,6 +33,8 @@ fn make_stage_summary(id: &str, status: StageStatus) -> StageSummary {
         merged: false,
         merge_assumed: false,
         cleanup_warning: None,
+        merge_block: None,
+        stash_warning: None,
         held: false,
         retry_count: 0,
         max_retries: None,
@@ -179,6 +181,56 @@ fn cleanup_warning_wins_over_completed_status() {
         (Some("loom worktree remove cleanup-stage"), None, false)
     );
     assert!(!entries[0].has_human_review_choices);
+}
+
+#[test]
+fn a_typed_merge_block_is_automatic_and_names_no_resolver() {
+    let mut stage = make_stage_summary("blocked-stage", StageStatus::MergeBlocked);
+    stage.merge_block = Some("the target moved".to_string());
+
+    let entries = attention_entries(&[stage]);
+
+    assert_eq!(entries[0].label, "MERGE BLOCKED");
+    assert_eq!(
+        guidance(&entries[0]),
+        (
+            None,
+            Some("the target moved; loom retries the merge automatically once that changes"),
+            true
+        )
+    );
+}
+
+#[test]
+fn an_untyped_merge_block_keeps_the_resolver_guidance() {
+    let stage = make_stage_summary("blocked-stage", StageStatus::MergeBlocked);
+
+    let entries = attention_entries(&[stage]);
+
+    assert_eq!(entries[0].label, "MERGE ERROR");
+    let note = entries[0].note.as_deref().unwrap();
+    assert!(note.contains("merge resolver"), "{note}");
+}
+
+#[test]
+fn stash_warning_outranks_every_other_state() {
+    let mut stage = make_stage_summary("stash-stage", StageStatus::MergeBlocked);
+    stage.stash_warning = Some("refs/loom/autostash/stash-stage-9".to_string());
+    stage.merge_block = Some("the target moved".to_string());
+    stage.cleanup_warning = Some("could not remove worktree".to_string());
+
+    let entries = attention_entries(&[stage]);
+
+    assert_eq!(entries[0].label, "STASH NOT RESTORED");
+    assert_eq!(entries[0].command.as_deref(), Some("git stash list"));
+    assert!(!entries[0].automatic);
+    let note = entries[0].note.as_deref().unwrap();
+    assert!(note.contains("the merge of stash-stage stashed your uncommitted changes"));
+    assert!(note.contains("git stash pop"), "{note}");
+    assert!(
+        note.contains("git update-ref -d refs/loom/autostash/stash-stage-9"),
+        "{note}"
+    );
 }
 
 #[test]

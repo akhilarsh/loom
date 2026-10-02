@@ -277,6 +277,9 @@ export function timeText(stage: StageSummary): string | null {
 }
 
 export function mergeText(stage: StageSummary): { text: string; tone: Tone } | null {
+  if (stage.stash_warning) {
+    return { text: "stash!", tone: "blocked" };
+  }
   if (
     stage.status === "completed" &&
     stage.cleanup_warning !== null &&
@@ -296,7 +299,7 @@ export function mergeText(stage: StageSummary): { text: string; tone: Tone } | n
     return { text: "conflict", tone: "warning" };
   }
   if (stage.status === "merge-blocked") {
-    return { text: "error", tone: "blocked" };
+    return { text: stage.merge_block ? "blocked" : "error", tone: "blocked" };
   }
   return null;
 }

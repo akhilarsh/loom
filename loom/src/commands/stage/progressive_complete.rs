@@ -19,7 +19,7 @@ mod guard;
 mod report;
 pub(super) use guard::{route_zero_commit_to_review, zero_commit_review_reason};
 use report::report_merge_hold;
-pub(super) use report::{report_merge_block, report_stash, route_held_to_review};
+pub(super) use report::{note_merge_stash, report_merge_block, route_held_to_review};
 
 /// Result of attempting to merge a completed stage
 pub enum MergeOutcome {
@@ -87,7 +87,7 @@ pub fn attempt_progressive_merge(
             stash,
         }) => {
             println!("  ✓ Merged {files_changed} file(s) into '{merge_point}'");
-            report_stash(stash.as_ref());
+            note_merge_stash(&stage.id, work_dir, stash);
             mark_landed(stage, &merge_point, repo_root)
         }
         Ok(ProgressiveMergeResult::AlreadyMerged) => {

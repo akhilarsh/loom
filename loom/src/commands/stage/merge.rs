@@ -26,7 +26,7 @@ use landing::{
 use next_step::print_fix_limit_options;
 use preflight::{retry_preflight, RetryPreflight};
 
-use super::progressive_complete::report_stash;
+use super::progressive_complete::note_merge_stash;
 
 /// Unified merge command entry point.
 ///
@@ -85,7 +85,7 @@ fn merge_resolved(stage_id: Option<String>) -> Result<()> {
 
     match merge_stage(&stage_id, &target, &repo_root, work_dir, MergeGate::Enforce)? {
         MergeResult::Success { stash, .. } => {
-            report_stash(stash.as_ref());
+            note_merge_stash(&stage_id, work_dir, stash);
             complete_resolved_merge(&stage, work_dir, &repo_root, &target)
         }
         MergeResult::AlreadyUpToDate => {

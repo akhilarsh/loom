@@ -204,7 +204,9 @@ fn entry_status(label: &str) -> StageStatus {
     match label {
         "MERGE CONFLICT" => StageStatus::MergeConflict,
         "ACCEPTANCE FAILED" => StageStatus::CompletedWithFailures,
-        "MERGE ERROR" => StageStatus::MergeBlocked,
+        "MERGE ERROR" | "MERGE BLOCKED" => StageStatus::MergeBlocked,
+        // Changes at risk read as the strongest state.
+        "STASH NOT RESTORED" => StageStatus::Blocked,
         "NEEDS REVIEW" => StageStatus::NeedsHumanReview,
         "NEEDS INPUT" => StageStatus::WaitingForInput,
         "ADJUDICATING" => StageStatus::NeedsAdjudication,

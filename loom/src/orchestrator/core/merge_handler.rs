@@ -397,7 +397,7 @@ impl Orchestrator {
             }
 
             // A typed merge block needs no resolver: retry the merge itself.
-            if stage.status == StageStatus::MergeBlocked && stage.merge_block.is_some() {
+            if stage.status == StageStatus::MergeBlocked && stage.merge.block.is_some() {
                 self.retry_blocked_merge(&stage);
             } else if self.spawn_resolver_if_due(&stage) {
                 spawned += 1;

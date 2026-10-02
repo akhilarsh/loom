@@ -43,7 +43,7 @@ impl Orchestrator {
             stage = self.revert_unproven_merge(stage_id, stage);
         }
         match stage.status {
-            StageStatus::MergeBlocked if stage.merge_block.is_some() => {
+            StageStatus::MergeBlocked if stage.merge.block.is_some() => {
                 // The per-tick retry lands the merge and cleans up, the
                 // resolver being gone.
                 tracing::info!(stage_id = %stage_id, "Resolver exited; the blocked merge is retried each tick");

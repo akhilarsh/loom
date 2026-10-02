@@ -8,13 +8,25 @@ use crate::git::merge::{MergeBlock, StashReapply};
 use crate::verify::transitions::update_stage;
 
 /// Tell the operator where their uncommitted tracked changes are when the
-/// merge stashed them. Changes that were not reapplied are a warning: the
-/// merge did land.
-pub(in crate::commands::stage) fn report_stash(stash: Option<&StashReapply>) {
-    match stash {
-        Some(stash) if stash.restored => println!("  {}", stash.notice()),
-        Some(stash) => eprintln!("  WARNING: {}", stash.notice()),
-        None => {}
+/// merge stashed them, and record the outcome on the stage so `loom status`
+/// still shows unrestored changes later. Changes that were not reapplied are a
+/// warning: the merge did land.
+pub(in crate::commands::stage) fn note_merge_stash(
+    stage_id: &str,
+    work_dir: &Path,
+    stash: Option<StashReapply>,
+) {
+    let Some(stash) = stash else { return };
+    if stash.restored {
+        println!("  {}", stash.notice());
+    } else {
+        eprintln!("  WARNING: {}", stash.notice());
+    }
+    if let Err(error) = update_stage(stage_id, work_dir, |s| {
+        s.record_merge_stash(stash);
+        Ok(())
+    }) {
+        eprintln!("  Warning: could not record the stash outcome on stage '{stage_id}': {error:#}");
     }
 }
 
@@ -50,4 +62,34 @@ pub(in crate::commands::stage) fn route_held_to_review(
     })?;
     report_merge_hold(stage_id, reason);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::stage::Stage;
+    use crate::verify::transitions::{load_stage, save_stage};
+
+    #[test]
+    fn note_merge_stash_records_the_outcome_and_ignores_none() {
+        let work_dir = tempfile::TempDir::new().unwrap();
+        let stage = Stage {
+            id: "s".to_string(),
+            ..Stage::default()
+        };
+        save_stage(&stage, work_dir.path()).unwrap();
+
+        note_merge_stash("s", work_dir.path(), None);
+        assert_eq!(load_stage("s", work_dir.path()).unwrap().merge.stash, None);
+
+        let lost = StashReapply {
+            backup_ref: "refs/loom/autostash/s-1".to_string(),
+            restored: false,
+        };
+        note_merge_stash("s", work_dir.path(), Some(lost.clone()));
+        assert_eq!(
+            load_stage("s", work_dir.path()).unwrap().merge.stash,
+            Some(lost)
+        );
+    }
 }

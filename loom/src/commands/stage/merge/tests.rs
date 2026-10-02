@@ -289,7 +289,7 @@ fn record_block_leaves_a_merged_stage_alone() {
     let on_disk = load_stage("gated", &work_dir).unwrap();
     assert_eq!(on_disk.status, StageStatus::Completed);
     assert!(on_disk.merged);
-    assert_eq!(on_disk.merge_block, None);
+    assert_eq!(on_disk.merge.block, None);
 }
 
 /// `loom/zero` at the tip of `main` (no commit of its own) and the stage

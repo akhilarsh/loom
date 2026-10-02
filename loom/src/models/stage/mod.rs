@@ -4,6 +4,7 @@ pub mod dispute_budgets;
 mod merge_block;
 mod methods;
 mod persisted;
+mod sandbox_config;
 mod status_display;
 mod transitions;
 mod types;
@@ -13,9 +14,12 @@ mod tests;
 
 pub use checks::{AcceptanceCriterion, PlanIdentity, TruthCheck, WiringCheck};
 pub use dispute_budgets::DisputeTally;
+pub use merge_block::MergeRecord;
+pub use sandbox_config::{
+    CommandConfinement, FilesystemConfig, LinuxConfig, NetworkConfig, StageSandboxConfig,
+};
 pub use types::{
-    CommandConfinement, DeadCodeCheck, ExecutionMode, FilesystemConfig, Implementer, Implementers,
-    LinuxConfig, NetworkConfig, PermissionMode, RegressionTest, Stage, StageOutput,
-    StageSandboxConfig, StageStatus, StageType, StatusBucket, SuccessCriteria, WiringTest,
+    DeadCodeCheck, ExecutionMode, Implementer, Implementers, PermissionMode, RegressionTest, Stage,
+    StageOutput, StageStatus, StageType, StatusBucket, SuccessCriteria, WiringTest,
     ALLOWED_REASONING_EFFORTS,
 };

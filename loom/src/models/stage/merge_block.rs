@@ -1,11 +1,33 @@
-//! The typed reason a stage's merge was not advanced (`Stage::merge_block`)
+//! The typed reason a stage's merge was not advanced (`Stage::merge`)
 //! and the transitions that set and clear it.
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 use super::types::{Stage, StageStatus};
-use crate::git::MergeBlock;
+use crate::git::{MergeBlock, StashReapply};
 use crate::models::failure::{FailureInfo, FailureType};
+
+/// A stage's merge state, flattened into the stage file so `merge_block` and
+/// `merge_stash` stay top-level keys.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeRecord {
+    /// Why the target branch was not advanced; set while `MergeBlocked`.
+    #[serde(
+        rename = "merge_block",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub block: Option<MergeBlock>,
+    /// What the merge did with the operator's stashed changes in the main
+    /// checkout; never cleared, it is the stage's merge note.
+    #[serde(
+        rename = "merge_stash",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub stash: Option<StashReapply>,
+}
 
 impl Stage {
     /// Record `block` as the reason the merge did not advance and move the
@@ -18,10 +40,22 @@ impl Stage {
             detected_at: Utc::now(),
             evidence: vec![sentence.clone()],
         });
-        self.merge_block = Some(block);
+        if let MergeBlock::StashNotRestored { backup_ref } = &block {
+            self.record_merge_stash(StashReapply {
+                backup_ref: backup_ref.clone(),
+                restored: false,
+            });
+        }
+        self.merge.block = Some(block);
         if self.status != StageStatus::MergeBlocked && self.try_mark_merge_blocked().is_err() {
             self.force_status_with_reason(StageStatus::MergeBlocked, &sentence);
         }
+    }
+
+    /// Record what the merge did with the operator's stashed changes. Never
+    /// cleared: it stays as the stage's merge note.
+    pub fn record_merge_stash(&mut self, stash: StashReapply) {
+        self.merge.stash = Some(stash);
     }
 
     /// Why a stage whose branch has zero commits beyond `target` goes to human
@@ -50,7 +84,7 @@ impl Stage {
     /// The `failure_info` that `block_merge` wrote goes with the block; with
     /// no block recorded, an unrelated `failure_info` stays.
     pub fn clear_merge_block(&mut self) {
-        if self.merge_block.take().is_some() {
+        if self.merge.block.take().is_some() {
             self.failure_info = None;
         }
     }
@@ -96,9 +130,37 @@ mod tests {
         let mut stage = stage_in(StageStatus::Completed);
         stage.block_merge(MergeBlock::TargetMoved);
         assert_eq!(stage.status, StageStatus::MergeBlocked);
-        assert_eq!(stage.merge_block, Some(MergeBlock::TargetMoved));
+        assert_eq!(stage.merge.block, Some(MergeBlock::TargetMoved));
         let info = stage.failure_info.expect("failure_info shows the sentence");
         assert_eq!(info.evidence, vec![MergeBlock::TargetMoved.to_string()]);
+    }
+
+    #[test]
+    fn record_merge_stash_keeps_the_outcome() {
+        let mut stage = stage_in(StageStatus::Completed);
+        let stash = StashReapply {
+            backup_ref: "refs/loom/autostash/s-1".to_string(),
+            restored: true,
+        };
+        stage.record_merge_stash(stash.clone());
+        assert_eq!(stage.merge.stash, Some(stash));
+    }
+
+    #[test]
+    fn block_merge_stash_not_restored_records_the_unrestored_stash() {
+        let mut stage = stage_in(StageStatus::Completed);
+        stage.block_merge(MergeBlock::StashNotRestored {
+            backup_ref: "refs/loom/autostash/s-1".to_string(),
+        });
+        assert_eq!(
+            stage.merge.stash,
+            Some(StashReapply {
+                backup_ref: "refs/loom/autostash/s-1".to_string(),
+                restored: false,
+            })
+        );
+        stage.block_merge(MergeBlock::TargetMoved);
+        assert!(stage.merge.stash.is_some(), "a later block keeps the note");
     }
 
     #[test]
@@ -115,7 +177,7 @@ mod tests {
         stage.enter_merge_conflict();
         assert_eq!(stage.status, StageStatus::MergeConflict);
         assert!(stage.merge_conflict);
-        assert_eq!(stage.merge_block, None);
+        assert_eq!(stage.merge.block, None);
     }
 
     #[test]
@@ -123,7 +185,7 @@ mod tests {
         let mut stage = stage_in(StageStatus::Completed);
         stage.block_merge(MergeBlock::TargetMoved);
         stage.clear_merge_block();
-        assert_eq!(stage.merge_block, None);
+        assert_eq!(stage.merge.block, None);
         assert!(stage.failure_info.is_none());
     }
 
@@ -167,7 +229,7 @@ mod tests {
         stage.route_to_review("touches .claude/");
         assert_eq!(stage.status, StageStatus::NeedsHumanReview);
         assert_eq!(stage.review_reason.as_deref(), Some("touches .claude/"));
-        assert_eq!(stage.merge_block, None);
+        assert_eq!(stage.merge.block, None);
     }
 
     #[test]
@@ -176,13 +238,40 @@ mod tests {
         let plain = serde_yaml::to_string(&stage).unwrap();
         assert!(!plain.contains("merge_block"), "{plain}");
         let back: Stage = serde_yaml::from_str(&plain).unwrap();
-        assert_eq!(back.merge_block, None);
+        assert_eq!(back.merge.block, None);
 
         stage.block_merge(MergeBlock::UncommittedOverlap {
             paths: vec!["a.txt".to_string()],
         });
         let text = serde_yaml::to_string(&stage).unwrap();
         let back: Stage = serde_yaml::from_str(&text).unwrap();
-        assert_eq!(back.merge_block, stage.merge_block);
+        assert_eq!(back.merge.block, stage.merge.block);
+    }
+
+    #[test]
+    fn merge_record_keeps_top_level_keys_and_round_trips() {
+        let mut stage = stage_in(StageStatus::Completed);
+        let plain = serde_yaml::to_string(&stage).unwrap();
+        assert!(!plain.contains("merge_block:"), "{plain}");
+        assert!(!plain.contains("merge_stash:"), "{plain}");
+
+        stage.merge = MergeRecord {
+            block: Some(MergeBlock::TargetMoved),
+            stash: Some(StashReapply {
+                backup_ref: "refs/loom/autostash/x".to_string(),
+                restored: false,
+            }),
+        };
+        let text = serde_yaml::to_string(&stage).unwrap();
+        assert!(
+            text.lines().any(|l| l.starts_with("merge_block:")),
+            "{text}"
+        );
+        assert!(
+            text.lines().any(|l| l.starts_with("merge_stash:")),
+            "{text}"
+        );
+        let back: Stage = serde_yaml::from_str(&text).unwrap();
+        assert_eq!(back.merge, stage.merge);
     }
 }

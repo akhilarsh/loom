@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import fixtureJson from "@/api/fixtures/snapshot.json";
 import { snapshotSchema, type Attention } from "@/api/schema";
-import { AttentionBody, AttentionPanel, attentionHazard } from "@/components/attention-panel";
+import {
+  AttentionBody,
+  AttentionPanel,
+  attentionHazard,
+  attentionStatus,
+} from "@/components/attention-panel";
 import { applySnapshot } from "@/state/apply";
 
 const fixture = snapshotSchema.parse(fixtureJson);
@@ -79,6 +84,40 @@ describe("attentionHazard", () => {
 
     expect(attentionHazard(blocked)).toBe("error");
     expect(attentionHazard({ ...blocked, automatic: true })).toBe("warning");
+  });
+});
+
+describe("attention labels", () => {
+  it("lists the typed merge block under handled by loom in the merge-blocked state", () => {
+    const entry = fixtureEntry("merge-gate");
+    expect(entry.label).toBe("MERGE BLOCKED");
+    expect(attentionStatus(entry)).toBe("merge-blocked");
+    expect(attentionHazard(entry)).toBe("warning");
+
+    renderPanel([entry]);
+    const automatic = screen.getByRole("region", { name: "handled by loom" });
+    expect(within(automatic).getByText("MERGE BLOCKED")).toBeTruthy();
+    expect(within(automatic).getByText(/loom retries the merge automatically/)).toBeTruthy();
+  });
+
+  it("lists unrestored stashed changes under needs attention as an error", () => {
+    const entry: Attention = {
+      ...fixtureEntry("client"),
+      label: "STASH NOT RESTORED",
+      command: "git stash list",
+      note: "restore them with `git stash pop`",
+      automatic: false,
+      failure_type: null,
+      failure_label: null,
+      evidence: [],
+    };
+    expect(attentionStatus(entry)).toBe("blocked");
+    expect(attentionHazard(entry)).toBe("error");
+
+    renderPanel([entry]);
+    const operator = screen.getByRole("region", { name: "needs attention" });
+    expect(within(operator).getByText("STASH NOT RESTORED")).toBeTruthy();
+    expect(within(operator).getByText("git stash list").tagName).toBe("CODE");
   });
 });
 

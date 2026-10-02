@@ -100,6 +100,8 @@ fn stage_summary(id: &str, status: StageStatus) -> StageSummary {
         merged: false,
         merge_assumed: false,
         cleanup_warning: None,
+        merge_block: None,
+        stash_warning: None,
         held: false,
         retry_count: 0,
         max_retries: None,

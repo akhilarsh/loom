@@ -192,6 +192,10 @@ fn time_cell(stage: &StageSummary) -> Cell {
 
 fn merge_cell(stage: &StageSummary) -> Cell {
     match &stage.status {
+        _ if stage.stash_warning.is_some() => Cell {
+            text: "stash!".to_owned(),
+            style: Theme::status_blocked(),
+        },
         StageStatus::Completed if stage.cleanup_warning.is_some() => Cell {
             text: "cleanup!".to_owned(),
             style: Theme::status_warning(),
@@ -209,6 +213,10 @@ fn merge_cell(stage: &StageSummary) -> Cell {
         StageStatus::MergeConflict => Cell {
             text: "conflict".to_owned(),
             style: Theme::status_warning(),
+        },
+        StageStatus::MergeBlocked if stage.merge_block.is_some() => Cell {
+            text: "blocked".to_owned(),
+            style: Theme::status_blocked(),
         },
         StageStatus::MergeBlocked => Cell {
             text: "error".to_owned(),

@@ -16,7 +16,7 @@ import { attentionAtom } from "@/state/atoms";
 ///
 /// Keyed on the Rust side's literal attention-label strings
 /// (`status_guidance` in `loom/src/commands/status/render/attention_model.rs`). It omits
-/// "BLOCKED" and "CLEANUP FAILED" deliberately — they fall through to the
+/// "BLOCKED", "CLEANUP FAILED" and "STASH NOT RESTORED" deliberately — they fall through to the
 /// `"blocked"` default below and land on the right tone and glyph anyway. A
 /// label rename on the Rust side desyncs this map with no compile-time
 /// signal, so check it there before adding new labels.
@@ -24,6 +24,7 @@ const LABEL_STATUS: Record<string, StageStatus> = {
   "MERGE CONFLICT": "merge-conflict",
   "ACCEPTANCE FAILED": "completed-with-failures",
   "MERGE ERROR": "merge-blocked",
+  "MERGE BLOCKED": "merge-blocked",
   "NEEDS REVIEW": "needs-human-review",
   "NEEDS INPUT": "waiting-for-input",
   ADJUDICATING: "needs-adjudication",
