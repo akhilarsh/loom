@@ -2,12 +2,16 @@
 //! not change, because each attempt writes git objects into the main checkout.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
+use super::super::landing::Landing;
 use super::super::resolver_spawn::test_fixtures::{
     git_ok, orchestrator_with_conflict, repo_with_stage_branches,
 };
+use super::watches_directory;
+use crate::git::MergeBlock;
 use crate::models::stage::{Stage, StageStatus};
 use crate::orchestrator::core::Orchestrator;
 use crate::verify::transitions::{load_stage, update_stage};
@@ -121,4 +125,79 @@ fn deleting_an_ignored_file_named_by_the_block_clears_the_skip() {
     let stage = on_disk(&orchestrator);
     assert_eq!(stage.status, StageStatus::Completed);
     assert!(stage.merged);
+}
+
+fn minutes(count: u64) -> Duration {
+    Duration::from_secs(count * 60)
+}
+
+fn refused() -> Landing {
+    Landing::Blocked(MergeBlock::FastForwardRefused {
+        detail: "index.lock exists".to_string(),
+    })
+}
+
+#[test]
+fn a_fast_forward_refusal_is_timed_and_never_memoized() {
+    let (_repo, mut orchestrator) = blocked_stage();
+    let now = Instant::now();
+
+    orchestrator.remember_blocked_inputs(ID, Some(7), &refused(), now);
+
+    assert!(!orchestrator.blocked_merge_inputs.contains_key(ID));
+    assert_eq!(orchestrator.refused_merge_attempts.get(ID), Some(&now));
+    assert!(orchestrator.refused_retry_pending(ID, now + Duration::from_secs(59)));
+    assert!(!orchestrator.refused_retry_pending(ID, now + minutes(1)));
+}
+
+#[test]
+fn a_refused_merge_is_not_retried_within_a_minute_and_is_after() {
+    let (repo, mut orchestrator) = blocked_stage();
+    let now = Instant::now();
+    git_ok(repo.path(), &["stash", "push", "-q", "--include-untracked"]);
+    orchestrator
+        .refused_merge_attempts
+        .insert(ID.to_string(), now);
+
+    orchestrator.retry_blocked_merge_at(&on_disk(&orchestrator), now + Duration::from_secs(30));
+    assert_eq!(on_disk(&orchestrator).status, StageStatus::MergeBlocked);
+
+    orchestrator.retry_blocked_merge_at(&on_disk(&orchestrator), now + minutes(2));
+    let stage = on_disk(&orchestrator);
+    assert_eq!(stage.status, StageStatus::Completed);
+    assert!(stage.merged);
+    assert!(!orchestrator.refused_merge_attempts.contains_key(ID));
+}
+
+#[test]
+fn a_memo_entry_older_than_ten_minutes_is_retried() {
+    let (_repo, mut orchestrator) = blocked_stage();
+    let start = Instant::now();
+    orchestrator.retry_blocked_merge_at(&on_disk(&orchestrator), start);
+    let (inputs, at) = orchestrator.blocked_merge_inputs[ID];
+    assert_eq!(at, start);
+
+    orchestrator.retry_blocked_merge_at(&on_disk(&orchestrator), start + minutes(9));
+    assert_eq!(orchestrator.blocked_merge_inputs[ID], (inputs, start));
+
+    let later = start + minutes(11);
+    orchestrator.retry_blocked_merge_at(&on_disk(&orchestrator), later);
+    assert_eq!(orchestrator.blocked_merge_inputs[ID], (inputs, later));
+}
+
+#[test]
+fn a_watched_directory_disables_memoization() {
+    let (repo, mut orchestrator) = blocked_stage();
+    std::fs::create_dir(repo.path().join("ignored_dir")).unwrap();
+    let mut stage = on_disk(&orchestrator);
+    stage.merge.block = Some(MergeBlock::UncommittedOverlap {
+        paths: vec!["stage.txt".to_string(), "ignored_dir".to_string()],
+    });
+
+    assert!(watches_directory(repo.path(), &["ignored_dir".to_string()]));
+    assert!(!watches_directory(repo.path(), &["stage.txt".to_string()]));
+    orchestrator.retry_blocked_merge_at(&stage, Instant::now());
+
+    assert_eq!(on_disk(&orchestrator).status, StageStatus::MergeBlocked);
+    assert!(!orchestrator.blocked_merge_inputs.contains_key(ID));
 }

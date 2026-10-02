@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::language::{detect_project_languages, DetectedLanguage};
 use crate::models::session::Session;
@@ -140,10 +140,17 @@ pub struct Orchestrator {
     /// In-memory only: a daemon restart is a fresh scheduling attempt, so
     /// resetting the clock is the honest reading.
     pub(super) queued_since: HashMap<String, DateTime<Utc>>,
-    /// The inputs a stage's blocked merge was last retried with, so a retry
-    /// is skipped while nothing it depends on changed. In memory only: a
-    /// daemon restart retries once.
-    pub(super) blocked_merge_inputs: HashMap<String, u64>,
+    /// The inputs a stage's blocked merge was last retried with and when, so
+    /// a retry is skipped while nothing it depends on changed and the entry
+    /// is under ten minutes old. In memory only: a daemon restart retries once.
+    pub(super) blocked_merge_inputs: HashMap<String, (u64, Instant)>,
+    /// When a stage's last retry ended in `FastForwardRefused`, which is not
+    /// memoized (a transient lock clears with nothing the fingerprint sees):
+    /// such a retry runs at most once a minute.
+    pub(super) refused_merge_attempts: HashMap<String, Instant>,
+    /// Merged stages whose leftover cleanup is deferred: when the deferral
+    /// was first seen, and whether its warning is recorded. In memory only.
+    pub(super) deferred_cleanups: HashMap<String, (Instant, bool)>,
     /// Merged stages whose leftover worktree and branch have been dealt with
     /// this daemon session: cleaned up, or refused or failed and reported.
     /// A deferred cleanup is not recorded here and is retried every tick. In
@@ -166,7 +173,6 @@ impl Orchestrator {
             work_dir: config.work_dir.clone(),
             ..Default::default()
         };
-
         let mut monitor = Monitor::new(monitor_config);
         let backend = Arc::new(SessionBackend::from_config(config.work_dir.clone())?);
         let liveness = LivenessService::new(Arc::clone(&backend));
@@ -179,7 +185,6 @@ impl Orchestrator {
         };
 
         let detected_languages = detect_project_languages(&config.repo_root);
-
         Self::reconcile_plan_amendments(&config);
 
         Ok(Self {
@@ -201,6 +206,8 @@ impl Orchestrator {
             spawn_blocks: HashMap::new(),
             queued_since: HashMap::new(),
             blocked_merge_inputs: HashMap::new(),
+            refused_merge_attempts: HashMap::new(),
+            deferred_cleanups: HashMap::new(),
             settled_leftovers: HashSet::new(),
             remote_control_active: crate::remote_control::resolve,
         })

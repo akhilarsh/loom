@@ -191,3 +191,18 @@ fn computing_the_inputs_takes_no_index_lock() {
         before
     );
 }
+
+#[test]
+fn an_index_lock_appearing_changes_the_inputs() {
+    let repo = init_repo();
+    let root = repo.path();
+    stage_branch(root, "s1", &[("b.txt", "branch")]);
+    let before = inputs(root);
+
+    std::fs::write(root.join(".git/index.lock"), "").unwrap();
+    let locked = inputs(root);
+    assert_ne!(locked, before);
+
+    std::fs::remove_file(root.join(".git/index.lock")).unwrap();
+    assert_eq!(inputs(root), before);
+}

@@ -1,6 +1,7 @@
 //! The leftover sweep: finish deferred cleanups of merged stages, once.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
@@ -14,7 +15,7 @@ use crate::orchestrator::core::{Orchestrator, OrchestratorConfig};
 use crate::orchestrator::merge_lifecycle::test_support::{finish_session, write_live_session};
 use crate::plan::schema::StageDefinition;
 use crate::plan::ExecutionGraph;
-use crate::verify::transitions::{load_stage, save_stage};
+use crate::verify::transitions::{load_stage, save_stage, update_stage};
 
 const ID: &str = "swept";
 
@@ -161,4 +162,49 @@ fn a_knowledge_stage_is_left_untouched() {
 
     assert!(worktree(root).exists());
     assert!(branch_exists(root));
+}
+
+#[test]
+fn a_deferral_over_ten_minutes_records_one_warning_and_keeps_retrying() {
+    let (repo, mut orchestrator) = merged_stage(StageType::Standard, false);
+    let root = repo.path();
+    let work_dir = orchestrator.config.work_dir.clone();
+    let mut session = write_live_session(&work_dir, ID, SessionType::Stage);
+    let start = Instant::now();
+
+    orchestrator.sweep_merged_leftovers_at(start);
+    orchestrator.sweep_merged_leftovers_at(start + Duration::from_secs(9 * 60));
+    assert!(load_stage(ID, &work_dir).unwrap().cleanup_warning.is_none());
+
+    orchestrator.sweep_merged_leftovers_at(start + Duration::from_secs(11 * 60));
+    let warning = load_stage(ID, &work_dir).unwrap().cleanup_warning;
+    let text = warning.expect("the long deferral is recorded");
+    assert!(text.contains("deferred for over 10 minutes"), "{text}");
+    assert!(
+        text.contains(&format!("loom worktree remove {ID}")),
+        "{text}"
+    );
+    assert!(!orchestrator.settled_leftovers.contains(ID));
+
+    // The warning is written once: a later edit of it is not overwritten.
+    update_stage(ID, &work_dir, |stage| {
+        stage.cleanup_warning = Some("edited".to_string());
+        Ok(())
+    })
+    .unwrap();
+    orchestrator.sweep_merged_leftovers_at(start + Duration::from_secs(12 * 60));
+    assert_eq!(
+        load_stage(ID, &work_dir)
+            .unwrap()
+            .cleanup_warning
+            .as_deref(),
+        Some("edited")
+    );
+
+    finish_session(&work_dir, &mut session);
+    orchestrator.sweep_merged_leftovers_at(start + Duration::from_secs(13 * 60));
+    assert!(!worktree(root).exists());
+    assert!(orchestrator.settled_leftovers.contains(ID));
+    assert!(!orchestrator.deferred_cleanups.contains_key(ID));
+    assert!(load_stage(ID, &work_dir).unwrap().cleanup_warning.is_none());
 }

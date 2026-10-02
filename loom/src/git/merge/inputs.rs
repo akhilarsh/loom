@@ -15,6 +15,7 @@ use anyhow::Result;
 
 use super::checkout_files::{checked_stdout, porcelain_status};
 use super::checkout_state::status_paths;
+use super::in_progress::git_dir_for_repo_path;
 use super::operator_operation;
 use crate::git::branch::branch_name_for_stage;
 use crate::git::runner::run_git;
@@ -25,8 +26,10 @@ use crate::git::runner::run_git;
 /// branch and the main checkout's `HEAD`; the checkout's porcelain status and
 /// the presence, size and modification time of every path it names and of
 /// every `watched` path (an ignored file a block names is not in status); the
-/// worktree list; and the operator operation in progress. The value lives in
-/// memory only.
+/// worktree list; the operator operation in progress; and whether the main
+/// checkout's `index.lock` exists (an operator's tool holding it makes
+/// `merge --ff-only` refuse without naming a path). The value lives in memory
+/// only.
 pub fn blocked_merge_inputs(
     repo_root: &Path,
     stage_id: &str,
@@ -54,6 +57,10 @@ pub fn blocked_merge_inputs(
 
     checked_stdout(&["worktree", "list", "--porcelain"], &[], repo_root)?.hash(&mut hasher);
     operator_operation(repo_root)?.hash(&mut hasher);
+    let index_lock = git_dir_for_repo_path(repo_root)?.join("index.lock");
+    std::fs::symlink_metadata(index_lock)
+        .is_ok()
+        .hash(&mut hasher);
     Ok(hasher.finish())
 }
 

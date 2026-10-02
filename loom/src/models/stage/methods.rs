@@ -157,6 +157,7 @@ impl Stage {
     pub fn try_transition(&mut self, new_status: StageStatus) -> Result<()> {
         let validated_status = self.status.try_transition(new_status)?;
         self.status = validated_status;
+        self.drop_merge_block_unless_blocked();
         self.updated_at = Utc::now();
         Ok(())
     }
@@ -187,11 +188,12 @@ impl Stage {
             "Forced stage status assignment bypassing transition validation"
         );
         self.status = status;
+        self.drop_merge_block_unless_blocked();
         self.updated_at = Utc::now();
     }
 
     /// Stamp `completed_at` now and `duration_secs` from `started_at`.
-    fn stamp_completed(&mut self) {
+    pub(super) fn stamp_completed(&mut self) {
         let now = Utc::now();
         self.completed_at = Some(now);
         if let Some(start) = self.started_at {
@@ -270,35 +272,6 @@ impl Stage {
         Ok(())
     }
 
-    /// Mark the stage as having merge conflicts.
-    ///
-    /// This sets both the status to MergeConflict and the merge_conflict flag.
-    /// The stage work is complete but cannot be merged due to conflicts.
-    ///
-    /// # Returns
-    /// `Ok(())` if the transition succeeded, `Err` if invalid
-    pub fn try_mark_merge_conflict(&mut self) -> Result<()> {
-        self.try_transition(StageStatus::MergeConflict)?;
-        self.merge_conflict = true;
-        Ok(())
-    }
-
-    /// Complete the merge: clear `merge_conflict` and set `merged`. Unless the stage is
-    /// already `Completed` (auto-merge disabled leaves it there, and `loom stage merge`
-    /// then runs against it), also transition to `Completed` and stamp the timestamps.
-    ///
-    /// # Returns
-    /// `Ok(())` if the transition succeeded, `Err` if invalid
-    pub fn try_complete_merge(&mut self) -> Result<()> {
-        if self.status != StageStatus::Completed {
-            self.try_transition(StageStatus::Completed)?;
-            self.stamp_completed();
-        }
-        self.merge_conflict = false;
-        self.merged = true;
-        Ok(())
-    }
-
     /// Mark the stage as completed with failures (acceptance criteria failed).
     ///
     /// This indicates the stage finished executing but acceptance criteria failed.
@@ -308,17 +281,6 @@ impl Stage {
     /// `Ok(())` if the transition succeeded, `Err` if invalid
     pub fn try_complete_with_failures(&mut self) -> Result<()> {
         self.try_transition(StageStatus::CompletedWithFailures)
-    }
-
-    /// Mark the stage as merge blocked (merge failed with actual error, not conflicts).
-    ///
-    /// This indicates the merge operation failed due to an error (not conflicts).
-    /// The stage can be retried by transitioning back to Executing.
-    ///
-    /// # Returns
-    /// `Ok(())` if the transition succeeded, `Err` if invalid
-    pub fn try_mark_merge_blocked(&mut self) -> Result<()> {
-        self.try_transition(StageStatus::MergeBlocked)
     }
 
     /// Request human review for this stage.

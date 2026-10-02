@@ -203,7 +203,7 @@ impl<'a> MergeLifecycle<'a> {
     /// Record (or clear) the cleanup warning on the stage record. Best effort:
     /// a stage with no record (orphan cleanup) has nothing to annotate, and a
     /// failed write must not change the cleanup outcome.
-    fn record_cleanup_warning(&self, warning: Option<String>) {
+    pub(crate) fn record_cleanup_warning(&self, warning: Option<String>) {
         let stage = match crate::verify::transitions::load_stage(self.stage_id, self.work_dir) {
             Ok(stage) => stage,
             Err(_) => return,

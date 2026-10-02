@@ -188,9 +188,12 @@ fn mark_blocked(
     work_dir: &Path,
     completed_commit: Option<String>,
 ) -> Result<MergeOutcome> {
+    // An untyped failure replaces any typed block an earlier attempt left.
+    stage.clear_merge_block();
     stage.try_mark_merge_blocked()?;
     update_stage(&stage.id, work_dir, |s| {
         s.completed_commit = completed_commit.clone();
+        s.clear_merge_block();
         s.try_mark_merge_blocked()
     })?;
     Ok(MergeOutcome::Blocked)
@@ -363,5 +366,31 @@ pub fn complete_with_merge(
                 stage.id
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod mark_blocked_tests {
+    use super::*;
+    use crate::models::stage::StageStatus;
+    use crate::verify::transitions::{load_stage, save_stage};
+
+    #[test]
+    fn an_untyped_merge_failure_drops_a_stale_typed_block() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut stage = Stage {
+            id: "s".to_string(),
+            status: StageStatus::Executing,
+            ..Stage::default()
+        };
+        stage.merge.block = Some(MergeBlock::TargetMoved);
+        save_stage(&stage, dir.path()).unwrap();
+
+        mark_blocked(&mut stage, dir.path(), None).unwrap();
+
+        let saved = load_stage("s", dir.path()).unwrap();
+        assert_eq!(saved.status, StageStatus::MergeBlocked);
+        assert_eq!(saved.merge.block, None);
+        assert_eq!(stage.merge.block, None);
     }
 }

@@ -53,9 +53,67 @@ impl Stage {
     }
 
     /// Record what the merge did with the operator's stashed changes. Never
-    /// cleared: it stays as the stage's merge note.
+    /// cleared: it stays as the stage's merge note. A restored note does not
+    /// replace an unrestored one, whose stash still holds work the checkout
+    /// lacks; a new unrestored note replaces any.
     pub fn record_merge_stash(&mut self, stash: StashReapply) {
-        self.merge.stash = Some(stash);
+        let keeps_unrestored = stash.restored
+            && self
+                .merge
+                .stash
+                .as_ref()
+                .is_some_and(|existing| !existing.restored);
+        if !keeps_unrestored {
+            self.merge.stash = Some(stash);
+        }
+    }
+
+    /// Mark the stage as having merge conflicts.
+    ///
+    /// This sets both the status to MergeConflict and the merge_conflict flag.
+    /// The stage work is complete but cannot be merged due to conflicts.
+    ///
+    /// # Returns
+    /// `Ok(())` if the transition succeeded, `Err` if invalid
+    pub fn try_mark_merge_conflict(&mut self) -> anyhow::Result<()> {
+        self.try_transition(StageStatus::MergeConflict)?;
+        self.merge_conflict = true;
+        Ok(())
+    }
+
+    /// Complete the merge: clear `merge_conflict` and set `merged`. Unless the stage is
+    /// already `Completed` (auto-merge disabled leaves it there, and `loom stage merge`
+    /// then runs against it), also transition to `Completed` and stamp the timestamps.
+    ///
+    /// # Returns
+    /// `Ok(())` if the transition succeeded, `Err` if invalid
+    pub fn try_complete_merge(&mut self) -> anyhow::Result<()> {
+        if self.status != StageStatus::Completed {
+            self.try_transition(StageStatus::Completed)?;
+            self.stamp_completed();
+        }
+        self.merge_conflict = false;
+        self.merged = true;
+        Ok(())
+    }
+
+    /// Mark the stage as merge blocked (merge failed with actual error, not conflicts).
+    ///
+    /// This indicates the merge operation failed due to an error (not conflicts).
+    /// The stage can be retried by transitioning back to Executing.
+    ///
+    /// # Returns
+    /// `Ok(())` if the transition succeeded, `Err` if invalid
+    pub fn try_mark_merge_blocked(&mut self) -> anyhow::Result<()> {
+        self.try_transition(StageStatus::MergeBlocked)
+    }
+
+    /// Forget the typed block once the stage's status is no longer
+    /// `MergeBlocked`; both status writers call this after assigning.
+    pub(super) fn drop_merge_block_unless_blocked(&mut self) {
+        if self.status != StageStatus::MergeBlocked {
+            self.clear_merge_block();
+        }
     }
 
     /// Why a stage whose branch has zero commits beyond `target` goes to human
@@ -161,6 +219,54 @@ mod tests {
         );
         stage.block_merge(MergeBlock::TargetMoved);
         assert!(stage.merge.stash.is_some(), "a later block keeps the note");
+    }
+
+    fn stash(backup_ref: &str, restored: bool) -> StashReapply {
+        StashReapply {
+            backup_ref: backup_ref.to_string(),
+            restored,
+        }
+    }
+
+    #[test]
+    fn a_restored_stash_note_keeps_an_unrestored_one() {
+        let mut stage = stage_in(StageStatus::Completed);
+        stage.record_merge_stash(stash("ref1", false));
+        stage.record_merge_stash(stash("ref2", true));
+        assert_eq!(stage.merge.stash, Some(stash("ref1", false)));
+    }
+
+    #[test]
+    fn an_unrestored_stash_note_replaces_any_note() {
+        let mut stage = stage_in(StageStatus::Completed);
+        stage.record_merge_stash(stash("ref1", false));
+        stage.record_merge_stash(stash("ref2", false));
+        assert_eq!(stage.merge.stash, Some(stash("ref2", false)));
+        stage.record_merge_stash(stash("ref3", true));
+        stage.merge.stash = Some(stash("ref4", true));
+        stage.record_merge_stash(stash("ref5", true));
+        assert_eq!(stage.merge.stash, Some(stash("ref5", true)));
+    }
+
+    #[test]
+    fn leaving_merge_blocked_by_transition_clears_the_block_and_keeps_the_stash() {
+        let mut stage = stage_in(StageStatus::Completed);
+        stage.record_merge_stash(stash("ref1", false));
+        stage.block_merge(MergeBlock::TargetMoved);
+        assert_eq!(stage.merge.block, Some(MergeBlock::TargetMoved));
+        stage.try_transition(StageStatus::Queued).unwrap();
+        assert_eq!(stage.merge.block, None);
+        assert!(stage.failure_info.is_none());
+        assert_eq!(stage.merge.stash, Some(stash("ref1", false)));
+    }
+
+    #[test]
+    fn a_forced_status_change_clears_the_block() {
+        let mut stage = stage_in(StageStatus::Completed);
+        stage.block_merge(MergeBlock::TargetMoved);
+        stage.force_status_with_reason(StageStatus::NeedsHumanReview, "test");
+        assert_eq!(stage.merge.block, None);
+        assert!(stage.failure_info.is_none());
     }
 
     #[test]
