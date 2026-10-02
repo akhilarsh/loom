@@ -5,7 +5,7 @@ use chrono::Utc;
 
 use crate::git::branch::branch_name_for_stage;
 use crate::git::cleanup::CleanupConfig;
-use crate::git::merge::{merge_tree, verify_merge_succeeded, TreeMerge};
+use crate::git::merge::{merge_tree, TreeMerge};
 use crate::models::failure::{FailureInfo, FailureType};
 use crate::models::session::Session;
 use crate::models::stage::StageStatus;
@@ -38,7 +38,7 @@ impl Orchestrator {
     /// Verify merge succeeded and update stage state accordingly.
     ///
     /// This helper encapsulates the common pattern of verifying a merge via git ancestry
-    /// check and updating stage/graph state based on the result.
+    /// against the target tip the target guard accepted, and updating stage state.
     ///
     /// A failed verification always moves the stage to `MergeBlocked` with the
     /// reason in `failure_info`, whatever its prior status.
@@ -76,7 +76,7 @@ impl Orchestrator {
             }
         };
 
-        match verify_merge_succeeded(&completed_commit, target_branch, &self.config.repo_root) {
+        match self.merged_into_accepted(&completed_commit, target_branch) {
             Ok(true) => self.persist_verified_merge(stage, stage_id, &completed_commit),
             Ok(false) => {
                 tracing::error!(
@@ -89,8 +89,8 @@ impl Orchestrator {
                     stage,
                     stage_id,
                     &format!(
-                        "merge verification failed: commit {completed_commit} is not an \
-                         ancestor of {target_branch}"
+                        "merge verification failed: commit {completed_commit} is not in \
+                         {target_branch} as loom accepted it"
                     ),
                 );
                 false

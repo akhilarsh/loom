@@ -27,6 +27,11 @@ impl Orchestrator {
     /// Spawn a merge resolver for `stage` when one is due; returns whether one
     /// spawned.
     ///
+    /// Nothing happens while the tick's target guard check left the target
+    /// held: the probes below read the live target and can route the stage to
+    /// review, and a resolver merges the target into the stage branch, which
+    /// would carry the held commits past a later restore.
+    ///
     /// The merge gate holds a control-path branch for human review, stopping
     /// any resolver running on it, and a live resolver (tracked, or found
     /// through its signal) is left to finish. Otherwise a missing stage or
@@ -39,6 +44,9 @@ impl Orchestrator {
     /// and is retried next tick, unless `report_merge_spawn_failure` routes it
     /// to review.
     pub(super) fn spawn_resolver_if_due(&mut self, stage: &Stage) -> bool {
+        if self.target_held() {
+            return false;
+        }
         let stage_id = stage.id.as_str();
         let branch = branch_name_for_stage(stage_id);
         let target_branch = resolve_target_branch(&self.config.base_branch, &self.config.repo_root);

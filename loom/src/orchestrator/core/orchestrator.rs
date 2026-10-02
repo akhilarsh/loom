@@ -156,6 +156,12 @@ pub struct Orchestrator {
     /// A deferred cleanup is not recorded here and is retried every tick. In
     /// memory only: a daemon restart sweeps once more.
     pub(super) settled_leftovers: HashSet<String>,
+    /// The target guard's hold as of the last `check_target_guard` that got
+    /// an answer; `None` while the target is clear. In memory: the guard
+    /// record in the state directory is the source of truth.
+    pub(super) target_hold: Option<crate::git::target_guard::Hold>,
+    /// The last target-guard error logged, so a repeating one logs once.
+    pub(super) target_guard_error: Option<String>,
     /// Injectable Remote Control probe, so crash classification is unit
     /// testable without depending on the host's own claude install.
     pub(super) remote_control_active: fn(&Path) -> bool,
@@ -164,10 +170,9 @@ pub struct Orchestrator {
 impl Orchestrator {
     /// Create a new orchestrator from config and execution graph
     pub fn new(config: OrchestratorConfig, graph: ExecutionGraph) -> Result<Self> {
-        anyhow::ensure!(
-            config.max_parallel_sessions > 0,
-            "max_parallel_sessions must be at least 1"
-        );
+        if config.max_parallel_sessions == 0 {
+            anyhow::bail!("max_parallel_sessions must be at least 1");
+        }
         let monitor_config = MonitorConfig {
             poll_interval: config.poll_interval,
             work_dir: config.work_dir.clone(),
@@ -209,6 +214,8 @@ impl Orchestrator {
             refused_merge_attempts: HashMap::new(),
             deferred_cleanups: HashMap::new(),
             settled_leftovers: HashSet::new(),
+            target_hold: None,
+            target_guard_error: None,
             remote_control_active: crate::remote_control::resolve,
         })
     }

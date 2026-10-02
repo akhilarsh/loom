@@ -186,7 +186,8 @@ impl Orchestrator {
     /// Derives `completed_commit` from `loom/<id>` HEAD when missing, then
     /// checks ancestry against the (pre-resolved) target branch. If the
     /// ancestry check fails OR the branch is also missing, reverts
-    /// `merged=false` so dependents don't treat the stage as satisfied.
+    /// `merged=false` so dependents don't treat the stage as satisfied. A
+    /// guard that cannot be evaluated leaves the flag unchanged.
     ///
     /// `target` is passed in so the caller resolves it once per sync pass
     /// rather than spawning `git symbolic-ref` per stage (P-3).
@@ -206,10 +207,9 @@ impl Orchestrator {
         let commit = original_commit
             .clone()
             .or_else(|| crate::git::get_branch_head(&branch_name, &self.config.repo_root).ok());
-        let verified = commit.as_ref().is_some_and(|commit| {
-            crate::git::merge::verify_merge_succeeded(commit, target, &self.config.repo_root)
-                .unwrap_or(false)
-        });
+        let Some(verified) = self.probe_merged(&stage.id, commit.as_deref(), target) else {
+            return false;
+        };
 
         if !verified {
             tracing::error!(
@@ -221,10 +221,9 @@ impl Orchestrator {
             );
         }
 
-        let stage_id = stage.id.clone();
         let mut applicable = false;
         let result =
-            update_stage_at_path(&stage_id, stage_path, &self.config.work_dir, |current| {
+            update_stage_at_path(&stage.id, stage_path, &self.config.work_dir, |current| {
                 let commit_matches = match (&original_commit, &current.completed_commit) {
                     (Some(probed), Some(fresh)) => probed == fresh,
                     (None, None) => {
@@ -246,7 +245,7 @@ impl Orchestrator {
                 applicable && verified && stage.merged
             }
             Err(error) => {
-                tracing::warn!(stage_id = %stage_id, %error, "Failed to persist merge verification");
+                tracing::warn!(stage_id = %stage.id, %error, "Failed to persist merge verification");
                 false
             }
         }
@@ -449,11 +448,7 @@ impl Recovery for Orchestrator {
                             // just derived), run the ancestry check against the
                             // pass-hoisted target branch (P-3).
                             if let Some(completed_commit) = stage.completed_commit.clone() {
-                                match crate::git::merge::verify_merge_succeeded(
-                                    &completed_commit,
-                                    &target_branch,
-                                    &self.config.repo_root,
-                                ) {
+                                match self.merged_into_accepted(&completed_commit, &target_branch) {
                                     Ok(true) => {
                                         tracing::info!(
                                             stage_id = %stage.id,
