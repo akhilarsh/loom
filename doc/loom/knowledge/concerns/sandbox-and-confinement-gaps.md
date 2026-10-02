@@ -266,3 +266,15 @@ Fix direction (none chosen): per-session tool denies in the capsule (`--disallow
 ## A File Deny Stops Protecting a Live Session Once the Host Replaces the File
 
 Measured with bwrap 0.x on Linux (2026-10-02 session): a read-only bind of a single file (`--ro-bind f f`, how a file `denyWrite` is enforced) refuses writes and renames inside the sandbox while the host leaves the file alone. Once a host process replaces the file by rename (`echo new > f.tmp && mv f.tmp f`, which is how git writes refs, `config`, `config.worktree` and `packed-refs`: lock file then rename), the running sandbox resolves the path to the new file and can write it, and the write lands on the host. So every per-file deny (loom's `.git/config` and per-worktree `config.worktree` denies in `sandbox/control_surfaces/session_denies.rs`, and Claude Code's own `config`/`config.worktree`/`commondir` denies) protects a session only until the host first rewrites that file during the session. A directory deny is not affected by a file replaced inside it (to be confirmed per case). Related measurements: an empty loose `refs/heads/<b>` shadows `packed-refs` and breaks the branch (`No commits yet`, commits fail), which is what a deny on an absent ref path would leave on the host; `git update-ref` to the ref's current value does not turn a packed ref into a loose file.
+
+## Session-Planted Replace Refs and Grafts Change What Loom's Git Sees
+
+A session can write `<common>/refs/replace/*` and `<common>/info/grafts`: the capsule denies only `.git/hooks`, `.git/config` and each `config.worktree` in the common dir (`loom/src/sandbox/control_surfaces/session_denies.rs`). `crate::git::runner::git_command` (`loom/src/git/runner.rs`) sets only `LC_ALL`/`LANG` and the `-c core.hooksPath=/dev/null -c core.fsmonitor=false` prefix, so git honors both in every `diff`, `merge-base` and ancestry test loom runs.
+
+Measured on git 2.53:
+
+- `git replace X D` makes `git diff -z --name-only --no-renames A X` print only D's paths, hiding X's real change from `control_paths::changed_paths`, the merge gate's input.
+- A graft line `<A> <S>` makes `git merge-base --is-ancestor S A` succeed for a stage commit S that is not in A. `verify_merge_succeeded` then lets `sync_graph_with_stage_files` (`loom/src/orchestrator/core/recovery.rs`) mark the stage merged without the target moving, and the leftover sweep deletes its branch.
+- `GIT_NO_REPLACE_OBJECTS=1` (or `--no-replace-objects`) disables replace refs but NOT grafts. Only `GIT_GRAFT_FILE` pointed at an empty or missing file disables grafts (`/dev/null` works).
+
+Fix: set `GIT_NO_REPLACE_OBJECTS=1` and `GIT_GRAFT_FILE=/dev/null` in `git_command`; loom uses neither mechanism. `doc/plans/PLAN-target-ref-guard.md` (stage guard-core, worker W1) carries this fix.
