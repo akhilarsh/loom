@@ -11,18 +11,18 @@ pub mod execution;
 
 pub use crate::fs::get_merge_point;
 pub use crate::git::merge::lock::MergeLock;
-use crate::git::merge::MergeBlock;
+use crate::git::merge::{MergeBlock, StashReapply};
 pub use execution::merge_completed_stage;
 
 /// Result of a progressive merge attempt
 #[derive(Debug, Clone)]
 pub enum ProgressiveMergeResult {
-    /// Merge completed successfully with changes. `backup_ref` names the ref
-    /// holding the operator's uncommitted tracked changes when they were
-    /// stashed and reapplied around the merge.
+    /// Merge completed successfully with changes. `stash` says where the
+    /// operator's uncommitted tracked changes are when they were stashed
+    /// around the merge.
     Success {
         files_changed: u32,
-        backup_ref: Option<String>,
+        stash: Option<StashReapply>,
     },
     /// The merge was not attempted or not advanced for a reason the operator
     /// can clear (a merge in progress, an overlapping uncommitted edit, ...)
@@ -81,7 +81,7 @@ mod tests {
     fn test_progressive_merge_result_is_success() {
         assert!(ProgressiveMergeResult::Success {
             files_changed: 5,
-            backup_ref: None
+            stash: None
         }
         .is_success());
         assert!(!ProgressiveMergeResult::Blocked(MergeBlock::TargetMoved).is_success());
@@ -107,7 +107,7 @@ mod tests {
 
         assert!(ProgressiveMergeResult::Success {
             files_changed: 1,
-            backup_ref: None
+            stash: None
         }
         .conflicting_files()
         .is_none());

@@ -11,6 +11,15 @@ use crate::orchestrator::signals::find_live_merge_session_for_stage;
 
 use super::landing::Landing;
 
+/// The paths of the stage's current `UncommittedOverlap` block, which the
+/// retry fingerprint watches: an ignored file among them is not in status.
+fn overlap_paths(stage: &Stage) -> Vec<String> {
+    match &stage.merge_block {
+        Some(MergeBlock::UncommittedOverlap { paths }) => paths.clone(),
+        _ => Vec::new(),
+    }
+}
+
 impl Orchestrator {
     /// Run `merge_stage` again for `stage`, which is `MergeBlocked` with a
     /// `merge_block`. A merge that lands follows the verified-merge path and
@@ -25,7 +34,8 @@ impl Orchestrator {
     pub(super) fn retry_blocked_merge(&mut self, stage: &Stage) {
         let stage_id = stage.id.as_str();
         let target = resolve_target_branch(&self.config.base_branch, &self.config.repo_root);
-        let inputs = blocked_merge_inputs(&self.config.repo_root, stage_id, &target).ok();
+        let watched = overlap_paths(stage);
+        let inputs = blocked_merge_inputs(&self.config.repo_root, stage_id, &target, &watched).ok();
         if inputs.is_some() && self.blocked_merge_inputs.get(stage_id) == inputs.as_ref() {
             tracing::debug!(stage_id = %stage_id, "Merge block inputs unchanged; retry skipped");
             return;
@@ -56,6 +66,7 @@ impl Orchestrator {
                 Some(inputs),
                 Landing::Blocked(
                     MergeBlock::UncommittedOverlap { .. }
+                    | MergeBlock::FastForwardRefused { .. }
                     | MergeBlock::TargetCheckedOutElsewhere { .. }
                     | MergeBlock::OperatorOperation { .. },
                 ),

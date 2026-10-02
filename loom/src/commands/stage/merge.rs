@@ -25,7 +25,7 @@ use landing::{complete_resolved_merge, complete_retried_merge, main_repo_root, r
 use next_step::{print_fix_limit_options, report_merge_error};
 use preflight::{retry_preflight, RetryPreflight};
 
-use super::progressive_complete::report_backup_ref;
+use super::progressive_complete::report_stash;
 
 /// Unified merge command entry point.
 ///
@@ -78,8 +78,8 @@ fn merge_resolved(stage_id: Option<String>) -> Result<()> {
         .map_err(|reason| anyhow!("The stage worktree is not ready to merge: {reason}"))?;
 
     match merge_stage(&stage_id, &target, &repo_root, work_dir)? {
-        MergeResult::Success { backup_ref, .. } => {
-            report_backup_ref(backup_ref.as_deref());
+        MergeResult::Success { stash, .. } => {
+            report_stash(stash.as_ref());
             complete_resolved_merge(&stage, work_dir, &repo_root, &target)
         }
         MergeResult::AlreadyUpToDate => {
@@ -161,11 +161,11 @@ fn merge_retry(stage_id: Option<String>) -> Result<()> {
             files_changed,
             insertions,
             deletions,
-            backup_ref,
+            stash,
         }) => {
             println!("Merge successful!");
             println!("  {files_changed} files changed, +{insertions} -{deletions}");
-            report_backup_ref(backup_ref.as_deref());
+            report_stash(stash.as_ref());
             let done = format!("Stage '{stage_id}' merge complete! (Completed, merged: true)");
             complete_retried_merge(&stage_id, work_dir, &repo_root, &target_branch, &done)?;
         }

@@ -1,10 +1,13 @@
 //! Git merge operations for integrating worktree branches
 
 mod checkout_apply;
+mod checkout_files;
 mod checkout_state;
+mod fast_forward;
 pub mod in_progress;
 mod inputs;
 pub mod lock;
+mod operation;
 mod resolved;
 mod status;
 mod tree;
@@ -16,6 +19,7 @@ use std::time::Duration;
 use super::branch::{branch_exists, branch_name_for_stage, is_ancestor_of};
 use crate::git::runner::run_git_checked;
 use lock::MergeLock;
+use operation::operator_operation;
 
 // Re-export status types for use by other modules
 pub use in_progress::{
@@ -25,7 +29,10 @@ pub use in_progress::{
 pub use inputs::blocked_merge_inputs;
 pub use resolved::check_resolved_worktree;
 pub use status::{build_merge_report, check_merge_state, MergeState, MergeStatusReport};
-pub use tree::{advance_target, commit_merge, merge_tree, Advance, MergeBlock, TreeMerge};
+pub use tree::{
+    advance_target, commit_merge, merge_tree, Advance, MergeBlock, PendingMerge, StashReapply,
+    TreeMerge,
+};
 
 /// Result of a merge operation
 #[derive(Debug, Clone)]
@@ -38,9 +45,9 @@ pub enum MergeResult {
         insertions: u32,
         /// Number of deletions
         deletions: u32,
-        /// Ref holding the operator's stashed changes when they were
-        /// reapplied around the merge.
-        backup_ref: Option<String>,
+        /// The operator's stashed changes, when they were stashed around
+        /// the merge.
+        stash: Option<StashReapply>,
     },
     /// Merge has conflicts that need resolution; nothing was changed.
     Conflict {
@@ -53,27 +60,6 @@ pub enum MergeResult {
     Blocked(MergeBlock),
 }
 
-/// Operator operations that make a merge refuse: marker paths relative to
-/// the git dir of the main checkout.
-const OPERATOR_MARKERS: [&str; 4] = [
-    "CHERRY_PICK_HEAD",
-    "REVERT_HEAD",
-    "rebase-merge",
-    "rebase-apply",
-];
-
-/// The marker of an operator operation in progress in the main checkout.
-fn operator_operation(repo_root: &Path) -> Result<Option<String>> {
-    if merge_head_exists(repo_root)? {
-        return Ok(Some("MERGE_HEAD".to_string()));
-    }
-    let git_dir = git_dir_for_repo_path(repo_root)?;
-    Ok(OPERATOR_MARKERS
-        .iter()
-        .find(|marker| git_dir.join(marker).exists())
-        .map(|marker| marker.to_string()))
-}
-
 /// Merge a stage branch into the target branch (typically main) without
 /// changing the main checkout beyond a final fast-forward.
 ///
@@ -82,8 +68,8 @@ fn operator_operation(repo_root: &Path) -> Result<Option<String>> {
 ///    in progress in the checkout.
 /// 2. Compute the merge with `git merge-tree`; conflicts leave everything
 ///    untouched.
-/// 3. Commit it with `git commit-tree` and advance the target with
-///    [`advance_target`].
+/// 3. Advance the target with [`advance_target`], which writes the merge
+///    commit with `git commit-tree` only when the advance can happen.
 pub fn merge_stage(
     stage_id: &str,
     target_branch: &str,
@@ -107,8 +93,9 @@ pub fn merge_stage(
     if !branch_exists(&branch_name, repo_root)? {
         bail!("Branch '{branch_name}' does not exist");
     }
-    let old = tree::rev_parse(repo_root, target_branch)?;
-    let branch_tip = tree::rev_parse(repo_root, &branch_name)?;
+    // Full ref names: a tag named like the branch must not win.
+    let old = tree::rev_parse(repo_root, &format!("refs/heads/{target_branch}"))?;
+    let branch_tip = tree::rev_parse(repo_root, &format!("refs/heads/{branch_name}"))?;
     if is_ancestor_of(&branch_tip, &old, repo_root)? {
         return Ok(MergeResult::AlreadyUpToDate);
     }
@@ -116,7 +103,7 @@ pub fn merge_stage(
     merge_and_advance(repo_root, stage_id, target_branch, &old, &branch_tip)
 }
 
-/// Compute, commit and land the merge of `branch_tip` into `old`.
+/// Compute and land the merge of `branch_tip` into `old`.
 fn merge_and_advance(
     repo_root: &Path,
     stage_id: &str,
@@ -136,17 +123,17 @@ fn merge_and_advance(
         "Merge {} into {target_branch}",
         branch_name_for_stage(stage_id)
     );
-    let merge_commit = commit_merge(repo_root, &merged_tree, [old, branch_tip], &msg)?;
-    let shortstat = run_git_checked(&["diff", "--shortstat", old, &merge_commit], repo_root)?;
+    let shortstat = run_git_checked(&["diff", "--shortstat", old, &merged_tree], repo_root)?;
     let (files_changed, insertions, deletions) = parse_merge_stats(&shortstat);
+    let mut pending = PendingMerge::new(repo_root, &merged_tree, [old, branch_tip], &msg);
 
     Ok(
-        match advance_target(repo_root, target_branch, old, &merge_commit, stage_id)? {
-            Advance::Advanced { backup_ref } => MergeResult::Success {
+        match advance_target(repo_root, target_branch, stage_id, &mut pending)? {
+            Advance::Advanced { stash } => MergeResult::Success {
                 files_changed,
                 insertions,
                 deletions,
-                backup_ref,
+                stash,
             },
             Advance::Blocked(block) => MergeResult::Blocked(block),
         },
@@ -215,6 +202,8 @@ pub fn verify_merge_succeeded(
     is_ancestor_of(completed_commit, target_branch, repo_root)
 }
 
+#[cfg(test)]
+mod stage_overlap_tests;
 #[cfg(test)]
 mod stage_tests;
 #[cfg(test)]

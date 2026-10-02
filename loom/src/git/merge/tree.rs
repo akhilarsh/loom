@@ -36,9 +36,12 @@ pub enum MergeBlock {
     TargetMoved,
     /// Uncommitted work in the main checkout overlaps paths the merge touches.
     UncommittedOverlap { paths: Vec<String> },
-    /// The merge landed but the local changes could not be restored; they
-    /// are saved under `backup_ref`.
-    ReapplyFailed { backup_ref: String },
+    /// The fast-forward was refused for a reason the checks did not predict
+    /// and git named no paths; `detail` is git's message on one line.
+    FastForwardRefused { detail: String },
+    /// The merge did not land and the operator's stashed changes could not
+    /// be put back: they are in the top stash entry and in `backup_ref`.
+    StashNotRestored { backup_ref: String },
 }
 
 impl fmt::Display for MergeBlock {
@@ -62,10 +65,40 @@ impl fmt::Display for MergeBlock {
                 "uncommitted changes in the main checkout overlap the merge ({}); commit, stash or move them",
                 paths.join(", ")
             ),
-            Self::ReapplyFailed { backup_ref } => write!(
+            Self::FastForwardRefused { detail } => write!(
                 f,
-                "the merge landed but local changes could not be restored; they are saved in {backup_ref} and in the stash list"
+                "git refused to fast-forward the main checkout: {detail}"
             ),
+            Self::StashNotRestored { backup_ref } => write!(
+                f,
+                "the merge did not land and your uncommitted changes could not be put back: they are in the top `git stash list` entry and in {backup_ref}; restore them with `git stash pop`"
+            ),
+        }
+    }
+}
+
+/// What happened to the operator's stashed changes around a merge that landed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StashReapply {
+    /// Ref holding the stashed changes; kept after a restore as a backup.
+    pub backup_ref: String,
+    /// False when `stash pop --index` and `stash pop` both failed: the
+    /// changes stay in the stash entry and in `backup_ref`.
+    pub restored: bool,
+}
+
+impl StashReapply {
+    /// One sentence for the operator: where the stashed changes are.
+    pub fn notice(&self) -> String {
+        let backup_ref = &self.backup_ref;
+        if self.restored {
+            format!(
+                "uncommitted changes in the main checkout were stashed and reapplied around the merge; backup at {backup_ref}"
+            )
+        } else {
+            format!(
+                "the merge LANDED but your uncommitted changes in the main checkout could not be reapplied: they are in the top `git stash list` entry and in {backup_ref}; restore them with `git stash pop`"
+            )
         }
     }
 }
@@ -73,9 +106,9 @@ impl fmt::Display for MergeBlock {
 /// Result of [`advance_target`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Advance {
-    /// The target now points at the merge commit. `backup_ref` is set when
-    /// local changes were stashed and reapplied around the fast-forward.
-    Advanced { backup_ref: Option<String> },
+    /// The target now points at the merge commit. `stash` is set when local
+    /// changes were stashed around the fast-forward.
+    Advanced { stash: Option<StashReapply> },
     /// The target was not advanced.
     Blocked(MergeBlock),
 }
@@ -135,35 +168,81 @@ pub fn commit_merge(repo: &Path, tree: &str, parents: [&str; 2], message: &str) 
     )
 }
 
-/// Move `target` from `old` to `new` (a commit whose first parent is `old`).
+/// A computed merge whose commit is written only when an advance needs it,
+/// so a blocked attempt leaves no unreachable commit behind.
+pub struct PendingMerge<'a> {
+    repo: &'a Path,
+    tree: String,
+    parents: [String; 2],
+    message: String,
+    commit: Option<String>,
+}
+
+impl<'a> PendingMerge<'a> {
+    pub fn new(repo: &'a Path, tree: &str, parents: [&str; 2], message: &str) -> Self {
+        Self {
+            repo,
+            tree: tree.to_string(),
+            parents: parents.map(str::to_string),
+            message: message.to_string(),
+            commit: None,
+        }
+    }
+
+    /// The merged tree.
+    pub fn tree(&self) -> &str {
+        &self.tree
+    }
+
+    /// The first parent: the target's tip the merge was computed against.
+    pub fn old(&self) -> &str {
+        &self.parents[0]
+    }
+
+    /// The merge commit, written on first use.
+    pub fn commit(&mut self) -> Result<String> {
+        if let Some(commit) = &self.commit {
+            return Ok(commit.clone());
+        }
+        let [first, second] = &self.parents;
+        let commit = commit_merge(self.repo, &self.tree, [first, second], &self.message)?;
+        self.commit = Some(commit.clone());
+        Ok(commit)
+    }
+}
+
+/// Move `target` from the merge's first parent to its commit.
 ///
 /// `repo` is the operator's main checkout. Where the target is checked out
-/// decides the mechanism: nowhere, `update-ref` guarded by `old`; in `repo`,
-/// a fast-forward that keeps the operator's uncommitted work; in another
-/// worktree, a block.
+/// decides the mechanism: nowhere, `update-ref` guarded by the old tip; in
+/// `repo`, a fast-forward that keeps the operator's uncommitted work; in
+/// another worktree, a block. The commit is written only on the paths that
+/// can advance.
 pub fn advance_target(
     repo: &Path,
     target: &str,
-    old: &str,
-    new: &str,
     stage_id: &str,
+    pending: &mut PendingMerge,
 ) -> Result<Advance> {
     match checked_out_at(repo, target)? {
         Some(path) if same_path(&path, repo) => {
-            super::checkout_apply::advance_in_checkout(repo, old, new, stage_id)
+            super::checkout_apply::advance_in_checkout(repo, stage_id, pending)
         }
         Some(path) => Ok(Advance::Blocked(MergeBlock::TargetCheckedOutElsewhere {
             path,
         })),
-        None => update_ref(repo, target, old, new, stage_id),
+        None => update_ref(repo, target, stage_id, pending),
     }
 }
 
-/// Path of the worktree that has `branch` checked out, if any.
+/// Path of the worktree that has `branch` checked out, if any. A worktree
+/// whose directory is gone (deleted, not yet pruned) holds nothing: `update-ref`
+/// is safe there.
 fn checked_out_at(repo: &Path, branch: &str) -> Result<Option<PathBuf>> {
     Ok(list_worktrees(repo)?
         .into_iter()
-        .find(|wt| wt.branch.as_deref() == Some(branch))
+        .filter(|wt| wt.branch.as_deref() == Some(branch))
+        .find(|wt| !matches!(wt.path.try_exists(), Ok(false)))
         .map(|wt| wt.path))
 }
 
@@ -174,12 +253,18 @@ fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn update_ref(repo: &Path, target: &str, old: &str, new: &str, stage_id: &str) -> Result<Advance> {
+fn update_ref(
+    repo: &Path,
+    target: &str,
+    stage_id: &str,
+    pending: &mut PendingMerge,
+) -> Result<Advance> {
+    let (old, new) = (pending.old().to_string(), pending.commit()?);
     let reference = format!("refs/heads/{target}");
     let reason = format!("loom: merge loom/{stage_id}");
-    let output = run_git(&["update-ref", "-m", &reason, &reference, new, old], repo)?;
+    let output = run_git(&["update-ref", "-m", &reason, &reference, &new, &old], repo)?;
     if output.status.success() {
-        return Ok(Advance::Advanced { backup_ref: None });
+        return Ok(Advance::Advanced { stash: None });
     }
     if rev_parse(repo, &reference)? != old {
         return Ok(Advance::Blocked(MergeBlock::TargetMoved));

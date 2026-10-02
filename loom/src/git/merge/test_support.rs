@@ -93,3 +93,18 @@ pub(super) fn sibling_dir() -> (TempDir, PathBuf) {
     let path = temp.path().join("second");
     (temp, path)
 }
+
+/// Number of commit objects in the repository, reachable or not.
+pub(super) fn commit_count(root: &Path) -> usize {
+    git_out(
+        root,
+        &[
+            "cat-file",
+            "--batch-all-objects",
+            "--batch-check=%(objecttype)",
+        ],
+    )
+    .lines()
+    .filter(|kind| *kind == "commit")
+    .count()
+}

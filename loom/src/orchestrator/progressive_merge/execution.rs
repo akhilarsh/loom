@@ -56,11 +56,11 @@ pub fn merge_completed_stage(
     let progressive_result = match result {
         MergeResult::Success {
             files_changed,
-            backup_ref,
+            stash,
             ..
         } => ProgressiveMergeResult::Success {
             files_changed,
-            backup_ref,
+            stash,
         },
         MergeResult::Blocked(block) => ProgressiveMergeResult::Blocked(block),
         MergeResult::AlreadyUpToDate => ProgressiveMergeResult::AlreadyMerged,

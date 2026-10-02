@@ -1,0 +1,124 @@
+//! The stash path of the fast-forward, with git failures injected at the
+//! points git does not fail at by itself.
+
+use super::*;
+use crate::git::merge::fast_forward::failpoint::{inject, Failures};
+use crate::git::merge::test_support::{
+    commit_file, git_ok, git_out, init_repo, lock_dir, rev, stage_branch,
+};
+use crate::git::merge::{merge_stage, MergeResult};
+
+const LINES: &str = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n";
+
+/// `f.txt` has a local edit at its end and the branch edits its
+/// start: the overlap is clean and goes through the stash.
+fn overlapping_checkout(root: &Path) {
+    commit_file(root, "f.txt", LINES, "f");
+    let branch_text = LINES.replace("l1\n", "l1b\n");
+    stage_branch(root, "s1", &[("f.txt", branch_text.as_str())]);
+    std::fs::write(root.join("f.txt"), LINES.replace("l10\n", "l10b\n")).unwrap();
+}
+
+fn merge(root: &Path) -> MergeResult {
+    let work = lock_dir();
+    merge_stage("s1", "main", root, work.path()).unwrap()
+}
+
+fn read(root: &Path) -> String {
+    std::fs::read_to_string(root.join("f.txt")).unwrap()
+}
+
+#[test]
+fn a_refused_fast_forward_whose_pop_fails_names_the_stash() {
+    let repo = init_repo();
+    let root = repo.path();
+    overlapping_checkout(root);
+    let head = rev(root, "main");
+    let _guard = inject(Failures {
+        fast_forward: true,
+        pop: true,
+    });
+
+    let MergeResult::Blocked(MergeBlock::StashNotRestored { backup_ref }) = merge(root) else {
+        panic!("expected StashNotRestored");
+    };
+
+    assert_eq!(rev(root, "main"), head);
+    assert!(git_out(root, &["stash", "list"]).contains("stash@{0}"));
+    git_out(root, &["rev-parse", "--verify", &backup_ref]);
+    assert!(backup_ref.starts_with("refs/loom/autostash/s1-"));
+    assert_eq!(read(root), LINES, "the changes are only in the stash");
+}
+
+#[test]
+fn a_refused_fast_forward_with_a_working_pop_puts_everything_back() {
+    let repo = init_repo();
+    let root = repo.path();
+    overlapping_checkout(root);
+    let (head, edited) = (rev(root, "main"), read(root));
+    let _guard = inject(Failures {
+        fast_forward: true,
+        pop: false,
+    });
+
+    let result = merge(root);
+
+    assert!(
+        matches!(
+            &result,
+            MergeResult::Blocked(MergeBlock::FastForwardRefused { .. })
+        ),
+        "{result:?}"
+    );
+    assert_eq!(rev(root, "main"), head);
+    assert_eq!(read(root), edited);
+    assert_eq!(git_out(root, &["stash", "list"]), "");
+}
+
+#[test]
+fn a_landed_merge_whose_pops_fail_is_a_success_with_the_stash_kept() {
+    let repo = init_repo();
+    let root = repo.path();
+    overlapping_checkout(root);
+    let head = rev(root, "main");
+    let _guard = inject(Failures {
+        fast_forward: false,
+        pop: true,
+    });
+
+    let MergeResult::Success {
+        stash: Some(stash), ..
+    } = merge(root)
+    else {
+        panic!("expected a landed merge with a stash outcome");
+    };
+
+    assert!(!stash.restored);
+    assert_ne!(rev(root, "main"), head);
+    assert_eq!(rev(root, "main^1"), head);
+    git_out(root, &["rev-parse", "--verify", &stash.backup_ref]);
+    assert!(git_out(root, &["stash", "list"]).contains("stash@{0}"));
+    assert!(read(root).starts_with("l1b\n") && !read(root).contains("l10b"));
+}
+
+#[test]
+fn a_failing_stash_snapshot_blocks_and_leaves_the_checkout_alone() {
+    let repo = init_repo();
+    let root = repo.path();
+    stage_branch(root, "s1", &[("n.txt", "branch")]);
+    // An intent-to-add entry on a path the branch adds makes the stash fail.
+    std::fs::write(root.join("n.txt"), "mine").unwrap();
+    git_ok(root, &["add", "-N", "n.txt"]);
+    let head = rev(root, "main");
+
+    let result = merge(root);
+
+    let MergeResult::Blocked(MergeBlock::UncommittedOverlap { paths }) = result else {
+        panic!("expected UncommittedOverlap, got {result:?}");
+    };
+    assert_eq!(paths, vec!["n.txt".to_string()]);
+    assert_eq!(rev(root, "main"), head);
+    assert_eq!(std::fs::read_to_string(root.join("n.txt")).unwrap(), "mine");
+    assert_eq!(git_out(root, &["stash", "list"]), "");
+    assert_eq!(git_out(root, &["for-each-ref", "refs/loom"]), "");
+}

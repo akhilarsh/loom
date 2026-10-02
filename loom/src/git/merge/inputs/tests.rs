@@ -4,7 +4,11 @@ use crate::git::merge::test_support::{
 };
 
 fn inputs(root: &Path) -> u64 {
-    blocked_merge_inputs(root, "s1", "main").unwrap()
+    blocked_merge_inputs(root, "s1", "main", &[]).unwrap()
+}
+
+fn watching(root: &Path, path: &str) -> u64 {
+    blocked_merge_inputs(root, "s1", "main", &[path.to_string()]).unwrap()
 }
 
 fn append(root: &Path, name: &str, text: &str) {
@@ -145,4 +149,45 @@ fn computing_the_inputs_writes_no_object() {
     inputs(root);
 
     assert_eq!(git_out(root, &["count-objects", "-v"]), before);
+}
+
+#[test]
+fn a_watched_path_that_is_deleted_created_or_resized_changes_the_inputs() {
+    let repo = init_repo();
+    let root = repo.path();
+    stage_branch(root, "s1", &[("b.txt", "branch")]);
+    std::fs::write(root.join(".gitignore"), "ign.txt\n").unwrap();
+    std::fs::write(root.join("ign.txt"), "one").unwrap();
+    let present = watching(root, "ign.txt");
+    assert_eq!(watching(root, "ign.txt"), present);
+    assert_eq!(git_out(root, &["status", "--porcelain"]), "?? .gitignore");
+
+    std::fs::write(root.join("ign.txt"), "longer").unwrap();
+    let resized = watching(root, "ign.txt");
+    assert_ne!(resized, present);
+
+    std::fs::remove_file(root.join("ign.txt")).unwrap();
+    let deleted = watching(root, "ign.txt");
+    assert_ne!(deleted, resized);
+
+    std::fs::write(root.join("ign.txt"), "one").unwrap();
+    assert_ne!(watching(root, "ign.txt"), deleted);
+}
+
+#[test]
+fn computing_the_inputs_takes_no_index_lock() {
+    let repo = init_repo();
+    let root = repo.path();
+    stage_branch(root, "s1", &[("b.txt", "branch")]);
+    // Stale stat data makes a locking `git status` rewrite the index.
+    std::fs::write(root.join("a.txt"), "seed").unwrap();
+    let index = root.join(".git/index");
+    let before = std::fs::metadata(&index).unwrap().modified().unwrap();
+
+    inputs(root);
+
+    assert_eq!(
+        std::fs::metadata(&index).unwrap().modified().unwrap(),
+        before
+    );
 }

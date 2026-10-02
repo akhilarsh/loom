@@ -9,7 +9,9 @@
 
 use crate::git::branch::branch_name_for_stage;
 use crate::git::cleanup::CleanupConfig;
-use crate::git::merge::{merge_stage, verify_merge_succeeded, MergeBlock, MergeResult};
+use crate::git::merge::{
+    merge_stage, verify_merge_succeeded, MergeBlock, MergeResult, StashReapply,
+};
 use crate::models::stage::{Stage, StageStatus};
 use crate::orchestrator::core::persistence::Persistence;
 use crate::orchestrator::core::{clear_status_line, Orchestrator};
@@ -37,16 +39,18 @@ pub(in crate::orchestrator::core) enum Landing {
     Failed(String),
 }
 
-/// Print where the operator's stashed changes are saved, when a merge stashed
-/// and reapplied them.
-pub(in crate::orchestrator::core) fn report_backup_ref(stage_id: &str, backup_ref: Option<&str>) {
-    let Some(backup_ref) = backup_ref else { return };
-    tracing::info!(stage_id = %stage_id, %backup_ref, "Main checkout changes stashed around a merge");
+/// Print where the operator's stashed changes are, when a merge stashed them.
+/// Changes that could not be reapplied are a warning: the merge did land.
+pub(in crate::orchestrator::core) fn report_stash(stage_id: &str, stash: Option<&StashReapply>) {
+    let Some(stash) = stash else { return };
     clear_status_line();
-    eprintln!(
-        "Stage '{stage_id}': uncommitted changes in the main checkout were stashed and \
-         reapplied around the merge; backup at {backup_ref}"
-    );
+    if stash.restored {
+        tracing::info!(stage_id = %stage_id, backup_ref = %stash.backup_ref, "Main checkout changes stashed around a merge");
+        eprintln!("Stage '{stage_id}': {}", stash.notice());
+    } else {
+        tracing::warn!(stage_id = %stage_id, backup_ref = %stash.backup_ref, "Stashed changes were not reapplied after a merge");
+        eprintln!("WARNING: stage '{stage_id}': {}", stash.notice());
+    }
 }
 
 impl Orchestrator {
@@ -67,8 +71,8 @@ impl Orchestrator {
         let repo_root = self.config.repo_root.clone();
         let work_dir = self.config.work_dir.clone();
         match merge_stage(stage_id, target, &repo_root, &work_dir) {
-            Ok(MergeResult::Success { backup_ref, .. }) => {
-                report_backup_ref(stage_id, backup_ref.as_deref());
+            Ok(MergeResult::Success { stash, .. }) => {
+                report_stash(stage_id, stash.as_ref());
                 self.verify_landing(&mut stage, stage_id, target)
             }
             Ok(MergeResult::AlreadyUpToDate) => self.verify_landing(&mut stage, stage_id, target),

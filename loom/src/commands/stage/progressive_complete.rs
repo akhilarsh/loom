@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::git::branch::branch_name_for_stage;
 use crate::git::cleanup::CleanupConfig;
 use crate::git::get_branch_head;
-use crate::git::merge::MergeBlock;
+use crate::git::merge::{MergeBlock, StashReapply};
 use crate::models::stage::Stage;
 use crate::orchestrator::merge_lifecycle::{CleanupOutcome, MergeLifecycle};
 use crate::orchestrator::{get_merge_point, merge_completed_stage, ProgressiveMergeResult};
@@ -60,10 +60,10 @@ pub fn attempt_progressive_merge(
     match merge_completed_stage(stage, repo_root, &merge_point) {
         Ok(ProgressiveMergeResult::Success {
             files_changed,
-            backup_ref,
+            stash,
         }) => {
             println!("  ✓ Merged {files_changed} file(s) into '{merge_point}'");
-            report_backup_ref(backup_ref.as_deref());
+            report_stash(stash.as_ref());
             stage.merged = true;
             Ok(MergeOutcome::Success)
         }
@@ -136,13 +136,14 @@ fn mark_blocked(
     Ok(MergeOutcome::Blocked)
 }
 
-/// Tell the operator their uncommitted tracked changes were stashed and
-/// reapplied around the merge, and where the backup lives.
-pub(super) fn report_backup_ref(backup_ref: Option<&str>) {
-    if let Some(backup) = backup_ref {
-        println!(
-            "  Uncommitted changes in the main checkout were stashed and reapplied; backup at {backup}"
-        );
+/// Tell the operator where their uncommitted tracked changes are when the
+/// merge stashed them. Changes that were not reapplied are a warning: the
+/// merge did land.
+pub(super) fn report_stash(stash: Option<&StashReapply>) {
+    match stash {
+        Some(stash) if stash.restored => println!("  {}", stash.notice()),
+        Some(stash) => eprintln!("  WARNING: {}", stash.notice()),
+        None => {}
     }
 }
 

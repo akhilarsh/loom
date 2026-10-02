@@ -42,13 +42,7 @@ fn unrelated_local_work_survives_a_merge() {
 
     let result = merge(root, &work);
 
-    assert!(matches!(
-        result,
-        MergeResult::Success {
-            backup_ref: None,
-            ..
-        }
-    ));
+    assert!(matches!(result, MergeResult::Success { stash: None, .. }));
     assert_eq!(parent_count(root, "main"), 2);
     assert_eq!(rev(root, "main^1"), before);
     assert_eq!(git_out(root, &["diff", "--cached", "--name-only"]), "s.txt");
@@ -109,7 +103,11 @@ fn clean_overlap_is_stashed_and_reapplied() {
     let result = merge(root, &work);
 
     let MergeResult::Success {
-        backup_ref: Some(backup),
+        stash:
+            Some(StashReapply {
+                backup_ref: backup,
+                restored: true,
+            }),
         ..
     } = result
     else {

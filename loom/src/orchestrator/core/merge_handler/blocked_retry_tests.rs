@@ -104,3 +104,21 @@ fn a_cleared_block_is_retried_and_lands() {
     assert!(stage.merged);
     assert!(!orchestrator.blocked_merge_inputs.contains_key(ID));
 }
+
+#[test]
+fn deleting_an_ignored_file_named_by_the_block_clears_the_skip() {
+    let (repo, mut orchestrator) = blocked_stage();
+    let exclude = repo.path().join(".git/info/exclude");
+    let text = std::fs::read_to_string(&exclude).unwrap();
+    std::fs::write(&exclude, format!("{text}stage.txt\n")).unwrap();
+    orchestrator.retry_blocked_merge(&on_disk(&orchestrator));
+    assert_eq!(on_disk(&orchestrator).status, StageStatus::MergeBlocked);
+    assert!(orchestrator.blocked_merge_inputs.contains_key(ID));
+
+    std::fs::remove_file(repo.path().join("stage.txt")).unwrap();
+    orchestrator.retry_blocked_merge(&on_disk(&orchestrator));
+
+    let stage = on_disk(&orchestrator);
+    assert_eq!(stage.status, StageStatus::Completed);
+    assert!(stage.merged);
+}
