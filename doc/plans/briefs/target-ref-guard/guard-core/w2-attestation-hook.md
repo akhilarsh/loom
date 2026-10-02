@@ -43,7 +43,7 @@ value of `target_guard::HOOK_MARKER`). Behaviour, with `$1` the phase:
    drain and exit 0. `work="$(dirname "$common")/.loom/work"`, `refs="$work/target-guard.refs"`,
    `ledger="$work/target-guard.ledger"`. No `$refs` file: drain and exit 0 (no loom run guards
    this repository).
-3. `allow` = the value of the `allow ` line of `$refs`. An empty or missing value means no
+3. `allow` = the value of the `allow` line of `$refs`. An empty or missing value means no
    knowledge exception (an empty prefix would match every path).
 4. For each stdin line `old new ref` whose `ref` appears as a `ref <ref>` line of `$refs`
    (exact match):

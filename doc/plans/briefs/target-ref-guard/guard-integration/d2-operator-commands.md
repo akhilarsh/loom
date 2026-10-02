@@ -148,6 +148,7 @@ and attested onto the target; `doc/plans/` is not a control path.
   read their signatures and thread it through the smallest change.
 
 ## 6. Tests (`commands/target/tests.rs`, plus cases in the existing test modules of the files
+
 you own)
 
 - `report` on a repo with no record, with a clear record, with a hold (both restore commands

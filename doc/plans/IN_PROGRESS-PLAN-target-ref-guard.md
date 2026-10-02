@@ -530,7 +530,7 @@ chmod +x <scratch>/bin/srt
 cd loom && env -u LOOM_WORK_DIR PATH=<scratch>/bin:$PATH LOOM_TEST_REQUIRE_SANDBOX_FREE=1 cargo test --lib tests_confinement
 ```
 
-3. Optional, to turn attestation on in this repository: move the tracked hooks the operator still
+1. Optional, to turn attestation on in this repository: move the tracked hooks the operator still
    wants from `loom/.githooks/` into `.git/hooks/` (beside loom's `reference-transaction`), run
    `git config --unset core.hooksPath`, restart the daemon, and confirm `loom target status`
    prints `Attestation: on`.

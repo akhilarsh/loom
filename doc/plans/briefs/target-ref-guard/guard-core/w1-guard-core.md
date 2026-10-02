@@ -145,6 +145,7 @@ a sandbox (the hook cannot attest them) and touch only `doc/loom/knowledge/**`.
 
 `attestation_mode(repo_root, work_dir)` returns `Off { reason }` when any of these holds, else
 `Active`:
+
 - `crate::git::hooks::configured_hooks_path(repo_root)` is `Some(p)`: "core.hooksPath is set
   to <p>, so git does not run hooks from .git/hooks".
 - The common git dir's `hooks/reference-transaction` (common dir from
