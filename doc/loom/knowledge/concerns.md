@@ -154,8 +154,9 @@ revert path, the `BranchMissing` phantom-merge risk, the heuristic `BaseConflict
 `retry --force` racing orphan-recovery, `started_at` not resetting on retry, the completion-broker's
 post-transition nonce-burn ordering, the attribution code that has nothing left to attribute, the
 editor residual between stash and pop, the `update-ref` window,
-accumulating autostash backup refs, `human-review --force-complete` requiring no operator proof by design, and a
-newline inside a refused fast-forward path.
+accumulating autostash backup refs, `human-review --force-complete` requiring no operator proof by design, a
+newline inside a refused fast-forward path, and a loom gate error that parks a stage with no self-recovery (no
+dispute covers loom's own gates, a deliberate block is never retried; proposed: a could-not-evaluate gate result).
 
 → [Merge and Recovery Edge Cases](concerns/merge-and-recovery-edge-cases.md)
 

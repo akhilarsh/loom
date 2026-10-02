@@ -245,3 +245,13 @@ tests parent, `rg` the name in sibling files that glob-import `super::*`.
 ## Test Modules Wired by `#[path]` Read as Unwired
 
 `orchestrator/provision_tests.rs` and `orchestrator/core/provision_gate_tests.rs` are wired as `#[cfg(test)] #[path = "..."] mod tests;` in their parent modules. The unwired-file check does not follow `#[path]` declarations and reported them as unwired. Confirm the declaration with `rg -n '#\[path' <parent>` before wiring a second copy.
+
+## The Impact Gate Failed a Stage on Its Own Spawn Error
+
+**What happened:** guard-core (PLAN-target-ref-guard) changed `src/git/runner.rs`, which reaches thousands of tests. The cargo adapter built `cargo test -- <names>` as one shell line, and `verify/criteria/confine.rs` spawns a shell line as a single `sh -c` argument, which Linux refuses above 32 pages with E2BIG. `impact_tests/runs.rs::Selection::run_group` passed the spawn error up with `?`, so `loom stage complete` failed while every stage gate passed. The agent could not fix `src/verify` (outside its `files`, and the installed binary runs the gate) and had no dispute for the impact gate, so it blocked; a retry blocked again two minutes later.
+
+**Why:** D14's rule "a test that cannot be selected or run is a note" was implemented case by case (timeout, exit 127, no selector, missing `node_modules`), and a run error was never one of the cases. The fixtures were all small, so no test built a command near any OS limit.
+
+**Prevention:** A gate that degrades when a run cannot happen degrades on every error the run returns, not on a list of known outcomes. Never answer an OS limit with a constant tuned to the host: the first proposed fix was a 100 KiB bound under Linux's 128 KiB per-argument limit, which scales with page size, does not exist on macOS (about 1 MiB for all arguments plus the environment), and would ship to every project loom runs. Let exec report the limit and degrade. Bound what a note prints: the criteria runner's error context carries the full command text.
+
+**Fix:** `run_group` turns a run error into a full-suite note naming only the error's root cause, and every note, failure and `ran` entry shows the command cut at 200 bytes and at most 10 selected test names (`impact_tests/runs.rs`, tests in `runs_tests.rs`, one of them a real 4 MiB exec). The recovery gap this exposed is in [[concerns/merge-and-recovery-edge-cases]], "A Defect in a Loom Gate Parks the Stage Until an Operator Acts".

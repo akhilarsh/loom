@@ -72,7 +72,9 @@ is still layered on that base, and a commit that lands on the target after the s
 A runner's package comes from project detection, which skips `fixtures` directories, so test-data manifests are no
 packages. A JS package that declares dependencies but has no `node_modules` in its directory or any ancestor up to the
 root (`impact_tests/runs.rs::missing_node_modules`; a dependency-free package, or an unreadable or unparsable
-manifest, counts per `skills::project::probe::declares_dependencies`) is a note, as is any runner run that exits 127.
+manifest, counts per `skills::project::probe::declares_dependencies`) is a note, as is any runner run that exits 127,
+and so is every error the runner returns (E2BIG on an exec of thousands of names, for one; no length bound is configured,
+exec reports the OS limit): `run_group` names only its root cause. Notes cut the command at 200 bytes and list 10 names.
 Exit 127 cannot tell a missing runner from a suite that itself exits 127. Yarn PnP packages declare dependencies and
 have no `node_modules`, so they get the same note. It also selects the nodes of changed
 test files, since `impact_with` never returns its start node, but skips every test inside a contract FILE,
