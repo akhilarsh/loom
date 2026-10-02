@@ -28,3 +28,43 @@
 **Prevention**: when a plan pins an integration scenario, check that its steps are consistent with the merge algebra it relies on. When units are declared parallel, check the signatures each one changes against the callers in the other's files. When a design retries every tick, ask what each attempt writes. Search fixtures and snapshots for text a change alters.
 
 **Fix**: each item corrected in the implementation as listed.
+
+## The Control-Path Gate Read Quoted Paths (2026-10-02)
+
+**What happened**: the merge gate read `git diff --name-only` without `-z`, which C-quotes non-ASCII and special paths into a quoted octal-escape form. `starts_with(".claude/")` failed on them, so such a branch merged unreviewed. Exact names (`.mcp.json`) and case variants were missed too, the gate ran outside the merge lock (a race with the branch tip), and it failed open on a git error.
+
+**Why**: the gate parsed display output meant for people and checked a commit other than the one later merged.
+
+**Prevention**: read git path lists with `-z`; gate the exact commit being merged under the same lock; fail closed on any error.
+
+**Fix**: `git/merge/control_paths.rs`, with the gate inside `merge_stage` (`MergeGate`).
+
+## A Fast-Forward Silently Overwrote an Ignored Local File (2026-10-02)
+
+**What happened**: `git merge --ff-only` replaces an operator's ignored file at a path the branch adds with `git add -f`, and `git status` does not list ignored files, so the overlap classification saw nothing.
+
+**Why**: classification trusted status as the full picture of local files.
+
+**Prevention**: check the disk for every path the merge adds, and for its parent prefixes.
+
+**Fix**: `CheckoutProbe` (`git/merge/checkout_files.rs`).
+
+## A Tag Named Like a Branch Faked Merge Proofs (2026-10-02)
+
+**What happened**: bare branch names in `merge-base --is-ancestor`, `rev-list` and `rev-parse` resolve tags before branches. A tag named like `loom/<id>` or the target, which every worktree shares, could satisfy a merge proof or a cleanup guard.
+
+**Why**: branch names were passed to git unqualified.
+
+**Prevention**: qualify branch names as `refs/heads/<name>` wherever a proof or guard resolves one.
+
+**Fix**: `branch_ref` in `git/branch`, used by `get_branch_head`, `commits_ahead_of`, `verify_merge_succeeded` and `merge_stage`.
+
+## CLI Merge Paths Wrote merged = true Without Proof (2026-10-02)
+
+**What happened**: the progressive merge and `loom stage merge` trusted `AlreadyUpToDate` with no ancestry check and no zero-commit guard, the two protections the daemon path already had.
+
+**Why**: the guards were written into the daemon path only, so the CLI paths stayed on an older contract.
+
+**Prevention**: every writer of `merged = true` goes through the same proof (`verify_or_derive_completed_commit`) and guard (`Stage::zero_commit_reason`).
+
+**Fix**: one shared guard text and the proof on every CLI merge path.

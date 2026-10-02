@@ -90,7 +90,7 @@ A context reading is shown only when `context_tokens > 0` and the session is not
 
 ## Payload Shapes
 
-**`StageSummary`** (`data/mod.rs:77-147`, static/compact/live view — all three read the same struct): id, name, status, stage_type, dependencies, context_tokens, elapsed_secs (started_at to completed_at, or to now while open; None until started), execution_secs, base_branch, base_merged_from, failure_info, activity_status, last_tool, last_activity, staleness_secs, context_ceiling_tokens, review_reason, merged, merge_assumed, cleanup_warning, held, retry_count, max_retries, pid, session_alive, model, session_type, incoherence (`data/mod.rs:131`), execution_models, dispute_count, judge_heartbeat_secs, session_backend (`data/mod.rs:136-146`).
+**`StageSummary`** (`data/mod.rs:77-147`, static/compact/live view — all three read the same struct): id, name, status, stage_type, dependencies, context_tokens, elapsed_secs (started_at to completed_at, or to now while open; None until started), execution_secs, base_branch, base_merged_from, failure_info, activity_status, last_tool, last_activity, staleness_secs, context_ceiling_tokens, review_reason, merged, merge_assumed, cleanup_warning, held, retry_count, max_retries, pid, session_alive, model, session_type, incoherence (`data/mod.rs:131`), execution_models, dispute_count, judge_heartbeat_secs, session_backend (`data/mod.rs:136-146`), merge_block (the block sentence while the stage is `MergeBlocked`) and stash_warning (the backup ref of an unrestored stash while that ref exists). `commands/status/data/merge_note.rs` fills the two: `stash_warning` costs one `git rev-parse` per stage with an unrestored note and only reads refs under `refs/loom/autostash/`. The web mirrors them in `schema.ts`, `attention-panel.tsx` and `format.ts`; the TUI renders them in `cells.rs` and `panels.rs`.
 
 `execution_models: Vec<String>` is distinct execution-model display names observed for the stage's subagents, first-seen order (spawn ledger then codex ledger), empty until a subagent spawns — see "Execution-Model Ledgers" below. `dispute_count` and `judge_heartbeat_secs` surface adjudication state. `session_backend: Option<SessionBackendKind>` (Native/Tmux) is populated by the collector but has no reader anywhere in the tree today — see concerns.md.
 
@@ -130,7 +130,9 @@ Each entry carries `command: Option<String>` (a shell command the operator shoul
 
 | Label | Guidance |
 | --- | --- |
-| MERGE CONFLICT, MERGE ERROR | automatic; the note names the live merge resolver or says one is awaited, with attempts used out of `MAX_MERGE_RESOLVER_ATTEMPTS` (`merge_guidance` :212). A `MergeBlocked` stage with a `merge_block` carries the block sentence as `failure_info` evidence and is retried, not given a resolver |
+| MERGE CONFLICT, MERGE ERROR | automatic; the note names the live merge resolver or says one is awaited, with attempts used out of `MAX_MERGE_RESOLVER_ATTEMPTS` (`merge_guidance` :212). A `MergeBlocked` stage with a `merge.block` carries the block sentence as `failure_info` evidence and is retried, not given a resolver |
+| STASH NOT RESTORED | takes precedence over every other label; command `git stash list`; dismissed by deleting the backup ref (the entry reads `stash_warning`) |
+| MERGE BLOCKED | automatic; a typed `merge.block`, and loom retries the merge. An untyped `MergeBlocked` keeps MERGE ERROR with resolver guidance. `loom stage merge` prints the typed-block next step |
 | BLOCKED | automatic auto-retry note when `should_auto_retry` holds (crash or timeout under the limit), else as ACCEPTANCE FAILED (`blocked_guidance` :225) |
 | ACCEPTANCE FAILED | `loom stage retry <id>`, plus `--force` and a limit note once `retry_count >= max_retries` (`retry_guidance` :240) |
 | NEEDS REVIEW | no command; `has_human_review_choices` makes every view print the three full `human_review_choices` commands (:102) |

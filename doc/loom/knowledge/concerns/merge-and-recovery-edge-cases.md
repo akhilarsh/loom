@@ -97,18 +97,26 @@ Gaps around the [Merge Resolver Spawn Loop](../patterns/merge-and-recovery.md#me
 
 `orchestrator/merge_attribution.rs` (`attribute_main_repo_merge`, `reconcile_main_repo_active_merge`, called from `orchestrator/core/recovery.rs`) and `commands/stage/complete.rs` `route_complete_conflict` rules 3-8 assume loom's merge leaves a `MERGE_HEAD` in the main checkout. Loom creates none now (`git/merge/mod.rs` `merge_stage` computes the merge with `merge-tree`), so for loom's own merges there is nothing to attribute. An operator's `MERGE_HEAD` attributes as `GlobalUnattributed`, which mutates nothing. The code is a removal candidate; its tests and the router arms go with it.
 
-## `ReapplyFailed` Leaves the Backup Ref Only in Logs and the Stash
-
-When the tracked-overlap reapply cannot pop the stash (`Blocked(ReapplyFailed { backup_ref })`, see [merge-checkout-state](../architecture/merge-checkout-state.md)), the target has already advanced. The next blocked retry therefore returns `AlreadyUpToDate`, completes the stage and clears `merge_block`. The backup ref `refs/loom/autostash/<id>-<unix-secs>` then survives only in the console line, the daemon log and the kept stash entry; no stage field records it.
-
 ## Editor Saves Between the Stash and the Pop
 
 Accepted residual: the reapply stashes, fast-forwards, then pops. An editor that holds an affected file open can save stale content in that window and overwrite the popped result. The backup ref holds the pre-merge content.
 
-## CLI Merge Paths Skip the Merge Gate
+## The Target Can Be Checked Out Between the Location Check and the Ref Update
 
-The merge gate (`orchestrator/core/merge_handler/merge_gate.rs`) runs before every daemon-side merge, but `loom stage merge`, the local `loom stage merge --resolved` and the progressive merge in `loom stage complete` / `human-review --approve` do not run it. A control-path change merged through those paths is not routed to review.
+`advance_target` checks where the target is checked out, then runs `update-ref`. An operator who checks the target out in that window leaves R's index behind HEAD. This cannot be detected without racing again.
 
-## A Blocked Attempt Writes One Unreachable Commit per Changed Input Set
+## Repositories With `extensions.worktreeConfig` Cannot Land a Resolver's Work Automatically
 
-`retry_blocked_merge` skips an attempt whose `blocked_merge_inputs` fingerprint is unchanged, but each attempt that does run writes a `commit-tree` commit (and, for a tracked overlap, `stash create` commits) before the block is found. A target or checkout that keeps changing while blocked accumulates unreachable objects; `git gc` reclaims them.
+`check_resolved_worktree` refuses when the main repo enables `extensions.worktreeConfig`; the operator merges by hand. Other users of `WorktreeGit::pinned` outside the merge code still read `config.worktree` in such repositories.
+
+## Autostash Backup Refs Accumulate
+
+A successful reapply keeps its backup ref under `refs/loom/autostash/` as a safety copy and nothing prunes them. Delete them with `git update-ref -d` once the work is confirmed.
+
+## `human-review --force-complete` Has No Operator Proof of Its Own
+
+It passes `MergeGate::Bypass`. It is operator-only because the sandbox denies writes to the state directory, so a stage agent cannot write the stage file the command changes first; the command itself checks no operator credential.
+
+## A Refused Fast-Forward Listing Splits a Path Containing a Newline
+
+The paths git names in a refused fast-forward are parsed line by line, so a path with a newline inside is read as two paths.

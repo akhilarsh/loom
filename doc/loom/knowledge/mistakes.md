@@ -8,7 +8,7 @@
 
 ## Phantom Merges: merged=true Without Verification
 
-`merged=true` is a contract with the dependency scheduler — every phantom-merge incident came from writing it without verifying git ancestry. Ten related lessons (a retry that reset a completed stage's branch so nothing merged, git merge failing on sandbox bind mounts, defensive "assume merged" branches, `--force-unsafe`, helpers that abort active merges, merge-probe preflight, merge-conflict session lifecycle, the silent `Completed + !merged` resting state). → [Phantom Merges](mistakes/phantom-merges.md). Merges that ran git in the operator's checkout, and six plan errors from the fix: [Merge in Operator Checkout](mistakes/merge-in-operator-checkout.md)
+`merged=true` is a contract with the dependency scheduler — every phantom-merge incident came from writing it without verifying git ancestry. Ten related lessons (a retry that reset a completed stage's branch so nothing merged, git merge failing on sandbox bind mounts, defensive "assume merged" branches, `--force-unsafe`, helpers that abort active merges, merge-probe preflight, merge-conflict session lifecycle, the silent `Completed + !merged` resting state). → [Phantom Merges](mistakes/phantom-merges.md). Merges that ran git in the operator's checkout, six plan errors from the fix, and the later hardening round (quoted control paths, ignored-file overwrite, tag-shadowed branches, unproven CLI merges): [Merge in Operator Checkout](mistakes/merge-in-operator-checkout.md)
 
 ## File Locking: Writing to Locked Handles
 

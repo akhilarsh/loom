@@ -37,19 +37,20 @@ spawns no session) and `apply_auto_merge_outcome` (`orchestrator/core/merge_hand
 
 ## `merge_stage` merges off the operator's checkout
 
-`merge_stage(stage_id, target, repo_root, work_dir)` runs under `MergeLock`. It never checks out a
+`merge_stage(stage_id, target, repo_root, work_dir, gate)` runs under `MergeLock`. It never checks out a
 branch, runs a three-way merge, or creates `MERGE_HEAD` in the operator's main checkout R. Only when
 the target is checked out in R does it change R's files: `git merge --ff-only`, plus the stash and
 untracked-file removal of the reapply path:
 
 1. An operator operation in progress in R (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`,
    `rebase-merge/`, `rebase-apply/`) returns `Blocked(OperatorOperation { marker })`.
-2. `T0 = rev-parse <target>`, `B = rev-parse loom/<id>`. `B` already in `T0` is `AlreadyUpToDate`.
+2. `T0 = rev-parse refs/heads/<target>`, `B = rev-parse refs/heads/loom/<id>`; names are qualified because a tag named like a branch would shadow it (see [Branch resolution](#branch-resolution)). `B` already in `T0` is `AlreadyUpToDate`.
 3. `merge_tree` (`git/merge/tree.rs`) runs `git merge-tree --write-tree --name-only --no-messages -z T0 B`.
    Exit 0 is clean (tree id first), exit 1 is a conflict (tree id, then the conflicted paths). Exit 1
    with empty stdout (bad revision) or any other code is an error. A conflict returns
-   `Conflict { conflicting_files }` and R is untouched.
-4. Clean: `commit_merge` runs `git commit-tree <tree> -p T0 -p B -m "Merge loom/<id> into <target>"`.
+   `Conflict { conflicting_files }` and R is untouched. After a clean tree, the control-path gate
+   checks the exact landing diff (see [The merge gate](#the-merge-gate)).
+4. Clean: `commit_merge` (lazily, through `PendingMerge`) runs `git commit-tree <tree> -p T0 -p B -m "Merge loom/<id> into <target>"`.
    The commit always has two parents, even when `B` already contains `T0` after a resolver merged the
    target in. Stats come from `git diff --shortstat T0 M`.
 5. `advance_target` (`tree.rs`) moves the target to the merge commit `M`, by where the target is
@@ -60,9 +61,9 @@ untracked-file removal of the reapply path:
    - in R: `advance_in_checkout` (`git/merge/checkout_apply.rs`), a guarded fast-forward that keeps the
      operator's uncommitted work. See [merge-checkout-state](merge-checkout-state.md).
 
-`MergeResult` is `Success { files_changed, insertions, deletions, backup_ref }`,
-`Conflict { conflicting_files }`, `AlreadyUpToDate`, or `Blocked(MergeBlock)`. `MergeBlock` is stored on
-the stage (`Stage.merge_block`, `#[serde(tag = "kind")]`) and has an operator-facing `Display`.
+`MergeResult` is `Success { files_changed, insertions, deletions, backup_ref, stash }`,
+`Conflict { conflicting_files }`, `AlreadyUpToDate`, `Held { reason }` or `Blocked(MergeBlock)`. `MergeBlock` is stored on
+the stage (`Stage.merge.block`, `#[serde(tag = "kind")]`) and has an operator-facing `Display`.
 `loom run` refuses git older than 2.40 (`commands/run/git_preflight.rs`, called from
 `run_startup_preflights`) because `merge-tree --write-tree` needs it. `git/runner.rs` gives
 `merge-tree`, `commit-tree`, `update-ref` and `stash` the 120 s mutation timeout.
@@ -75,7 +76,8 @@ the stage (`Stage.merge_block`, `#[serde(tag = "kind")]`) and has an operator-fa
 | --- | --- | --- |
 | Success or `AlreadyUpToDate`, and `verify_merge_succeeded` proves ancestry | `Completed`, `merged: true`; `finalize_auto_merge` runs `finish_verified_merge`, which reconciles the base and removes worktree and branch; a backup ref is printed and logged | continues |
 | Conflict | `record_merge_conflict` forces `MergeConflict`; nothing is spawned here | stays alive; the spawn loop starts a resolver in the stage worktree |
-| Blocked (`MergeBlock`) | `record_merge_block` forces `MergeBlocked` with `Stage.merge_block` and `failure_info` carrying the block sentence as evidence, so `loom status` shows it | stays alive; the loop retries the merge |
+| Held (control path) | `NeedsHumanReview` with the gate's reason | exits; NEEDS REVIEW |
+| Blocked (`MergeBlock`) | `record_merge_block` forces `MergeBlocked` with `Stage.merge.block` and `failure_info` carrying the block sentence as evidence, so `loom status` shows it | stays alive; the loop retries the merge |
 | Git error (lock timeout, missing branch) | forced to `MergeBlocked`, `failure_info` type `InfrastructureError` with the git error as evidence | last stage: exits; `loom status` shows MERGE ERROR |
 | Merge ran but ancestry cannot be verified | forced to `MergeBlocked`, reason in `failure_info` | same |
 | Branch has zero commits beyond target | forced to `NeedsHumanReview`, `review_reason` says the agent never committed | exits; NEEDS REVIEW |
@@ -88,8 +90,9 @@ Nothing on the daemon path writes `merged: true` without `is_ancestor_of` return
 ## Recovery from every non-merged outcome
 
 The spawn loop `spawn_merge_resolution_sessions` runs every tick. A `MergeBlocked` stage that has a
-`merge_block` goes to `retry_blocked_merge` (`merge_handler/blocked_retry.rs`) and never gets a
-resolver; every other `MergeConflict` or `MergeBlocked` stage goes to `spawn_resolver_if_due`. See
+`merge.block` goes to `retry_blocked_merge` (`merge_handler/blocked_retry.rs`) and never gets a
+resolver; every other `MergeConflict` or `MergeBlocked` stage goes to `spawn_resolver_if_due`, which first
+tries `clean_merge_settled`. See
 [merge-and-recovery](../patterns/merge-and-recovery.md#merge-resolver-spawn-loop).
 
 The resolver works in the stage worktree `.worktrees/<id>`, never in R: it merges the target into
@@ -97,8 +100,9 @@ The resolver works in the stage worktree `.worktrees/<id>`, never in R: it merge
 --resolved`. The relayed request reaches `resolve_merge_from_inbox`
 (`orchestrator/core/inbox_drain/merge_resolved.rs`): status check, `check_resolved_worktree`
 (`git/merge/resolved.rs`: worktree on `loom/<id>`, no `MERGE_HEAD`, no unmerged path, no tracked
-change, contains the current target tip; untracked files are allowed because sandboxes leave stubs),
-then `land_stage_merge` (`merge_handler/landing.rs`): merge gate, `merge_stage`, record. A merged
+change, the recorded `completed_commit` an ancestor of HEAD; untracked files are allowed because sandboxes leave stubs),
+then `land_stage_merge` (`merge_handler/landing.rs`): `merge_stage` with `MergeGate::Enforce`, record. The reply mapping is the pure
+`settle_for_landing` in `merge_resolved.rs`. A merged
 result is applied with no cleanup, because the resolver still runs in the worktree; if the target
 moved and the merge conflicts again, the request is refused with instructions and the stage stays
 `MergeConflict`; a `Blocked` result is applied and the block recorded. When the resolver exits,
@@ -108,29 +112,26 @@ moved and the merge conflicts again, the request is refused with instructions an
 Otherwise the loop spawns the next counted resolver. `finalize_merge_resolution` keeps the
 phantom-merge invariant (ancestry proof before `merged = true`).
 
-The merge gate (`merge_handler/merge_gate.rs`) runs before every daemon-side merge: auto-merge,
-`--resolved`, resolver exit, blocked retry. After a resolver merges the target in, the gate's
-`merge-base(target, stage)..stage` diff is the stage's own work plus the resolution. The CLI paths
-do not run the gate.
-
 `loom stage merge <id>` (`merge_retry`, run from the stage worktree) accepts `MergeConflict`,
 `MergeBlocked`, and `Completed + !merged` (`commands/stage/merge/preflight.rs::require_merge_state`).
-It re-runs `merge_stage`: Success or `AlreadyUpToDate` complete the stage and clear the block;
+It re-runs `merge_stage` with `MergeGate::Enforce`, applies the daemon's zero-commit guard (`Stage::zero_commit_reason`), and requires `verify_or_derive_completed_commit` before `merged = true`. Success or `AlreadyUpToDate` complete the stage and clear the block; a `Held` result routes the stage to review;
 Conflict moves the stage to `MergeConflict` and prints the manual route (in `.worktrees/<id>`: merge
 the target, resolve, commit, `loom stage merge <id> --resolved`); Blocked records the block.
 `loom stage merge --resolved` without a daemon relay (`merge_resolved`, `commands/stage/merge.rs` and
 `merge/landing.rs`) takes the repo root from `WorkDir::main_project_root()`, never the cwd (the
-worktree), runs `check_resolved_worktree` and `merge_stage`, and completes only after
-`verify_or_derive_completed_commit`. The progressive merge in `loom stage complete` and
+worktree), runs `check_resolved_worktree` and `merge_stage` (gate enforced), and completes only after
+`verify_or_derive_completed_commit`. The CLI's `record_block` refuses a merged stage, and `spawn_merge_resolver` refuses a typed-blocked stage. The progressive merge in `loom stage complete` and
 `loom stage human-review --approve` turns `ProgressiveMergeResult::Blocked(MergeBlock)` into
 `MergeBlocked` with the block. `commands/stage/merge/finish.rs` prints why cleanup did not finish:
 refused, failed, or deferred.
 
-Worktree cleanup (`merge_lifecycle::finish_verified_merge`) for a resolved merge runs only when no
-resolver runs in the worktree: at the resolver's exit, or in the blocked retry when none is live. The
-CLI removes the worktree and branch unless its cwd is inside that worktree
-(`orchestrator/merge_lifecycle.rs::should_defer_cleanup`); cleanup is then left to the daemon, or to
-the next `loom run`.
+Worktree cleanup (`merge_lifecycle::finish_verified_merge`) returns `CleanupOutcome::Deferred { reason }` when the
+caller runs inside the worktree or any live session runs for the stage (`session_registry::live_sessions_for_stage`; a
+failing scan defers too). The daemon sweep `sweep_merged_leftovers` (`merge_handler/leftover_sweep.rs`) runs each tick
+after `drain_session_inboxes` and at startup, and finishes the cleanup of every `Completed` + `merged` non-knowledge
+stage. It memoizes settled stages per daemon session and retries deferrals; a deferral lasting over 10 minutes records
+a `cleanup_warning` once. The resolver's exit folds its permission approvals back from the worktree before cleanup; the
+inbox sweep skips the fold-back quietly when the worktree is gone.
 
 Worktree removal: the daemon's cleanup removes loom's known scaffold files and the empty stubs a
 sandbox leaves at the worktree root (`verify/tool_artifacts.rs::NAMES`,
@@ -141,6 +142,20 @@ tracked files and on untracked files other than that scaffold and those stubs. B
 files with the worktree, `target/` and a generated `REVIEW-PLAN-*.md` included, so move a review
 into the main `doc/plans/` first. From a sandboxed session git cannot delete `.git/worktrees/<id>`
 (`Device or resource busy`); run `git worktree prune` from an operator shell.
+
+## The merge gate
+
+`MergeGate::{Enforce, Bypass}` (`git/merge/control_paths.rs`) is a `merge_stage` argument. Under `MergeLock`, `Enforce` checks the exact `T0`/`B` merge-base diff and, after a clean `merge_tree`, the exact landing diff `T0..<merged tree>`. A control-path hit in either is `MergeResult::Held { reason }`; a diff error fails closed (`Err`). Paths come from `git diff -z` (no C-quoting) and match ASCII-case-insensitively: `.claude` and `.loom` exactly or as a directory prefix, `.mcp.json` exactly, and the tracked hooks directory exactly or below.
+
+The daemon's `land_stage_merge` and auto-merge route `Held` to `NeedsHumanReview`. The early filters `auto_merge_precheck_blocks` and `gate_holds_merge_stage` (`merge_handler/merge_gate.rs`) stay fail-open pre-filters. Every CLI path (`loom stage merge`, local `--resolved`, the progressive merge in `loom stage complete`, the CLI resolver spawn) enforces the gate and routes a hold to review. Only `loom stage human-review --force-complete` passes `Bypass`, the operator's override; it is operator-only by the threat model, because a sandboxed stage agent cannot write the stage file that command changes first.
+
+## Branch resolution
+
+`branch_ref(name)` (`git/branch`) returns `refs/heads/<name>` unless the name already starts with `refs/`. `get_branch_head`, `commits_ahead_of` (raw revisions: `commits_between`) and `verify_merge_succeeded` resolve branch names through it, and `merge_stage` resolves `refs/heads/<target>` and `refs/heads/loom/<id>`. A tag named like a branch (tags are shared by every worktree) would otherwise shadow the branch in proofs and cleanup guards.
+
+## The stage merge record
+
+`Stage.merge: MergeRecord { block, stash }` is `#[serde(flatten)]`, so the stage-file keys stay `merge_block` and `merge_stash`. `merge.stash` is the stage's merge note: every success path that stashed writes it, and so does `block_merge(StashNotRestored)`. It is never cleared, and an unrestored note is not replaced by a later restored one. `merge.block`, and the `failure_info` that `block_merge` wrote, is cleared whenever the stage leaves `MergeBlocked` (`try_transition`, `force_status_with_reason`) and by every untyped entry into `MergeBlocked`. `completed_commit` is recorded from the branch head whenever a stage enters `MergeConflict` without one.
 
 ## Merge Lock (git/merge/lock.rs)
 

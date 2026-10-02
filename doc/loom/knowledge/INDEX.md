@@ -14,7 +14,7 @@
 | [conventions.md](conventions.md) | Coding conventions discovered in the codebase | 247 |
 | [mistakes.md](mistakes.md) | Mistakes made and lessons learned - what to avoid | 250 |
 | [stack.md](stack.md) | Dependencies, frameworks, and tooling used in the project | 125 |
-| [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 247 |
+| [concerns.md](concerns.md) | Technical debt, warnings, and issues to address | 249 |
 
 ## Tier 2 — Topics
 
@@ -40,8 +40,8 @@
 | [knowledge-bootstrap](architecture/knowledge-bootstrap.md) | Deterministic phase, digest, receipts | 86 |
 | [knowledge-hierarchy](architecture/knowledge-hierarchy.md) | fs/knowledge, INDEX.md, checks | 261 |
 | [memory-spool](architecture/memory-spool.md) | Read before touching loom memory | 188 |
-| [merge-checkout-state](architecture/merge-checkout-state.md) | Guarded fast-forward; blocked retry | 23 |
-| [merge-flow](architecture/merge-flow.md) | How a completed stage reaches its target branch | 147 |
+| [merge-checkout-state](architecture/merge-checkout-state.md) | Guarded fast-forward; blocked retry | 28 |
+| [merge-flow](architecture/merge-flow.md) | How a completed stage reaches its target branch | 162 |
 | [orchestrator-loop](architecture/orchestrator-loop.md) | Tick order, Monitor, heartbeat liveness | 56 |
 | [owned-waits](architecture/owned-waits.md) | Worker-set waits: lease/engine, exit codes | 48 |
 | [plan-lifecycle-and-fields](architecture/plan-lifecycle-and-fields.md) | Plan fields v1/v2, checks, lints | 252 |
@@ -55,7 +55,7 @@
 | [source-graph-evaluation](architecture/source-graph-evaluation.md) | Census, source windows, edge evaluator | 68 |
 | [source-graph-resolution](architecture/source-graph-resolution.md) | Binding rules 1-7, path conventions | 123 |
 | [source-graph-view](architecture/source-graph-view.md) | Resolved view, relink equals cold | 76 |
-| [status-data-model](architecture/status-data-model.md) | Where each loom status field comes from | 205 |
+| [status-data-model](architecture/status-data-model.md) | Where each loom status field comes from | 207 |
 | [terminal-backends](architecture/terminal-backends.md) | Native and tmux session backends | 285 |
 | [test-runner-adapters](architecture/test-runner-adapters.md) | 23 adapters, profiles, quoting, detect | 49 |
 | [token-accounting-and-receipts](architecture/token-accounting-and-receipts.md) | Usage ledger, --compare, criterion cache | 260 |
@@ -69,9 +69,9 @@
 | --- | --- | --- |
 | [cli-and-plan-pipeline](entry-points/cli-and-plan-pipeline.md) | CLI dispatch, plan pipeline | 192 |
 | [context-and-source-graph](entry-points/context-and-source-graph.md) | Context retrieval pipeline, source-graph channel | 79 |
-| [filesystem-and-integration-modules](entry-points/filesystem-and-integration-modules.md) | Git, fs, handoff, sandbox, remote | 123 |
+| [filesystem-and-integration-modules](entry-points/filesystem-and-integration-modules.md) | Git, fs, handoff, sandbox, remote | 125 |
 | [hooks](entry-points/hooks.md) | Hook scripts, their events, command matching | 146 |
-| [orchestrator-daemon-and-sessions](entry-points/orchestrator-daemon-and-sessions.md) | Orchestrator, daemon, signals, merges | 226 |
+| [orchestrator-daemon-and-sessions](entry-points/orchestrator-daemon-and-sessions.md) | Orchestrator, daemon, signals, merges | 230 |
 | [remote-control](entry-points/remote-control.md) | Remote-control capability detection call sites | 99 |
 
 ### patterns
@@ -81,7 +81,7 @@
 | [cli-process-and-conventions](patterns/cli-process-and-conventions.md) | CLI registration, TUI, errors, config | 249 |
 | [doctrine-cross-surface](patterns/doctrine-cross-surface.md) | Pinning multi-surface guidance | 135 |
 | [hook-content-stripping](patterns/hook-content-stripping.md) | How a hook decides what a Bash command invokes | 159 |
-| [merge-and-recovery](patterns/merge-and-recovery.md) | Progressive merge, conflict recovery | 117 |
+| [merge-and-recovery](patterns/merge-and-recovery.md) | Progressive merge, conflict recovery | 120 |
 | [orchestrator-daemon-loop](patterns/orchestrator-daemon-loop.md) | Signal gen, IPC, poll loop, spool drain | 107 |
 | [remote-control](patterns/remote-control.md) | Detect/preflight/resolve for external agents | 51 |
 | [security-sandbox-and-hooks](patterns/security-sandbox-and-hooks.md) | Hooks, input validation, sandbox config | 137 |
@@ -127,7 +127,7 @@
 | [live-state-pollution](mistakes/live-state-pollution.md) | Tests rewrote live .loom/work and real HOME | 43 |
 | [memory-relay-drain-gap](mistakes/memory-relay-drain-gap.md) | Relay tickets leaked past the hook | 34 |
 | [merge-cleanup-boundary](mistakes/merge-cleanup-boundary.md) | A cleanup-boundary bug and its fix | 171 |
-| [merge-in-operator-checkout](mistakes/merge-in-operator-checkout.md) | Git in operator checkout; plan errors | 29 |
+| [merge-in-operator-checkout](mistakes/merge-in-operator-checkout.md) | Git in operator checkout; plan errors | 70 |
 | [parallel-worktree-shared-state](mistakes/parallel-worktree-shared-state.md) | Cross-worktree state races | 203 |
 | [phantom-merges](mistakes/phantom-merges.md) | Merge lessons: merged=true unverified | 181 |
 | [pinned-literals-ledgers-and-wiring](mistakes/pinned-literals-ledgers-and-wiring.md) | Ledger exact-match, wiring pins | 303 |
@@ -146,7 +146,7 @@
 | [spurious-waiting-for-input](mistakes/spurious-waiting-for-input.md) | Stages flipped to waiting-for-input | 35 |
 | [status-broadcast-hardening](mistakes/status-broadcast-hardening.md) | Frame overflow, read desync | 74 |
 | [store-without-consumer](mistakes/store-without-consumer.md) | Store written, never read | 94 |
-| [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, ownership | 295 |
+| [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, ownership | 305 |
 | [subagent-liveness-and-watch](mistakes/subagent-liveness-and-watch.md) | Subagent liveness; watch traps | 327 |
 | [subagent-orchestration](mistakes/subagent-orchestration.md) | Delegation model, defect reports, gotchas | 120 |
 | [test-concurrency-and-fixtures](mistakes/test-concurrency-and-fixtures.md) | Racy tests: fds, ETXTBSY, stdin | 217 |
@@ -171,7 +171,7 @@
 | [codex-heartbeat-starvation](concerns/codex-heartbeat-starvation.md) | Heartbeat starvation from long codex runs | 73 |
 | [iterm2-window-teardown](concerns/iterm2-window-teardown.md) | iTerm2 window never named | 48 |
 | [knowledge-cli-gaps](concerns/knowledge-cli-gaps.md) | Knowledge CLI gaps and housekeeping | 105 |
-| [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 114 |
+| [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 122 |
 | [runtime-and-session-safety](concerns/runtime-and-session-safety.md) | Runtime edge cases: tmux, orphan adoption | 150 |
 | [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: canary, creds, codex home | 260 |
 | [source-graph-known-gaps](concerns/source-graph-known-gaps.md) | Language limits, open decisions | 79 |

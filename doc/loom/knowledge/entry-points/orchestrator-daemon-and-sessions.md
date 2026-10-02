@@ -12,6 +12,10 @@
 - `orchestrator/core/crash_handler.rs` - Failure classification, exponential backoff
 - `orchestrator/core/completion_handler.rs` - Auto-merge BEFORE marking completed
 - `orchestrator/core/merge_handler.rs` - Auto-merge, the resolver spawn loop (resolvers run in the stage worktree) and the blocked-merge retry (`merge_handler/blocked_retry.rs`)
+- `orchestrator/core/merge_handler/landing.rs` - `land_stage_merge`: `merge_stage` with the gate enforced, record; `merge_gate.rs` - the fail-open pre-filters; `resolver_spawn.rs` - includes `clean_merge_settled`
+- `orchestrator/core/merge_handler/leftover_sweep.rs` - `sweep_merged_leftovers`: finishes cleanup of merged stages each tick and at startup
+- `orchestrator/core/inbox_drain/merge_resolved.rs` - `resolve_merge_from_inbox`, with the pure `settle_for_landing` reply mapping
+- `orchestrator/merge_lifecycle.rs` - `finish_verified_merge`, `CleanupOutcome::Deferred { reason }`
 - `orchestrator/core/persistence.rs` - Load/save state to disk
 
 ## Data Models

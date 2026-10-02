@@ -12,10 +12,12 @@
 - `git/merge/mod.rs` - `merge_stage`: `merge-tree` + `commit-tree`, never git in the operator's checkout; `MergeResult`, `MergeBlock`
 - `git/merge/tree.rs` - `merge_tree`, `commit_merge`, `advance_target`; `checkout_apply.rs` (`advance_in_checkout`) and `checkout_state.rs` (`classify`) guard the fast-forward into the operator's checkout
 - `git/merge/resolved.rs` - `check_resolved_worktree`: validates a resolver's worktree before landing; `inputs.rs` - `blocked_merge_inputs` fingerprint for the blocked retry
+- `git/merge/control_paths.rs` - `MergeGate::{Enforce, Bypass}` and the control-path check (`git diff -z`, case-insensitive) that `merge_stage` runs under the lock
+- `git/merge/checkout_files.rs` - `CheckoutProbe`: ignored local files at paths a merge adds; `fast_forward.rs` - the refused-fast-forward typing; `operation.rs` - operator operations in R (`sequencer/` included)
 - `git/merge/in_progress.rs` - Single source of truth for `MERGE_HEAD` detection (handles `.git`-as-file, relative gitdirs, octopus merges)
 - `git/merge/lock.rs` - Stable-inode OS lock that serializes concurrent merges without stale-file reclamation races
 - `git/merge/status.rs` - `check_merge_state` (Merged | Pending | Conflict | BranchMissing | Unknown)
-- `git/branch/mod.rs` - Branch creation, deletion, ancestry checks (module root; re-exports from `operations.rs`, `cleanup.rs`, `ancestry.rs`, `status.rs`, `naming.rs`, `info.rs`)
+- `git/branch/mod.rs` - Branch creation, deletion, ancestry checks (module root; re-exports from `operations.rs`, `cleanup.rs`, `ancestry.rs`, `status.rs`, `naming.rs`, `info.rs`); `branch_ref` qualifies a branch name as `refs/heads/<name>` for every proof and guard
 
 ## File System State
 

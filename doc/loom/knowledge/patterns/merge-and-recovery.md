@@ -18,11 +18,13 @@ The merge signal file is a liveness record, never a respawn guard: `find_live_me
 
 ## Merge Recovery Flow
 
-A conflicting merge leaves the stage in `MergeConflict` and R untouched; a merge that cannot proceed leaves it in `MergeBlocked` with `Stage.merge_block` (see [merge-flow](../architecture/merge-flow.md)). Neither state holds an agent session open: `commit-guard.sh` allows exit for them and `detection.rs` treats the exit as normal.
+A conflicting merge leaves the stage in `MergeConflict` and R untouched; a merge that cannot proceed leaves it in `MergeBlocked` with `Stage.merge.block` (see [merge-flow](../architecture/merge-flow.md)). Neither state holds an agent session open: `commit-guard.sh` allows exit for them and `detection.rs` treats the exit as normal.
 
 1. `spawn_merge_resolution_sessions` kills any stale original session, then starts a resolver in the stage worktree `.worktrees/<id>` (`SessionBackend::spawn_merge_session_in_worktree`) with a worktree-rooted capsule and `LOOM_MERGE_SESSION=1`. `LOOM_WORKTREE_PATH` is left unset because presence-based gates would read it as a stage agent.
-2. Its signal (`orchestrator/signals/merge.rs`) tells it to continue a merge in progress or run `git merge <target>` in the worktree, resolve, rerun the stage's acceptance criteria, commit, and run `loom stage merge <id> --resolved`. It never touches the main checkout and never runs `loom worktree remove`. The signal includes an "Inherited Responsibilities" section explaining that the resolver owns the stage.
-3. The relayed `--resolved` is checked by `check_resolved_worktree` and landed by `land_stage_merge`; the worktree is removed when the resolver exits (`resolver_exit.rs`).
+2. Its signal (`orchestrator/signals/merge.rs`) tells it to continue a merge in progress or run `git merge <target>` in the worktree, resolve, rerun the stage's acceptance criteria, commit, and run `loom stage merge <id> --resolved`. It forbids rebase, reset, squash, amend and force-push, and for a non-conflict failure quotes up to 5 sanitized lines of the failure. It never touches the main checkout and never runs `loom worktree remove`. The signal includes an "Inherited Responsibilities" section explaining that the resolver owns the stage.
+3. The relayed `--resolved` is checked by `check_resolved_worktree` and landed by `land_stage_merge`; the worktree is removed when the resolver exits (`resolver_exit.rs`), or by the leftover sweep once no session runs for the stage.
+
+`check_resolved_worktree(repo_root, stage_id, target, completed_commit)` (`git/merge/resolved.rs`) uses pinned git and refuses when the main repo enables `extensions.worktreeConfig`. It requires HEAD on `loom/<id>`, no `MERGE_HEAD`, no unmerged path, no tracked change (untracked files allowed; `--no-optional-locks`), and the recorded `completed_commit` (hex-validated) as an ancestor of HEAD, so a rebase, squash or reset by the resolver is refused. It does not require the current target tip: `merge_stage` merges newer target commits or reports a conflict.
 
 Key invariant: the original execution session MUST exit when a merge conflict is detected. `bail!()` in `complete_with_merge()` ends it, `commit-guard.sh` does not block the exit, and the spawn loop kills a stale session before spawning the resolver.
 
@@ -103,15 +105,16 @@ Note: `plan/graph/loader.rs:60-86` PREFERS `.loom/work/stages/` files over the p
 
 `MergeConflict` and `MergeBlocked` never count as terminal for the watch-mode exit (`recovery.rs::stage_file_is_terminal`), so the daemon stays up until each such stage is merged or reaches `NeedsHumanReview`. Every tick `spawn_merge_resolution_sessions` routes each merge-state stage:
 
-- A `MergeBlocked` stage WITH a `merge_block` goes to `retry_blocked_merge` (`merge_handler/blocked_retry.rs`): it repeats the merge when its inputs changed and never gets a resolver. A block is an environment state (operator operation, target checked out elsewhere, uncommitted overlap), not a content conflict.
+- A `MergeBlocked` stage WITH a `merge.block` goes to `retry_blocked_merge` (`merge_handler/blocked_retry.rs`): it repeats the merge when its inputs changed and never gets a resolver. A block is an environment state (operator operation, target checked out elsewhere, uncommitted overlap), not a content conflict.
 - Every other stage goes to `spawn_resolver_if_due` (`orchestrator/core/merge_handler/resolver_spawn.rs`), in order:
-  1. the merge gate: a branch touching a control path has any live resolver stopped (`resolver_stop.rs::stop_gated_resolvers`), then goes to review;
+  1. the early merge gate (a fail-open pre-filter): a branch touching a control path has any live resolver stopped (`resolver_stop.rs::stop_gated_resolvers`), then goes to review;
   2. stale-session cleanup, then the live-signal check;
   3. a strict existence check on the stage branch and the target branch: missing goes to review, a git failure is transient;
   4. a check that the stage worktree exists: a missing worktree goes to review, because the resolver works there;
   5. the resolver cap (6), which escalates to review;
-  6. a fresh re-read of the stage, the attempt reservation, and the spawn.
+  6. a fresh re-read of the stage, then `clean_merge_settled` (`resolver_spawn.rs`): when `merge_tree` is now clean (gate included) it lands the stage with no resolver; an unprovable landing goes to review, and a failure falls through to the resolver;
+  7. the attempt reservation and the spawn.
 
 A transient spawn failure (tmux, lock timeout) is retried every tick with no cap, and the daemon stays up meanwhile; this is an operator decision. A pass works from a stage copy that can go stale while it runs git, so every routing goes through `route_merge_stage_to_review` (`review_route.rs`), which re-checks the status inside the `update_stage` lock and writes nothing when a concurrent `loom stage merge` has already moved the stage on. `route_to_human_review` writes whatever the status and is kept for `try_auto_merge`, whose stage is `Completed`.
 
-`loom stage merge` hitting a conflict moves a `MergeConflict`/`MergeBlocked` stage to `MergeConflict` (the `MergeBlocked -> MergeConflict` edge exists for this), clears its `failure_info`, and prints what the daemon will do next, read from the resolver counter (`commands/stage/merge/next_step.rs`). A `Completed` stage that was never merged (auto-merge disabled) is left untouched and gets only the manual steps.
+The `--resolved` reply mapping is the pure `settle_for_landing` (`inbox_drain/merge_resolved.rs`). `loom stage merge` hitting a conflict moves a `MergeConflict`/`MergeBlocked` stage to `MergeConflict` (the `MergeBlocked -> MergeConflict` edge exists for this), clears its `failure_info`, and prints what the daemon will do next, read from the resolver counter (`commands/stage/merge/next_step.rs`). A `Completed` stage that was never merged (auto-merge disabled) is left untouched and gets only the manual steps.

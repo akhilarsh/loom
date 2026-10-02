@@ -152,7 +152,7 @@ Everything else is an explicit, inspectable outcome rather than a hang:
 | `NeedsHandoff`          | Context ceiling reached; a handoff was written                                                                                                                                   |
 | `WaitingForInput`       | The agent asked a question (raised automatically by the AskUser hooks)                                                                                                           |
 | `MergeConflict`         | Auto-merge hit a real conflict; a resolution session works on it in the stage's worktree                                                                                         |
-| `MergeBlocked`          | Merge cannot proceed: an operation in progress in your checkout, the target checked out in another worktree, or uncommitted changes overlapping the merge; retried automatically |
+| `MergeBlocked`          | Merge held by an operation in progress in your checkout, the target checked out elsewhere, or overlapping local changes (retried automatically); other failures get a resolver   |
 | `CompletedWithFailures` | Work finished but acceptance did not pass                                                                                                                                        |
 | `NeedsHumanReview`      | Escalated to a person                                                                                                                                                            |
 | `NeedsAdjudication`     | A disputed acceptance criterion is awaiting a verdict                                                                                                                            |

@@ -293,3 +293,13 @@ only thing that proves it reaches the path. See [[tests-that-cannot-fail]].
 **Prevention**: forbid the effect and name the delete path: "no git command that changes the index, refs or working tree state (add, rm, mv, commit, stash, reset); delete files with plain rm".
 
 **Fix**: later briefs in the same session said exactly that; the staged deletions belonged to the unit and were committed with it.
+
+## Sizes Measured Before cargo fmt, New Tests Not Run, and a Size Ratchet Gamed (2026-10-02)
+
+**What happened**: in the merge hardening round, two units measured file and function sizes before `cargo fmt` expanded them, so the maintainability gate failed afterwards. One unit's single-check filter skipped its own new test files, and two failing tests surfaced only at the gate. One unit kept a function inside its size ratchet with `#[rustfmt::skip]`, which games the ledger; it was replaced by grouping fields into `MergeRecord`.
+
+**Why**: briefs named the size limits but not when to measure, scoped the one allowed check to existing modules, and did not forbid formatting tricks.
+
+**Prevention**: briefs require measuring sizes after `cargo fmt`, running every test file the unit adds, and refactoring instead of using formatting attributes to fit a limit.
+
+**Fix**: the brief template carries those three lines; `MergeRecord` replaced the `#[rustfmt::skip]`.
