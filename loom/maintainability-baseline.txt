@@ -46,7 +46,7 @@ file src/skills/index.rs 564
 file src/verify/duplicate_detection.rs 436
 file src/verify/transitions/state.rs 433
 file tests/adjudication_e2e.rs 525
-file tests/e2e/tmux_backend.rs 588
+file tests/e2e/tmux_backend.rs 437
 file tests/failure_resume.rs 468
 file tests/integration/merge_conflict_recovery.rs 414
 file tests/integration/plan_verify.rs 1028

@@ -44,9 +44,11 @@ struct TmuxOutput {
 }
 
 struct Fixture {
-    _temp: tempfile::TempDir,
-    _tmux_tmpdir: TmuxTmpDirGuard,
+    // Field order is drop order: the tmux server must be killed (via its
+    // socket under TMUX_TMPDIR) before the tmpdir guard deletes that socket.
     _tmux_server: TmuxServerGuard,
+    _tmux_tmpdir: TmuxTmpDirGuard,
+    _temp: tempfile::TempDir,
     socket: String,
     port: u16,
     running: Arc<AtomicBool>,
