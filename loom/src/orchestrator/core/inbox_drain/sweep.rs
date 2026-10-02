@@ -133,6 +133,12 @@ fn fold_back_permissions(record: &Session, repo_root: &Path) {
         .worktree_path
         .clone()
         .unwrap_or_else(|| repo_root.to_path_buf());
+    if !checkout.exists() {
+        // A merge resolver's exit removes its worktree and folds the approvals
+        // back first, so there is nothing left to read.
+        tracing::debug!(session_id = %record.id, checkout = %checkout.display(), "Session checkout is gone; skipping the permission fold-back");
+        return;
+    }
     if let Err(error) = crate::fs::permissions::sync_worktree_permissions(&checkout, repo_root) {
         tracing::warn!(session_id = %record.id, error = %format!("{error:#}"), "Permission fold-back at session retirement failed");
     }

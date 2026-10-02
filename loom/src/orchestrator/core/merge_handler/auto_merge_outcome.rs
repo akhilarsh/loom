@@ -40,11 +40,7 @@ impl Orchestrator {
                     %target,
                     "Stage branch has zero commits beyond target; routing to human review"
                 );
-                let reason = format!(
-                    "branch {branch} has zero commits beyond {target}: the agent never \
-                     committed work for this stage. Re-queue it with `loom stage human-review \
-                     {stage_id} --approve`, or redo it manually."
-                );
+                let reason = Stage::zero_commit_reason(stage_id, target);
                 self.route_to_human_review(stage_id, reason, None);
                 true
             }

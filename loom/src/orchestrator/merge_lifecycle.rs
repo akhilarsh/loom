@@ -29,6 +29,8 @@ use crate::context::store::ContextStore;
 use crate::fs::work_dir::WorkDir;
 use crate::git::cleanup::{cleanup_after_merge, needs_cleanup, CleanupConfig, CleanupResult};
 
+use super::session_registry::live_sessions_for_stage;
+
 mod containment;
 
 /// What the cleanup step did.
@@ -40,8 +42,9 @@ mod containment;
 pub enum CleanupOutcome {
     /// No worktree and no branch left to remove.
     NothingToDo,
-    /// Deferred: the caller is running inside the worktree it would delete.
-    Deferred,
+    /// Deferred: something still works in the worktree it would delete. The
+    /// stage record gets no warning; a later attempt finishes the cleanup.
+    Deferred { reason: String },
     /// Refused: the stage branch still holds commits that are not in the
     /// target branch, and ancestry could not be verified.
     Refused { reason: String },
@@ -129,13 +132,9 @@ impl<'a> MergeLifecycle<'a> {
             return CleanupOutcome::NothingToDo;
         }
 
-        let defer = match cwd {
-            Some(cwd) => should_defer_cleanup(cwd, self.repo_root, self.stage_id),
-            None => true,
-        };
-        if defer {
-            tracing::debug!(stage = %self.stage_id, "Deferring cleanup: inside the worktree");
-            return CleanupOutcome::Deferred;
+        if let Some(reason) = self.deferral_reason(cwd) {
+            tracing::debug!(stage = %self.stage_id, %reason, "Deferring cleanup");
+            return CleanupOutcome::Deferred { reason };
         }
 
         if let Some(reason) = containment::containment_refusal(self, target_branch) {
@@ -145,6 +144,35 @@ impl<'a> MergeLifecycle<'a> {
         }
 
         self.finish_cleanup(cleanup_after_merge(self.stage_id, self.repo_root, config))
+    }
+
+    /// Why cleanup must wait: the caller's cwd is inside the stage worktree,
+    /// or a live session still runs for the stage (a resolver, a judge, or the
+    /// stage's own agent finishing its turn). A cwd that cannot be determined
+    /// or a session scan that fails defers too: neither can prove the
+    /// directory is idle.
+    fn deferral_reason(&self, cwd: Option<&Path>) -> Option<String> {
+        let inside = match cwd {
+            Some(cwd) => should_defer_cleanup(cwd, self.repo_root, self.stage_id),
+            None => true,
+        };
+        if inside {
+            return Some(format!(
+                "the command runs inside .worktrees/{}",
+                self.stage_id
+            ));
+        }
+        match live_sessions_for_stage(self.work_dir, self.stage_id) {
+            Ok(live) => live.first().map(|session| {
+                format!(
+                    "session {} ({}) still runs for the stage",
+                    session.id, session.session_type
+                )
+            }),
+            Err(error) => Some(format!(
+                "the stage's sessions could not be listed: {error:#}"
+            )),
+        }
     }
 
     /// Translate the result of `cleanup_after_merge` into a [`CleanupOutcome`]
@@ -339,6 +367,10 @@ pub fn should_defer_cleanup(cwd: &Path, repo_root: &Path, stage_id: &str) -> boo
 }
 
 #[cfg(test)]
+pub(crate) mod test_support;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_cleanup_warning;
+#[cfg(test)]
+mod tests_live_session;

@@ -63,8 +63,11 @@ impl Orchestrator {
             .context("Failed to check pending disputes")?;
         self.apply_pending_verdicts()
             .context("Failed to apply pending verdicts")?;
-        self.spawn_merge_resolution_sessions()
-            .context("Failed to spawn merge resolution sessions")
+        let spawned = self
+            .spawn_merge_resolution_sessions()
+            .context("Failed to spawn merge resolution sessions")?;
+        self.sweep_merged_leftovers();
+        Ok(spawned)
     }
 
     // Reconcile before sync on every tick; spools and inboxes drain even in manual mode,
@@ -86,6 +89,7 @@ impl Orchestrator {
             .context("Failed to spawn merge resolution sessions")?;
         self.drain_stage_spools();
         self.drain_session_inboxes();
+        self.sweep_merged_leftovers();
         tick::record(&self.config.work_dir, tick::Phase::Spawning);
         self.hand_off_frozen_contract_phases();
         let started = self

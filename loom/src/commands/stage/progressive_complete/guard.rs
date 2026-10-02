@@ -34,12 +34,7 @@ pub(in crate::commands::stage) fn zero_commit_review_reason(
     if landed {
         return None;
     }
-    Some(format!(
-        "branch {branch} has zero commits beyond {target}: the agent never committed work for \
-         this stage. Re-queue it with `loom stage human-review {} --approve`, or redo it \
-         manually.",
-        stage.id
-    ))
+    Some(Stage::zero_commit_reason(&stage.id, target))
 }
 
 /// Route `stage_id` to `NeedsHumanReview` on the fresh on-disk stage with

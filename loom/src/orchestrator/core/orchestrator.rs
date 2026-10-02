@@ -124,7 +124,9 @@ pub struct Orchestrator {
     /// Prevents the 5-second poll loop from flooding the logs.
     pub(super) spool_drain_error_logged: HashSet<String>,
     /// Adjudicator entry points. Stateless: dispute state lives on disk, so
-    /// this survives a daemon restart without losing anything.
+    /// this survives a daemon restart without losing anything. Disputes are
+    /// adjudicated by a session the terminal backend spawns on demand, so
+    /// nothing is resolved up front.
     pub(super) adjudicators: AdjudicatorRegistry,
     /// Why each ready-but-unstarted stage did not spawn on the current tick.
     ///
@@ -142,6 +144,11 @@ pub struct Orchestrator {
     /// is skipped while nothing it depends on changed. In memory only: a
     /// daemon restart retries once.
     pub(super) blocked_merge_inputs: HashMap<String, u64>,
+    /// Merged stages whose leftover worktree and branch have been dealt with
+    /// this daemon session: cleaned up, or refused or failed and reported.
+    /// A deferred cleanup is not recorded here and is retried every tick. In
+    /// memory only: a daemon restart sweeps once more.
+    pub(super) settled_leftovers: HashSet<String>,
     /// Injectable Remote Control probe, so crash classification is unit
     /// testable without depending on the host's own claude install.
     pub(super) remote_control_active: fn(&Path) -> bool,
@@ -165,21 +172,13 @@ impl Orchestrator {
         let liveness = LivenessService::new(Arc::clone(&backend));
         monitor.set_liveness(liveness.clone());
 
-        // Load skill index if skill routing is enabled
         let skill_index = if config.enable_skill_routing {
             Self::load_skill_index(&config)
         } else {
             None
         };
 
-        // Detect project languages for skill recommendations
         let detected_languages = detect_project_languages(&config.repo_root);
-
-        // Disputes are adjudicated by a session the terminal backend spawns on
-        // demand, so there is nothing to resolve up front: whether a session
-        // can be started at all is the backend's answer, given per spawn, and
-        // a failure escalates the dispute it was for rather than the run.
-        let adjudicators = AdjudicatorRegistry::new();
 
         Self::reconcile_plan_amendments(&config);
 
@@ -198,10 +197,11 @@ impl Orchestrator {
             verified_merged: HashSet::new(),
             spawn_skip_logged: HashSet::new(),
             spool_drain_error_logged: HashSet::new(),
-            adjudicators,
+            adjudicators: AdjudicatorRegistry::new(),
             spawn_blocks: HashMap::new(),
             queued_since: HashMap::new(),
             blocked_merge_inputs: HashMap::new(),
+            settled_leftovers: HashSet::new(),
             remote_control_active: crate::remote_control::resolve,
         })
     }

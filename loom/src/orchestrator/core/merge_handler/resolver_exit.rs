@@ -28,6 +28,7 @@ impl Orchestrator {
             eprintln!("Warning: Failed to remove merge signal: {e}");
         }
         self.active_sessions.remove(stage_id);
+        self.fold_back_resolver_permissions(stage_id);
 
         let mut stage = self.load_stage(stage_id)?;
         let target = resolve_target_branch(&self.config.base_branch, &self.config.repo_root);
@@ -57,6 +58,21 @@ impl Orchestrator {
             ),
         }
         Ok(())
+    }
+
+    /// Record the approvals the resolver collected in `.worktrees/<id>` before
+    /// any cleanup path removes it. Best effort: the inbox sweep that retires
+    /// the session finds the worktree gone and skips its own fold-back.
+    fn fold_back_resolver_permissions(&self, stage_id: &str) {
+        let repo_root = &self.config.repo_root;
+        let worktree = repo_root.join(".worktrees").join(stage_id);
+        if !worktree.exists() {
+            return;
+        }
+        if let Err(error) = crate::fs::permissions::sync_worktree_permissions(&worktree, repo_root)
+        {
+            tracing::warn!(stage_id = %stage_id, error = %format!("{error:#}"), "Permission fold-back from the merge resolver's worktree failed");
+        }
     }
 
     /// Whether git proves `stage`, flagged merged, is in `target`. A flag is
@@ -134,3 +150,7 @@ impl Orchestrator {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "resolver_exit_tests.rs"]
+mod tests;

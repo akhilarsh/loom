@@ -43,6 +43,52 @@ pub(crate) fn repo_with_stage_branches(stage_ids: &[&str]) -> TempDir {
     temp
 }
 
+/// A repo like [`repo_with_stage_branches`] in which each `loom/<id>` and `main`
+/// edit `seed.txt` differently, so merging a branch into `main` conflicts.
+pub(crate) fn repo_with_conflicting_stage_branches(stage_ids: &[&str]) -> TempDir {
+    let temp = repo_with_stage_branches(&[]);
+    let root = temp.path();
+    for stage_id in stage_ids {
+        git_ok(root, &["checkout", "-q", "-b", &format!("loom/{stage_id}")]);
+        edit_seed(root, "stage side");
+        git_ok(root, &["checkout", "-q", "main"]);
+    }
+    edit_seed(root, "main side");
+    temp
+}
+
+/// A repo with one branch `loom/<stage_id>` that adds `work.txt` after `main`
+/// moved on in `seed.txt`: the branch merges into `main` cleanly. Returns the
+/// branch head.
+pub(crate) fn repo_with_clean_stage_branch(stage_id: &str) -> (TempDir, String) {
+    let temp = repo_with_stage_branches(&[stage_id]);
+    let root = temp.path();
+    commit_on_stage_branch(root, stage_id, "work.txt");
+    edit_seed(root, "main side");
+    let head =
+        crate::git::runner::run_git_checked(&["rev-parse", &format!("loom/{stage_id}")], root)
+            .unwrap();
+    (temp, head)
+}
+
+/// Commit `text` as the content of `seed.txt` on the checked-out branch.
+fn edit_seed(root: &Path, text: &str) {
+    std::fs::write(root.join("seed.txt"), text).unwrap();
+    git_ok(root, &["commit", "-q", "-am", text]);
+}
+
+/// Replace the plain directory `orchestrator_with_conflict` made for
+/// `.worktrees/<stage_id>` with a real worktree on `loom/<stage_id>`.
+pub(crate) fn use_real_worktree(root: &Path, stage_id: &str) {
+    let path = root.join(".worktrees").join(stage_id);
+    std::fs::remove_dir(&path).unwrap();
+    let branch = format!("loom/{stage_id}");
+    git_ok(
+        root,
+        &["worktree", "add", "-q", path.to_str().unwrap(), &branch],
+    );
+}
+
 /// Commit `path` on `loom/<stage_id>`, leaving `main` checked out.
 pub(crate) fn commit_on_stage_branch(root: &Path, stage_id: &str, path: &str) {
     git_ok(root, &["checkout", "-q", &format!("loom/{stage_id}")]);

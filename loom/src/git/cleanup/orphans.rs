@@ -223,8 +223,12 @@ fn report_orphan_cleanup(stage_id: &str, outcome: CleanupOutcome, failures: &mut
     match outcome {
         CleanupOutcome::Done(result) => print_cleanup_result(stage_id, &result),
         CleanupOutcome::NothingToDo => {}
-        CleanupOutcome::Deferred => {
-            println!("  {} {} (cleanup deferred)", "─".dimmed(), stage_id);
+        CleanupOutcome::Deferred { reason } => {
+            println!(
+                "  {} {} (cleanup deferred: {reason})",
+                "─".dimmed(),
+                stage_id
+            );
         }
         CleanupOutcome::Refused { reason } => {
             println!("  {} {} (skipped: {reason})", "─".dimmed(), stage_id);

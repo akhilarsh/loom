@@ -165,3 +165,19 @@ fn old_telemetry_tickets_are_deleted_silently() {
     assert!(!ticket.exists());
     assert!(young.stalled_warned.is_empty() && old.stalled_warned.is_empty());
 }
+
+#[test]
+fn a_session_whose_worktree_vanished_is_retired_without_a_fold_back() {
+    let fx = fixture();
+    let mut record = fx.record(SessionType::Merge, SessionStatus::Completed);
+    record.worktree_path = Some(fx.repo_root.join(".worktrees").join("gone"));
+    crate::fs::session_files::save_session(&record, &fx.work_dir).unwrap();
+    let capsule = write_capsule(&fx, &record);
+    let mut report = PassReport::default();
+
+    sweep_sessions(&mut fx.host(false), &fx.tick(Utc::now()), &mut report);
+
+    assert_eq!(report.retired, vec![record.id.clone()]);
+    assert!(!capsule.exists());
+    assert!(!crate::fs::permissions::approved::approved_path(&fx.work_dir).exists());
+}

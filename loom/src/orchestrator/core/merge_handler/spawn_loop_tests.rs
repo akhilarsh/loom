@@ -8,7 +8,8 @@ use chrono::{Duration, Utc};
 use super::super::merge_gate::stale_merge_retirement_blocks_spawn;
 use super::super::resolver_attempts::{attempts_dir, attempts_file, MAX_MERGE_RESOLVER_ATTEMPTS};
 use super::test_fixtures::{
-    commit_on_stage_branch, orchestrator_with_conflict, repo_with_stage_branches,
+    commit_on_stage_branch, git_ok, orchestrator_with_conflict, repo_with_clean_stage_branch,
+    repo_with_conflicting_stage_branches, repo_with_stage_branches, use_real_worktree,
     with_read_only_stages,
 };
 use crate::models::session::{Session, SessionType};
@@ -60,7 +61,7 @@ fn a_missing_target_branch_routes_the_stage_to_review() {
 
 #[test]
 fn a_spent_resolver_budget_escalates_the_stage_to_review() {
-    let repo = repo_with_stage_branches(&["spent"]);
+    let repo = repo_with_conflicting_stage_branches(&["spent"]);
     let mut orchestrator = orchestrator_with_conflict(repo.path(), "spent");
     spend_attempts(&orchestrator, "spent", MAX_MERGE_RESOLVER_ATTEMPTS);
     let reason = review_reason_after_one_pass(&mut orchestrator, "spent");
@@ -70,7 +71,7 @@ fn a_spent_resolver_budget_escalates_the_stage_to_review() {
 
 #[test]
 fn an_attempt_the_counter_cannot_record_routes_the_stage_to_review() {
-    let repo = repo_with_stage_branches(&["unrecorded"]);
+    let repo = repo_with_conflicting_stage_branches(&["unrecorded"]);
     let mut orchestrator = orchestrator_with_conflict(repo.path(), "unrecorded");
     // A file where the counter directory belongs: the counter reads 0, but no
     // attempt can be written, so no resolver may spawn.
@@ -119,7 +120,7 @@ fn a_review_routing_that_cannot_be_saved_is_retried_next_pass() {
 /// routing, the merge gate, the budget escalation, and the reservation.
 #[test]
 fn a_stage_merged_while_the_pass_held_a_stale_copy_is_left_untouched() {
-    let repo = repo_with_stage_branches(&["gated", "spent", "due"]);
+    let repo = repo_with_conflicting_stage_branches(&["gated", "spent", "due"]);
     commit_on_stage_branch(repo.path(), "gated", ".claude/settings.json");
     let mut orchestrator = orchestrator_with_conflict(repo.path(), "gone");
     spend_attempts(&orchestrator, "spent", MAX_MERGE_RESOLVER_ATTEMPTS);
@@ -151,6 +152,47 @@ fn a_stage_merged_while_the_pass_held_a_stale_copy_is_left_untouched() {
     let spent = std::fs::read_to_string(attempts_file(&work_dir, "spent")).unwrap();
     assert_eq!(spent, MAX_MERGE_RESOLVER_ATTEMPTS.to_string());
     assert!(!attempts_file(&work_dir, "due").exists());
+}
+
+#[test]
+fn a_conflict_that_became_clean_is_landed_without_a_resolver() {
+    let (repo, _head) = repo_with_clean_stage_branch("healed");
+    let mut orchestrator = orchestrator_with_conflict(repo.path(), "healed");
+    use_real_worktree(repo.path(), "healed");
+    let work_dir = orchestrator.config.work_dir.clone();
+
+    assert_eq!(orchestrator.spawn_merge_resolution_sessions().unwrap(), 0);
+
+    let stage = load_stage("healed", &work_dir).unwrap();
+    assert_eq!(stage.status, StageStatus::Completed);
+    assert!(stage.merged);
+    assert!(!attempts_file(&work_dir, "healed").exists());
+    assert!(orchestrator.active_sessions.is_empty());
+    assert!(!repo.path().join(".worktrees").join("healed").exists());
+}
+
+#[test]
+fn a_clean_merge_with_no_proof_of_the_recorded_commit_goes_to_review() {
+    let (repo, _head) = repo_with_clean_stage_branch("unproven");
+    git_ok(repo.path(), &["checkout", "-q", "--orphan", "side"]);
+    git_ok(
+        repo.path(),
+        &["commit", "-q", "--allow-empty", "-m", "elsewhere"],
+    );
+    let elsewhere =
+        crate::git::runner::run_git_checked(&["rev-parse", "HEAD"], repo.path()).unwrap();
+    git_ok(repo.path(), &["checkout", "-q", "-f", "main"]);
+    let mut orchestrator = orchestrator_with_conflict(repo.path(), "unproven");
+    update_stage("unproven", &orchestrator.config.work_dir, |stage| {
+        stage.completed_commit = Some(elsewhere.clone());
+        Ok(())
+    })
+    .unwrap();
+
+    let reason = review_reason_after_one_pass(&mut orchestrator, "unproven");
+
+    assert!(reason.contains("the merge landed in main"), "{reason}");
+    assert!(reason.contains("inspect loom/unproven"), "{reason}");
 }
 
 /// A stale tracked session of `session_type`, created `age_secs` ago.

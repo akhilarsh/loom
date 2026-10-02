@@ -80,10 +80,8 @@ fn trigger_and_clean_up(stage_id: &str, repo_root: &Path, work_dir: &Path) -> Re
 fn print_cleanup_outcome(stage_id: &str, outcome: CleanupOutcome) {
     match outcome {
         CleanupOutcome::NothingToDo => {}
-        CleanupOutcome::Deferred => {
-            println!(
-                "  Worktree cleanup deferred to the orchestrator (session is running inside the worktree)"
-            );
+        CleanupOutcome::Deferred { reason } => {
+            println!("  Worktree cleanup deferred to the orchestrator: {reason}");
             println!(
                 "  If no daemon is running, clean up manually with: loom worktree remove {stage_id}"
             );

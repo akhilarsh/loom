@@ -322,13 +322,13 @@ fn cleanup_defers_while_the_cwd_is_inside_the_worktree_it_would_remove() {
     // is a global side effect that breaks tests running in parallel.
     let inside = lifecycle.cleanup_with_cwd(Some(&worktree), "main", &quiet);
     assert!(
-        matches!(inside, CleanupOutcome::Deferred),
+        matches!(inside, CleanupOutcome::Deferred { .. }),
         "a cwd inside the worktree must defer, got {inside:?}"
     );
 
     let unknown = lifecycle.cleanup_with_cwd(None, "main", &quiet);
     assert!(
-        matches!(unknown, CleanupOutcome::Deferred),
+        matches!(unknown, CleanupOutcome::Deferred { .. }),
         "an undeterminable cwd must fail closed and defer, got {unknown:?}"
     );
 

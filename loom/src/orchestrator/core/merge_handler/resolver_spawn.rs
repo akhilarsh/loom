@@ -10,12 +10,14 @@
 
 use crate::git::branch::{branch_name_for_stage, resolve_target_branch};
 use crate::git::cleanup::branch_exists_strict;
+use crate::git::merge::{merge_tree, TreeMerge};
 use crate::models::stage::Stage;
 use crate::orchestrator::core::persistence::Persistence;
 use crate::orchestrator::core::{clear_status_line, Orchestrator};
 use crate::orchestrator::signals::find_live_merge_session_for_stage;
 use crate::orchestrator::terminal::backend::merge_resolver_worktree;
 
+use super::landing::Landing;
 use super::resolver_attempts::{
     merge_resolver_attempts, ReservedAttempt, MAX_MERGE_RESOLVER_ATTEMPTS,
 };
@@ -30,7 +32,9 @@ impl Orchestrator {
     /// through its signal) is left to finish. Otherwise a missing stage or
     /// target branch, a spent resolver budget, or an attempt the counter
     /// cannot record routes the stage to human review, and a stage that left
-    /// its merge state meanwhile gets no resolver. The resolver then spawns
+    /// its merge state meanwhile gets no resolver. A merge that has become
+    /// clean (the target moved, say) is landed here, with no resolver. The
+    /// resolver then spawns
     /// with its attempt recorded first; a failed spawn gives the attempt back
     /// and is retried next tick, unless `report_merge_spawn_failure` routes it
     /// to review.
@@ -44,6 +48,9 @@ impl Orchestrator {
             || self.missing_branch_blocks_spawn(stage_id, &branch, &target_branch)
             || self.missing_worktree_blocks_spawn(stage_id)
         {
+            return false;
+        }
+        if self.clean_merge_settled(stage_id, &branch, &target_branch) {
             return false;
         }
         let attempts = merge_resolver_attempts(&self.config.work_dir, stage_id);
@@ -64,6 +71,45 @@ impl Orchestrator {
                 false
             }
         }
+    }
+
+    /// Returns true when the merge of `branch` into `target` is clean now and
+    /// `stage_id` was settled here instead of by a resolver: landed and
+    /// cleaned up, or already recorded as held, conflicting or blocked by the
+    /// landing, or — when the landing left no proof the stage's commit is in
+    /// the target — routed to human review. A merge that conflicts, cannot be
+    /// computed, or whose landing failed falls through to a resolver, whose
+    /// signal carries the reason.
+    fn clean_merge_settled(&mut self, stage_id: &str, branch: &str, target: &str) -> bool {
+        let tree = merge_tree(
+            &self.config.repo_root,
+            &format!("refs/heads/{target}"),
+            &format!("refs/heads/{branch}"),
+        );
+        match tree {
+            Ok(TreeMerge::Clean { .. }) => {}
+            Ok(TreeMerge::Conflict { .. }) => return false,
+            Err(error) => {
+                tracing::warn!(stage_id = %stage_id, error = %format!("{error:#}"), "Could not check whether the merge is clean; spawning a resolver");
+                return false;
+            }
+        }
+        match self.land_stage_merge(stage_id, target) {
+            Landing::Merged => self.cleanup_resolved_merge(stage_id, target),
+            Landing::Held | Landing::Conflict(_) | Landing::Blocked(_) => {}
+            Landing::Unproven => {
+                let reason = format!(
+                    "the merge landed in {target} but the stage's recorded commit is not in it; \
+                     its work may be lost: inspect {branch}"
+                );
+                self.route_merge_stage_to_review(stage_id, reason, None);
+            }
+            Landing::Failed(error) => {
+                tracing::warn!(stage_id = %stage_id, %error, "Landing a clean merge failed; spawning a resolver");
+                return false;
+            }
+        }
+        true
     }
 
     /// Returns true — after stopping any resolver running for `stage_id` and

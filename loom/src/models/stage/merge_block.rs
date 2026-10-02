@@ -24,6 +24,18 @@ impl Stage {
         }
     }
 
+    /// Why a stage whose branch has zero commits beyond `target` goes to human
+    /// review instead of merging: a no-op merge would stand for work that was
+    /// never committed.
+    pub fn zero_commit_reason(stage_id: &str, target: &str) -> String {
+        let branch = crate::git::branch::branch_name_for_stage(stage_id);
+        format!(
+            "branch {branch} has zero commits beyond {target}: the agent never committed work \
+             for this stage. Re-queue it with `loom stage human-review {stage_id} --approve`, or \
+             redo it manually."
+        )
+    }
+
     /// Move the stage to `NeedsHumanReview` with `reason`, whatever its
     /// status, clearing any merge block. The merge gate uses it for a branch
     /// that touches a control path.
@@ -135,6 +147,17 @@ mod tests {
         stage.record_completed_commit_if_missing(Some("bbb"));
         stage.record_completed_commit_if_missing(None);
         assert_eq!(stage.completed_commit.as_deref(), Some("aaa"));
+    }
+
+    #[test]
+    fn zero_commit_reason_names_the_branch_target_and_requeue_command() {
+        let reason = Stage::zero_commit_reason("s1", "main");
+        assert!(reason.contains("loom/s1"), "{reason}");
+        assert!(reason.contains("zero commits beyond main"), "{reason}");
+        assert!(
+            reason.contains("loom stage human-review s1 --approve"),
+            "{reason}"
+        );
     }
 
     #[test]

@@ -47,9 +47,9 @@ fn unfinished_cleanup_message(stage_id: &str, outcome: &CleanupOutcome) -> Optio
     match outcome {
         CleanupOutcome::Refused { reason } => Some(format!("Worktree cleanup refused: {reason}")),
         CleanupOutcome::Failed(error) => Some(format!("Worktree cleanup failed: {error}")),
-        CleanupOutcome::Deferred => Some(format!(
-            "Worktree cleanup deferred: run from inside .worktrees/{stage_id}; it runs once \
-             that directory is no longer in use (or run `loom worktree remove {stage_id}`)"
+        CleanupOutcome::Deferred { reason } => Some(format!(
+            "Worktree cleanup deferred: {reason}. The daemon removes .worktrees/{stage_id} \
+             once nothing uses it (or run `loom worktree remove {stage_id}`)"
         )),
         CleanupOutcome::Done(_) | CleanupOutcome::NothingToDo => None,
     }
@@ -76,10 +76,22 @@ mod tests {
     }
 
     #[test]
-    fn deferred_cleanup_names_the_worktree_and_the_manual_command() {
-        let message = unfinished_cleanup_message("s", &CleanupOutcome::Deferred).unwrap();
-        assert!(message.contains(".worktrees/s"));
-        assert!(message.contains("loom worktree remove s"));
+    fn deferred_cleanup_names_each_reason_the_daemon_and_the_manual_command() {
+        for reason in [
+            "the command runs inside .worktrees/s",
+            "session session-1 (merge) still runs for the stage",
+        ] {
+            let outcome = CleanupOutcome::Deferred {
+                reason: reason.to_string(),
+            };
+            let message = unfinished_cleanup_message("s", &outcome).unwrap();
+            assert!(message.contains(reason), "{message}");
+            assert!(
+                message.contains("The daemon removes .worktrees/s"),
+                "{message}"
+            );
+            assert!(message.contains("loom worktree remove s"), "{message}");
+        }
     }
 
     #[test]
