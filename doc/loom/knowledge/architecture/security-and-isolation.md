@@ -153,8 +153,8 @@ and `sandbox.allow_unsandboxed_escape: true`. The error is a typed `SandboxPrefl
 (`crash_classification::spawn_failure_type`), not a generic error.
 
 `loom init` refuses an unconfined plan the same way, through `refuse_unconfined_sandbox`, which
-calls the same `sandbox::preflight::sandbox_policy_refusals` `loom run` uses — the interactive
-confirmation gate an unconfined plan used to get at `init` time is gone.
+calls the same `sandbox::preflight::sandbox_policy_refusals` `loom run` uses; `init` asks for no
+interactive confirmation.
 
 `commands/run/confinement.rs::require_confinement`, called from both `loom run` entry points'
 shared `run_startup_preflights` (`commands/run/mod.rs:115`), runs checks 1-4 (`validate_config`;
@@ -169,15 +169,19 @@ root: R, T, the scratch root, every grant, compared on canonicalized paths
 (`sandbox/control_surfaces/session_denies.rs::is_ancestor_of_writable_root`). The hard-link warning
 covers operator-owned executables only.
 
-The merge gate (`orchestrator/core/merge_handler/merge_gate.rs`) runs before an automatic merge and
-before a merge-resolution session is spawned: a branch whose diff touches `.claude/**`, `.mcp.json`,
-`.loom/**` or the git hooks directory is not merged, and its stage moves to `NeedsHumanReview` naming
-the paths. A preflight refusal during a merge-resolution spawn routes the stage to
-`NeedsHumanReview` with `SandboxSetupFailure` (`merge_spawn_block_reason`,
-`report_merge_spawn_failure`); other spawn errors still retry as before —
-`route_to_human_review` takes an `Option<FailureType>`, and the gate and the phantom-merge hold both
-pass `None`. `loom stage merge <id>` calls `git::merge::merge_stage` directly and stays the
-operator's ungated path, by design.
+The merge gate is the `MergeGate` argument of `git::merge::merge_stage`: under `MergeLock`,
+`MergeGate::Enforce` holds a branch whose merge-base or landing diff touches `.claude/**`,
+`.mcp.json`, `.loom/**` or the git hooks directory (`MergeResult::Held`), and the caller routes the
+stage to `NeedsHumanReview` naming the paths. `orchestrator/core/merge_handler/merge_gate.rs` adds
+fail-open pre-filters before an automatic merge and before a merge-resolution session is spawned. A
+preflight refusal during a merge-resolution spawn routes the stage to `NeedsHumanReview` with
+`SandboxSetupFailure` (`merge_spawn_block_reason`, `report_merge_spawn_failure`); other spawn errors
+retry — `route_to_human_review` takes an `Option<FailureType>`, and the gate and the phantom-merge
+hold both pass `None`. Every CLI merge path enforces the gate: `loom stage merge <id>`
+(`commands/stage/merge.rs` and `merge/landing.rs` pass `MergeGate::Enforce`), local `--resolved`,
+and the progressive merge of a CLI stage completion (`commands/stage/progressive_complete.rs`).
+Only `loom stage human-review --force-complete` passes `MergeGate::Bypass`, the operator's override.
+Full rules: [The merge gate](merge-flow.md#the-merge-gate).
 
 The hooks directory comes from a SCOPED read of `core.hooksPath` (local, then global, then system) —
 loom's own git runner prepends `-c core.hooksPath=/dev/null -c core.fsmonitor=false` to every git call

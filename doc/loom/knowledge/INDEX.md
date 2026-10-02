@@ -47,7 +47,7 @@
 | [plan-lifecycle-and-fields](architecture/plan-lifecycle-and-fields.md) | Plan fields v1/v2, checks, lints | 252 |
 | [quota-poller](architecture/quota-poller.md) | Usage-quota polling, caching, rendering | 31 |
 | [remote-control](architecture/remote-control.md) | Capability detection, preflight, naming | 82 |
-| [security-and-isolation](architecture/security-and-isolation.md) | 4-layer worktree defense | 195 |
+| [security-and-isolation](architecture/security-and-isolation.md) | 4-layer worktree defense | 199 |
 | [signal-generation](architecture/signal-generation.md) | Signal assembly: cache, append helpers, prefixes | 202 |
 | [skill-catalog](architecture/skill-catalog.md) | Two skill roots; 63 catalogued skills | 148 |
 | [source-graph](architecture/source-graph.md) | Source graph honesty contract, extractor, limits | 367 |
@@ -173,7 +173,7 @@
 | [knowledge-cli-gaps](concerns/knowledge-cli-gaps.md) | Knowledge CLI gaps and housekeeping | 105 |
 | [merge-and-recovery-edge-cases](concerns/merge-and-recovery-edge-cases.md) | Merge/retry/completion edge cases | 122 |
 | [runtime-and-session-safety](concerns/runtime-and-session-safety.md) | Runtime edge cases: tmux, orphan adoption | 150 |
-| [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: canary, creds, codex home | 280 |
+| [sandbox-and-confinement-gaps](concerns/sandbox-and-confinement-gaps.md) | Sandbox gaps: canary, creds, codex home | 300 |
 | [source-graph-known-gaps](concerns/source-graph-known-gaps.md) | Language limits, open decisions | 79 |
 | [source-graph-review-backlog](concerns/source-graph-review-backlog.md) | Unimplemented reviewer suggestions | 242 |
 | [state-confinement-gaps](concerns/state-confinement-gaps.md) | Shared package caches session-writable | 17 |

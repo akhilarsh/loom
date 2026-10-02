@@ -265,7 +265,27 @@ Fix direction (none chosen): per-session tool denies in the capsule (`--disallow
 
 ## A File Deny Stops Protecting a Live Session Once the Host Replaces the File
 
-Measured with bwrap 0.x on Linux (2026-10-02 session): a read-only bind of a single file (`--ro-bind f f`, how a file `denyWrite` is enforced) refuses writes and renames inside the sandbox while the host leaves the file alone. Once a host process replaces the file by rename (`echo new > f.tmp && mv f.tmp f`, which is how git writes refs, `config`, `config.worktree` and `packed-refs`: lock file then rename), the running sandbox resolves the path to the new file and can write it, and the write lands on the host. So every per-file deny (loom's `.git/config` and per-worktree `config.worktree` denies in `sandbox/control_surfaces/session_denies.rs`, and Claude Code's own `config`/`config.worktree`/`commondir` denies) protects a session only until the host first rewrites that file during the session. A directory deny is not affected by a file replaced inside it (to be confirmed per case). Related measurements: an empty loose `refs/heads/<b>` shadows `packed-refs` and breaks the branch (`No commits yet`, commits fail), which is what a deny on an absent ref path would leave on the host; `git update-ref` to the ref's current value does not turn a packed ref into a loose file.
+Measured with bwrap 0.11.1, git 2.53.0, Linux 7.1.5. A read-only bind of a single file (`--ro-bind f f`, how a file `denyWrite` is enforced) refuses writes and renames inside the sandbox while the host leaves the file alone. Once a host process replaces the file by rename (`echo new > f.tmp && mv f.tmp f`, which is how git writes refs, `config`, `config.worktree` and `packed-refs`: `open(<ref>.lock, O_EXCL)`, then `rename`), the running sandbox resolves the path to the new file and can write it, and the write lands on the host. So every per-file deny (loom's `.git/config` and per-worktree `config.worktree` denies in `sandbox/control_surfaces/session_denies.rs`, and Claude Code's own `config`/`config.worktree`/`commondir` denies) protects a session only until the host first rewrites that file during the session.
+
+| Host action during the session | Bind | Sandbox write |
+| --- | --- | --- |
+| replaces the file by rename (E1) | file | lands on the host |
+| rewrites the file in place, same inode (E5) | file | still refused |
+| unlinks the file (E6) | file | sandbox creates it; lands on the host |
+| replaces a file inside the directory by rename (E2) | directory | refused |
+| none; sandbox creates `dir/new` or renames a file inside (E3) | directory | both refused |
+| replaces the directory itself (E4) | directory | lands on the host |
+
+A directory deny therefore holds against files replaced, created or renamed inside it, and stops holding once the host replaces the directory. Related measurements: an empty loose `refs/heads/<b>` shadows `packed-refs` and breaks the branch (`No commits yet`, commits fail), which is what a deny on an absent ref path would leave on the host; `git update-ref` to the ref's current value does not turn a packed ref into a loose file.
+
+Git's `reference-transaction` hook, measured on the same host:
+
+- A `reference-transaction` hook in `.git/hooks` fires for `update-ref`, `branch -f`, `push .`, `fetch .`, `merge --ff-only`, `commit` and `reset --hard` (H1).
+- It is skipped by `-c core.hooksPath=/dev/null` and by a raw write of the ref file: the ref moves and the hook never runs (H2).
+- Run from a worktree under bwrap with `.loom/` read-only, a hook that appends to a ledger under `.loom/` cannot write it; the hook fails and git refuses the update (exit 128, ref unmoved) (H3). The same command with `-c core.hooksPath=/dev/null` moves the ref and writes nothing (H4).
+- An interactive operator Claude Code session in the main checkout can write `.loom/work` (H5).
+
+A git hook is therefore no gate against a sandboxed session, which can skip it.
 
 ## Session-Planted Replace Refs and Grafts Change What Loom's Git Sees
 
@@ -277,4 +297,4 @@ Measured on git 2.53:
 - A graft line `<A> <S>` makes `git merge-base --is-ancestor S A` succeed for a stage commit S that is not in A. `verify_merge_succeeded` then lets `sync_graph_with_stage_files` (`loom/src/orchestrator/core/recovery.rs`) mark the stage merged without the target moving, and the leftover sweep deletes its branch.
 - `GIT_NO_REPLACE_OBJECTS=1` (or `--no-replace-objects`) disables replace refs but NOT grafts. Only `GIT_GRAFT_FILE` pointed at an empty or missing file disables grafts (`/dev/null` works).
 
-Fix: set `GIT_NO_REPLACE_OBJECTS=1` and `GIT_GRAFT_FILE=/dev/null` in `git_command`; loom uses neither mechanism. `doc/plans/PLAN-target-ref-guard.md` (stage guard-core, worker W1) carries this fix.
+Fix: set `GIT_NO_REPLACE_OBJECTS=1` and `GIT_GRAFT_FILE=/dev/null` in `git_command`; loom uses neither mechanism.
