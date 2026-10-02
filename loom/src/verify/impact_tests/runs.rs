@@ -1,6 +1,6 @@
 //! Running each runner's selection and judging what it printed.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -8,6 +8,12 @@ use super::{ImpactOutcome, FULL_SUITE, IMPACT_TIMEOUT};
 use crate::skills::project::declares_dependencies;
 use crate::testrun::{classify, RunOutcome, RunOutput, TestRunnerAdapter, TestTarget};
 use crate::verify::criteria::{ProbeRun, ProbeRunner};
+
+/// A command longer than this many bytes displays shortened.
+const COMMAND_DISPLAY_CHARS: usize = 200;
+
+/// The most test names a failure lists.
+const SELECTED_NAMES_SHOWN: usize = 10;
 
 /// The selections of one completion check and what they left.
 pub(super) struct Selection<'a> {
@@ -34,13 +40,15 @@ impl<'a> Selection<'a> {
         }
     }
 
-    /// Run `adapter`'s selection of `targets` in `package` and judge it.
+    /// Run `adapter`'s selection of `targets` in `package` and judge it. A
+    /// selection that cannot be run (the command does not spawn, for one too long
+    /// for the OS to exec) is a note, never a failure.
     pub(super) fn run_group(
         &mut self,
         package: &Path,
         adapter: &dyn TestRunnerAdapter,
         targets: &[TestTarget],
-    ) -> Result<()> {
+    ) {
         let package_dir = self.root.join(package);
         if adapter.language() == "javascript" && missing_node_modules(&package_dir, self.root) {
             let name = package_label(package);
@@ -49,29 +57,36 @@ impl<'a> Selection<'a> {
                  installs it); {FULL_SUITE}"
             );
             self.notes.insert(note);
-            return Ok(());
+            return;
         }
         let Some(command) = adapter.select_command(targets, &package_dir) else {
             let runner = adapter.name();
             let note = format!("{runner} cannot select tests by file; {FULL_SUITE}");
             self.notes.insert(note);
-            return Ok(());
+            return;
         };
-        let run = self
-            .runner
-            .run(&command, &package_dir)
-            .with_context(|| format!("failed to run `{command}`"))?;
+        let shown = shown_command(&command, targets.len());
+        // Only the root cause is shown: the context chain repeats the whole command.
+        let run = match self.runner.run(&command, &package_dir) {
+            Ok(run) => run,
+            Err(error) => {
+                let cause = error.root_cause();
+                let note = format!("`{shown}` could not be run ({cause}); {FULL_SUITE}");
+                self.notes.insert(note);
+                return;
+            }
+        };
         if run.timed_out {
             let secs = IMPACT_TIMEOUT.as_secs();
-            let note = format!("`{command}` timed out after {secs} s; {FULL_SUITE}");
+            let note = format!("`{shown}` timed out after {secs} s; {FULL_SUITE}");
             self.notes.insert(note);
-            return Ok(());
+            return;
         }
-        self.judge(command, adapter, &run, targets);
-        Ok(())
+        self.judge(shown, adapter, &run, targets);
     }
 
-    /// Record a finished run as passed, a note, or a failure naming its tests.
+    /// Record a finished run, shown as `command`, as passed, a note, or a failure
+    /// naming its tests.
     fn judge(
         &mut self,
         command: String,
@@ -158,11 +173,29 @@ fn missing_node_modules(package_dir: &Path, root: &Path) -> bool {
             .any(|dir| dir.join("node_modules").is_dir())
 }
 
-/// The selected tests, as a failure names them.
+/// The command as a note shows it: a long one cut to its first
+/// `COMMAND_DISPLAY_CHARS` bytes and the number of targets it selects.
+fn shown_command(command: &str, target_count: usize) -> String {
+    if command.len() <= COMMAND_DISPLAY_CHARS {
+        return command.to_string();
+    }
+    let end = command.floor_char_boundary(COMMAND_DISPLAY_CHARS);
+    format!("{}… ({target_count} targets)", &command[..end])
+}
+
+/// The selected tests, as a failure names them: the first `SELECTED_NAMES_SHOWN`.
 fn selected(targets: &[TestTarget]) -> String {
     let names: Vec<&str> = targets
         .iter()
         .map(|target| target.name.as_deref().unwrap_or(&target.file))
         .collect();
-    format!("selected: {}", names.join(", "))
+    let shown = names[..names.len().min(SELECTED_NAMES_SHOWN)].join(", ");
+    match names.len().checked_sub(SELECTED_NAMES_SHOWN) {
+        Some(more) if more > 0 => format!("selected: {shown}, and {more} more"),
+        _ => format!("selected: {shown}"),
+    }
 }
+
+#[cfg(test)]
+#[path = "runs_tests.rs"]
+mod tests;

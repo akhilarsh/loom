@@ -124,7 +124,7 @@ fn run_with(
     let groups = group_targets(&graph.graph, &profile, &reached, &mut notes);
     let mut selection = Selection::new(&profile.root, runner, notes);
     for ((package, _), (adapter, targets)) in &groups {
-        selection.run_group(package, *adapter, targets)?;
+        selection.run_group(package, *adapter, targets);
     }
     selection.finish(&stage.id)
 }
