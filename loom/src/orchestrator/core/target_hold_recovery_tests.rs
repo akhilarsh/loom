@@ -1,6 +1,6 @@
 //! Recovery's merged-flag check against the target guard: a definite "not in
-//! the accepted tip" reverts `merged`, a guard record that cannot be read
-//! leaves it alone.
+//! the accepted tip" reverts `merged` whatever the live target holds, a
+//! guard record that cannot be read leaves it alone.
 
 use std::path::Path;
 use std::process::Command;
@@ -8,12 +8,14 @@ use std::process::Command;
 use serial_test::serial;
 use tempfile::TempDir;
 
+use crate::fs::permissions::scratch_home::ScratchHome;
 use crate::fs::work_dir::write_terminal_config;
-use crate::git::target_guard::RECORD_FILE;
+use crate::git::target_guard::{HoldReason, RECORD_FILE};
 use crate::models::session::{SessionBackendKind, TerminalConfig};
 use crate::models::stage::{Stage, StageStatus};
 use crate::orchestrator::core::recovery::Recovery;
 use crate::orchestrator::core::{Orchestrator, OrchestratorConfig};
+use crate::orchestrator::scheduling_report::BlockReason;
 use crate::plan::{schema::StageDefinition, ExecutionGraph};
 use crate::verify::transitions::{load_stage, save_stage};
 
@@ -139,32 +141,64 @@ fn a_commit_outside_the_accepted_tip_still_reverts_merged() {
     );
 }
 
-/// Points `HOME` at a scratch directory for its lifetime: creating a
-/// worktree writes `~/.claude.json`.
-struct ScratchHome {
-    _dir: TempDir,
-    original: Option<std::ffi::OsString>,
+/// `main` moved onto `commit` the way an agent would, with hooks off.
+fn agent_move(root: &Path, commit: &str) {
+    let args = ["-c", "core.hooksPath=/dev/null", "update-ref"];
+    git(root, &[&args[..], &["refs/heads/main", commit]].concat());
 }
 
-impl ScratchHome {
-    fn set() -> Self {
-        let dir = TempDir::new().unwrap();
-        let original = std::env::var_os("HOME");
-        std::env::set_var("HOME", dir.path());
-        Self {
-            _dir: dir,
-            original,
-        }
-    }
+#[test]
+#[serial]
+fn a_merged_commit_only_the_held_tip_contains_reverts_merged() {
+    let repo = repo();
+    let root = repo.path();
+    let side = side_commit(root);
+    let mut orchestrator = orchestrator(root);
+    assert_eq!(orchestrator.check_target_guard(), None);
+    agent_move(root, &side);
+    let hold = orchestrator
+        .check_target_guard()
+        .expect("the move was not held");
+    assert_eq!(hold.observed, side);
+    save_merged(&orchestrator, &side);
+
+    orchestrator.sync_graph_with_stage_files().unwrap();
+
+    let stage = load_stage(ID, &orchestrator.config.work_dir).unwrap();
+    assert!(
+        !stage.merged,
+        "a commit only the held live tip contains stayed merged"
+    );
 }
 
-impl Drop for ScratchHome {
-    fn drop(&mut self) {
-        match &self.original {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
-    }
+#[test]
+#[serial]
+fn a_rewrite_dropping_a_merged_commit_keeps_it_merged() {
+    let repo = repo();
+    let root = repo.path();
+    let seed = git(root, &["rev-parse", "main"]);
+    let merged = commit(root, "merged.txt", "merged work");
+    let mut orchestrator = orchestrator(root);
+    assert_eq!(orchestrator.check_target_guard(), None);
+    git(root, &["reset", "-q", "--hard", &seed]);
+    let rewritten = commit(root, "rewrite.txt", "rewritten history");
+    let hold = orchestrator
+        .check_target_guard()
+        .expect("the rewrite was not held");
+    assert_eq!(hold.observed, rewritten);
+    assert!(
+        hold.reasons.contains(&HoldReason::NotFastForward),
+        "{hold:?}"
+    );
+    save_merged(&orchestrator, &merged);
+
+    orchestrator.sync_graph_with_stage_files().unwrap();
+
+    let stage = load_stage(ID, &orchestrator.config.work_dir).unwrap();
+    assert!(
+        stage.merged,
+        "a rewrite of the live target reverted a merge the accepted tip holds"
+    );
 }
 
 #[test]
@@ -185,9 +219,10 @@ fn an_unreadable_guard_record_blocks_a_new_stage_spawn() {
     let resolved = orchestrator.resolve_worktree(ID, &stage).unwrap();
 
     assert!(resolved.is_none(), "a worktree was created");
-    assert!(
-        orchestrator.spawn_blocks.contains_key(ID),
-        "no block reason was recorded"
+    assert_eq!(
+        orchestrator.spawn_blocks.get(ID),
+        Some(&BlockReason::TargetHeld),
+        "the spawn was not held for the target"
     );
     let branch = Command::new("git")
         .args(["rev-parse", "--verify", "--quiet", "refs/heads/loom/s"])
@@ -195,4 +230,25 @@ fn an_unreadable_guard_record_blocks_a_new_stage_spawn() {
         .output()
         .unwrap();
     assert!(!branch.status.success(), "loom/s was created");
+}
+
+#[test]
+#[serial]
+fn a_repeating_probe_error_is_kept_once_until_a_probe_answers() {
+    let repo = repo();
+    let root = repo.path();
+    let mut orchestrator = orchestrator(root);
+    let main = git(root, &["rev-parse", "main"]);
+    let record = orchestrator.config.work_dir.join(RECORD_FILE);
+    std::fs::write(&record, "{ not json").unwrap();
+
+    assert!(orchestrator.probe_accepted(ID, &main, "main").is_err());
+    let logged = orchestrator.merge_probe_error.clone();
+    assert!(logged.is_some(), "the probe error was not logged");
+    assert!(orchestrator.probe_accepted("t", &main, "main").is_err());
+    assert_eq!(orchestrator.merge_probe_error, logged);
+
+    std::fs::remove_file(&record).unwrap();
+    assert!(orchestrator.probe_accepted(ID, &main, "main").unwrap());
+    assert_eq!(orchestrator.merge_probe_error, None);
 }

@@ -17,7 +17,9 @@ impl Orchestrator {
     /// A held target comes first, from a fresh guard check: the stage stays
     /// `MergeBlocked` with a `TargetHeld` block, before the ancestry finalize
     /// of a stage with no worktree or the zero-commit route below could take
-    /// a target an agent moved as the stage's merge.
+    /// a target an agent moved as the stage's merge. The check never answers
+    /// clear for a move it could not judge: with the merge lock taken it
+    /// judges the target without the lock, and an error holds the target.
     ///
     /// Phantom-merge guard: an existing branch with zero commits beyond the
     /// target would "merge" as a no-op, `completed_commit` would be filled from

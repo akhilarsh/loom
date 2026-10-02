@@ -448,7 +448,11 @@ impl Recovery for Orchestrator {
                             // just derived), run the ancestry check against the
                             // pass-hoisted target branch (P-3).
                             if let Some(completed_commit) = stage.completed_commit.clone() {
-                                match self.merged_into_accepted(&completed_commit, &target_branch) {
+                                match self.probe_accepted(
+                                    &stage.id,
+                                    &completed_commit,
+                                    &target_branch,
+                                ) {
                                     Ok(true) => {
                                         tracing::info!(
                                             stage_id = %stage.id,
@@ -496,16 +500,10 @@ impl Recovery for Orchestrator {
                                         );
                                         stuck_completed_stage_ids.push(stage.id.clone());
                                     }
-                                    Err(e) => {
+                                    Err(_) => {
                                         // Verification failed (e.g., transient git
-                                        // error). Do NOT write merged=true. Also a
-                                        // retry candidate.
-                                        tracing::error!(
-                                            stage_id = %stage.id,
-                                            error = %e,
-                                            "Merge verification errored for completed stage; \
-                                             leaving as Completed + !merged"
-                                        );
+                                        // error), logged by the probe. Do NOT write
+                                        // merged=true. Also a retry candidate.
                                         stuck_completed_stage_ids.push(stage.id.clone());
                                     }
                                 }
