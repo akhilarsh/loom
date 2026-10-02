@@ -45,7 +45,6 @@ impl Orchestrator {
         if let Err(reason) = check_resolved_worktree(
             &self.config.repo_root,
             stage_id,
-            &target,
             stage.completed_commit.as_deref(),
         ) {
             return Settle::Refused(reason);

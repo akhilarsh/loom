@@ -123,7 +123,7 @@ impl Orchestrator {
         completed_commit: Option<&str>,
     ) {
         if let Err(reason) =
-            check_resolved_worktree(&self.config.repo_root, stage_id, target, completed_commit)
+            check_resolved_worktree(&self.config.repo_root, stage_id, completed_commit)
         {
             self.report_unresolved_merge(stage_id, &reason);
             return;

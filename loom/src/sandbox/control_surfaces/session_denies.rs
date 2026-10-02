@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use super::{push_unique, surface_path, GLOB_CHARS, HOME_SURFACES};
 use crate::codex::CODEX_PLUGIN_DATA_GRANT;
+use crate::git::worktree::worktree_admin_dirs;
 
 /// `~/.claude/plugins`, relative to the home directory.
 const PLUGINS_DIR: &str = ".claude/plugins";
@@ -52,7 +53,9 @@ pub(crate) struct SessionDenies {
 }
 
 /// The capsule's write denies: the state root (`.loom`, and `.work` on the
-/// legacy layout), every section 11 control surface, and by location the
+/// legacy layout), every section 11 control surface, the `config.worktree` of
+/// every worktree that exists now (a later one is covered by the daemon's own
+/// check, `git::worktree::WorktreeGit::run`), and by location the
 /// worktree's own `.loom` and `.claude`, or from the checkout its
 /// `.worktrees` and `.claude`.
 ///
@@ -80,6 +83,11 @@ pub(crate) fn session_denies(inputs: &DenyInputs<'_>) -> Result<SessionDenies> {
     }
     denies.absolute(&repo.join(".git").join("hooks"), true)?;
     denies.absolute(&repo.join(".git").join("config"), false)?;
+    // With `extensions.worktreeConfig` git reads each worktree's
+    // `config.worktree`, which could name a command the daemon's git runs.
+    for admin in worktree_admin_dirs(repo)? {
+        denies.absolute(&admin.join("config.worktree"), false)?;
+    }
     for dir in inputs.executable_dirs {
         if is_ancestor_of_writable_root(dir, repo, inputs.worktree, inputs.writable_roots) {
             continue;

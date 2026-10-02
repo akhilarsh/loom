@@ -22,7 +22,7 @@ use crate::sandbox::control_surfaces::{session_writable_roots, WritableRootInput
 use crate::sandbox::preflight::HostFacts;
 use serde_json::Value;
 use serial_test::serial;
-use srt::{diagnostics, skip, Confined};
+use srt::{diagnostics, link_worktree, skip, Confined};
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
@@ -144,6 +144,10 @@ fn fake_home(home: &Path) -> (PathBuf, PathBuf) {
     (hooks_dir, loom_bin)
 }
 
+/// The fixture's administrative directories: the stage worktree's and another's.
+const OWN_ADMIN: &str = STAGE_ID;
+const OTHER_ADMIN: &str = "other";
+
 /// A git checkout with its state root, its own local settings and Remote
 /// Control off (so no launch runs a `claude --version` preflight), and a
 /// stage worktree holding the state-root symlink the worktree code plants.
@@ -161,6 +165,13 @@ fn repo_with_worktree(repo: &Path, worktree: &Path) {
         .expect("run git init");
     assert!(status.success(), "git init {}", repo.display());
     std::fs::create_dir_all(repo.join(".git/hooks")).unwrap();
+    // Two worktrees' admin dirs with the `config.worktree` the capsule denies.
+    for name in [OWN_ADMIN, OTHER_ADMIN] {
+        let admin = repo.join(".git/worktrees").join(name);
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(admin.join("config.worktree"), "").unwrap();
+    }
+    link_worktree(worktree, &repo.join(".git/worktrees").join(OWN_ADMIN));
     std::fs::write(repo.join(".claude/settings.local.json"), "{}").unwrap();
     std::fs::write(worktree.join(".claude/settings.json"), "{}").unwrap();
     let remote_control = RemoteControlConfig {
@@ -243,6 +254,14 @@ fn control_surfaces(f: &Fixture) -> Vec<PathBuf> {
         f.home.join(".local/bin/x"),
         f.home.join(".rustup/toolchains/x"),
         f.repo.join(".git/hooks/x"),
+        f.repo
+            .join(".git/worktrees")
+            .join(OWN_ADMIN)
+            .join("config.worktree"),
+        f.repo
+            .join(".git/worktrees")
+            .join(OTHER_ADMIN)
+            .join("config.worktree"),
     ]
 }
 

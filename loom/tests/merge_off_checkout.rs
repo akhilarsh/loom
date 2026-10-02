@@ -127,12 +127,12 @@ fn resolve_in_worktree(root: &Path, wt: &Path) {
         !run_git(wt, &["merge", "main"]).status.success(),
         "the merge must conflict"
     );
-    let reason = check_resolved_worktree(root, "s1", "main", own).expect_err("merge in progress");
+    let reason = check_resolved_worktree(root, "s1", own).expect_err("merge in progress");
     assert!(reason.contains("MERGE_HEAD"), "{reason}");
     std::fs::write(wt.join("conflict.txt"), "resolved\n").unwrap();
     git(wt, &["add", "conflict.txt"]);
     git(wt, &["commit", "--no-edit"]);
-    assert_eq!(check_resolved_worktree(root, "s1", "main", own), Ok(()));
+    assert_eq!(check_resolved_worktree(root, "s1", own), Ok(()));
 }
 
 #[test]

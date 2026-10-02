@@ -17,7 +17,9 @@
 //! the user's global and system files, so a filter defined there (git-lfs)
 //! keeps working. One exception: a repository that enables
 //! `extensions.worktreeConfig` also has git read `config.worktree` from the
-//! administrative directory, which sits beside the worktree's index.
+//! administrative directory, which sits beside the worktree's index. Every
+//! pinned run therefore refuses a worktree whose `config.worktree` holds a
+//! key git does not write itself (see `config_worktree`).
 
 use anyhow::{ensure, Context, Result};
 use std::ffi::OsStr;
@@ -27,6 +29,7 @@ use std::process::Output;
 use crate::fs::safe_read::read_to_string_bounded;
 use crate::fs::work_dir::WorkDir;
 use crate::git::runner::{run_git, run_git_checked, run_git_with_env};
+use crate::git::worktree::config_worktree::check_worktree_config;
 
 /// Largest `gitdir` or `commondir` file read from an administrative directory.
 const MAX_ADMIN_FILE_BYTES: usize = 4096;
@@ -41,6 +44,7 @@ pub struct WorktreeGit {
 /// The directories a pinned worktree's git runs with.
 #[derive(Debug, Clone)]
 struct Pin {
+    repo_root: PathBuf,
     git_dir: PathBuf,
     common_dir: PathBuf,
 }
@@ -72,6 +76,7 @@ impl WorktreeGit {
         Ok(Self {
             work_tree,
             pin: Some(Pin {
+                repo_root: repo_root.to_path_buf(),
                 git_dir,
                 common_dir,
             }),
@@ -93,11 +98,14 @@ impl WorktreeGit {
         &self.work_tree
     }
 
-    /// `git <args>` in the worktree, through [`run_git`].
+    /// `git <args>` in the worktree, through [`run_git`]. A pinned run first
+    /// refuses a worktree whose `config.worktree` git would act on
+    /// (`check_worktree_config`), so no command runs under it.
     pub fn run(&self, args: &[&str]) -> Result<Output> {
         let Some(pin) = &self.pin else {
             return run_git(args, &self.work_tree);
         };
+        check_worktree_config(&pin.repo_root, &pin.git_dir)?;
         let env: [(&str, &OsStr); 3] = [
             ("GIT_DIR", pin.git_dir.as_os_str()),
             ("GIT_WORK_TREE", self.work_tree.as_os_str()),
@@ -108,7 +116,7 @@ impl WorktreeGit {
 }
 
 /// The canonical common directory of the repository at `repo_root`.
-fn common_dir(repo_root: &Path) -> Result<PathBuf> {
+pub(super) fn common_dir(repo_root: &Path) -> Result<PathBuf> {
     let listed = run_git_checked(
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
         repo_root,

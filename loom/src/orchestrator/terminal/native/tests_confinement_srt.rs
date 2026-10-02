@@ -6,6 +6,13 @@
 //! session's home, a relative entry is relative to the working directory,
 //! the working directory itself is writable, and the network is closed.
 //!
+//! For a linked worktree it also emulates what Claude Code adds and srt does
+//! not: the whole git common directory is writable, minus the paths Claude
+//! Code denies there (`architecture/execution-containment.md`, "Claude Code
+//! Grants a Linked Worktree Its Whole Git Common Directory"). Without it
+//! every `.git/...` probe is refused merely for lying outside the writable
+//! set, whether or not loom's own deny exists.
+//!
 //! A probe counts only when its shell provably ran under srt: the shell
 //! prints `ALIVE` first and, for a write, the write's own exit code after
 //! it. srt's exit status cannot stand in for either: an srt that crashes
@@ -136,7 +143,74 @@ fn srt_settings(capsule: &Value, cwd: &Path, home: &Path) -> Value {
     };
     let mut allow_write = vec![cwd.display().to_string()];
     allow_write.extend(list("allowWrite"));
-    srt_document(list("denyRead"), allow_write, list("denyWrite"))
+    let mut deny_write = list("denyWrite");
+    if let Some(common) = linked_worktree_common_dir(cwd) {
+        allow_write.push(common.display().to_string());
+        deny_write.extend(claude_code_git_denies(&common));
+    }
+    srt_document(list("denyRead"), allow_write, deny_write)
+}
+
+/// The git common directory of `cwd` when it is a linked worktree: its
+/// `.git` is a file whose `gitdir:` line names `<common>/worktrees/<name>`.
+fn linked_worktree_common_dir(cwd: &Path) -> Option<PathBuf> {
+    let dot_git = std::fs::read_to_string(cwd.join(".git")).ok()?;
+    let admin = Path::new(
+        dot_git
+            .lines()
+            .find_map(|l| l.strip_prefix("gitdir:"))?
+            .trim(),
+    );
+    let admin = if admin.is_absolute() {
+        admin.to_path_buf()
+    } else {
+        cwd.join(admin)
+    };
+    let worktrees = admin.parent()?;
+    (worktrees.file_name()? == "worktrees")
+        .then(|| worktrees.parent().map(Path::to_path_buf))
+        .flatten()
+}
+
+/// Make `worktree` a linked worktree the way git does: a `.git` file naming
+/// its administrative directory `admin`, which points back at it. The srt
+/// translation keys the common directory grant on this file.
+pub(super) fn link_worktree(worktree: &Path, admin: &Path) {
+    let dot_git = worktree.join(".git");
+    std::fs::write(&dot_git, format!("gitdir: {}\n", admin.display())).unwrap();
+    std::fs::write(admin.join("gitdir"), format!("{}\n", dot_git.display())).unwrap();
+}
+
+/// The paths Claude Code itself denies inside the common directory it
+/// grants (`architecture/execution-containment.md`, "Claude Code Grants a
+/// Linked Worktree Its Whole Git Common Directory"): `hooks`, `config`,
+/// `config.lock`, `config.worktree`, `commondir`, both alternates files, and
+/// each existing `worktrees/*/{config.worktree,commondir}`.
+fn claude_code_git_denies(common: &Path) -> Vec<String> {
+    let mut denied: Vec<PathBuf> = [
+        "hooks",
+        "config",
+        "config.lock",
+        "config.worktree",
+        "commondir",
+        "objects/info/alternates",
+        "objects/info/http-alternates",
+    ]
+    .iter()
+    .map(|name| common.join(name))
+    .collect();
+    let admins = std::fs::read_dir(common.join("worktrees"))
+        .into_iter()
+        .flatten()
+        .flatten();
+    for admin in admins {
+        denied.push(admin.path().join("config.worktree"));
+        denied.push(admin.path().join("commondir"));
+    }
+    denied
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect()
 }
 
 fn srt_document(

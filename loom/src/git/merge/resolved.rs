@@ -9,12 +9,12 @@
 use std::path::Path;
 
 use crate::git::branch::branch_name_for_stage;
-use crate::git::runner::run_git;
 use crate::git::worktree::WorktreeGit;
 
 /// Verify that the resolver left the worktree of `stage_id` ready to merge
-/// into `target_branch`. `Err` is the reason, worded for the resolver and the
-/// operator.
+/// into its target branch (the target is not inspected: `merge_stage` merges
+/// whatever it holds, so none is passed). `Err` is the reason, worded for the
+/// resolver and the operator.
 ///
 /// The worktree must be registered, sit on `loom/<stage_id>`, have no merge
 /// in progress, no unmerged paths and no tracked change, and its HEAD must
@@ -24,16 +24,13 @@ use crate::git::worktree::WorktreeGit;
 /// behind. A target that moved since the resolver merged it is not refused:
 /// `merge_stage` merges the new commits or reports a conflict.
 ///
-/// The check also refuses a repository with `extensions.worktreeConfig`: git
-/// would then read the worktree's own `config.worktree`, which the agent
-/// writes, and could run a filter it defines.
+/// A worktree whose `config.worktree` holds a key git does not write itself is
+/// refused by [`WorktreeGit`] before any command runs.
 pub fn check_resolved_worktree(
     repo_root: &Path,
     stage_id: &str,
-    target_branch: &str,
     completed_commit: Option<&str>,
 ) -> Result<(), String> {
-    refuse_worktree_config(repo_root, stage_id, target_branch)?;
     let commit = completed_commit.ok_or_else(|| {
         format!(
             "no completed commit is recorded for stage '{stage_id}'; loom cannot prove its \
@@ -49,37 +46,6 @@ pub fn check_resolved_worktree(
     })?;
     check_branch_and_index(&git, stage_id)?;
     check_work_survived(&git, commit)
-}
-
-/// Refuse when the main repository enables `extensions.worktreeConfig`.
-fn refuse_worktree_config(
-    repo_root: &Path,
-    stage_id: &str,
-    target_branch: &str,
-) -> Result<(), String> {
-    let output = run_git(
-        &[
-            "config",
-            "--type=bool",
-            "--get",
-            "extensions.worktreeConfig",
-        ],
-        repo_root,
-    )
-    .map_err(|error| format!("cannot read the repository configuration: {error:#}"))?;
-    match output.status.code() {
-        Some(1) => Ok(()),
-        Some(0) if String::from_utf8_lossy(&output.stdout).trim() != "true" => Ok(()),
-        Some(0) => Err(format!(
-            "the repository enables extensions.worktreeConfig, so loom cannot inspect the \
-             stage worktree safely; merge it by hand: merge loom/{stage_id} into \
-             '{target_branch}' from a clean checkout of '{target_branch}'"
-        )),
-        _ => Err(format!(
-            "cannot read the repository configuration: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )),
-    }
 }
 
 /// HEAD on `loom/<stage_id>`, no merge in progress, no unmerged path, no
@@ -200,7 +166,7 @@ mod tests {
     }
 
     fn check(repo: &TempDir, commit: &str) -> Result<(), String> {
-        check_resolved_worktree(repo.path(), "s", "main", Some(commit))
+        check_resolved_worktree(repo.path(), "s", Some(commit))
     }
 
     fn refusal(repo: &TempDir, commit: &str) -> String {
@@ -251,7 +217,7 @@ mod tests {
     #[test]
     fn a_missing_completed_commit_is_refused() {
         let (repo, _wt, _commit) = repo_with_worktree();
-        let reason = check_resolved_worktree(repo.path(), "s", "main", None).unwrap_err();
+        let reason = check_resolved_worktree(repo.path(), "s", None).unwrap_err();
         assert_eq!(
             reason,
             "no completed commit is recorded for stage 's'; loom cannot prove its work \
@@ -266,13 +232,18 @@ mod tests {
     }
 
     #[test]
-    fn a_repository_with_worktree_config_enabled_is_refused() {
-        let (repo, _wt, commit) = repo_with_worktree();
+    fn sparse_keys_in_config_worktree_pass_and_other_keys_are_refused() {
+        let (repo, wt, commit) = repo_with_worktree();
         git_ok(
             repo.path(),
             &["config", "extensions.worktreeConfig", "true"],
         );
-        assert!(refusal(&repo, &commit).contains("extensions.worktreeConfig"));
+        let admin = git_out(&wt, &["rev-parse", "--absolute-git-dir"]);
+        let file = Path::new(&admin).join("config.worktree");
+        std::fs::write(&file, "[core]\n\tsparseCheckout = true\n").unwrap();
+        assert_eq!(check(&repo, &commit), Ok(()));
+        std::fs::write(&file, "[filter \"x\"]\n\tclean = true\n").unwrap();
+        assert!(refusal(&repo, &commit).contains("filter.x.clean"));
     }
 
     #[test]

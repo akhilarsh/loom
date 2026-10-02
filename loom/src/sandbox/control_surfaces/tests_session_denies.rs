@@ -277,3 +277,44 @@ fn a_path_no_rule_can_name_literally_refuses_the_spawn() {
     .unwrap_err();
     assert!(format!("{error:#}").contains("repo[1]"), "{error:#}");
 }
+
+/// A repository with two registered worktrees, `s1` and `s2`.
+fn repo_with_two_worktrees() -> (TempDir, PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().canonicalize().unwrap().join("repo");
+    crate::verify::contracts::test_support::contract_worktree(&repo, "s1");
+    let added = crate::git::runner::run_git(
+        &["worktree", "add", "-q", "-b", "loom/s2", ".worktrees/s2"],
+        &repo,
+    )
+    .unwrap();
+    assert!(added.status.success(), "{added:?}");
+    (tmp, repo)
+}
+
+#[test]
+fn every_worktrees_config_worktree_is_denied_to_every_session_kind() {
+    let (_tmp, repo) = repo_with_two_worktrees();
+    let state_root = repo.join(".loom").join("work");
+    for worktree in [Some(repo.join(".worktrees").join("s1")), None] {
+        let denies = session_denies(&DenyInputs {
+            repo_root: &repo,
+            state_root: &state_root,
+            worktree: worktree.as_deref(),
+            executable_dirs: &[],
+            plugin_entries: None,
+            writable_roots: &[],
+        })
+        .unwrap();
+        for name in ["s1", "s2"] {
+            let file = repo
+                .join(".git/worktrees")
+                .join(name)
+                .join("config.worktree");
+            let path = file.to_str().unwrap();
+            assert!(has(&denies.deny_write, path), "{worktree:?} {denies:?}");
+            let rule = format!("Edit(/{path})");
+            assert!(has(&denies.edit, &rule), "{worktree:?} {denies:?}");
+        }
+    }
+}

@@ -7,6 +7,7 @@
 //!
 //! - `base`: Base branch resolution for worktree creation
 //! - `checks`: Validation checks (git availability, worktree support)
+//! - `config_worktree`: Guards for a worktree's `config.worktree` file
 //! - `discovery`: Worktree lookup and stage ID extraction
 //! - `operations`: Core CRUD operations (create, remove, list, get_or_create)
 //! - `parser`: Git worktree output parsing
@@ -16,6 +17,7 @@
 
 mod base;
 mod checks;
+mod config_worktree;
 mod discovery;
 mod operations;
 mod parser;
@@ -26,6 +28,7 @@ mod settings;
 // Re-export all public items for backwards compatibility
 pub use base::{resolve_base_branch, BaseBranchError, ResolvedBase};
 pub use checks::{check_git_available, check_worktree_support, get_worktree_path, worktree_exists};
+pub use config_worktree::worktree_admin_dirs;
 pub use discovery::{
     extract_stage_id_from_path, extract_worktree_stage_id, find_worktree_by_prefix,
 };
