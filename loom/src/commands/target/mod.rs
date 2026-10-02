@@ -8,7 +8,11 @@
 pub mod accept;
 pub mod status;
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;
+#[cfg(test)]
+mod tests_refusal;
+#[cfg(test)]
+mod tests_status;
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -16,9 +20,7 @@ use std::path::{Path, PathBuf};
 use crate::commands::common::{resolve_state_dir, resolve_work_dir};
 use crate::fs::resolve_target_branch_from_config;
 use crate::git::cleanup::branch_exists_strict;
-use crate::git::target_guard::{
-    guarded_refs, pending_hold, recorded_holds, target_key, Hold, RECORD_FILE,
-};
+use crate::git::target_guard::{pending_hold, recorded_targets, Hold, RECORD_FILE};
 
 /// The state directory, main repository root and target branch of the
 /// workspace containing the current directory. A malformed config is an
@@ -36,8 +38,10 @@ fn resolve_context() -> Result<(PathBuf, PathBuf, String)> {
 /// accept: removing the record would make the next run trust that move.
 ///
 /// Reads only the guard record, never `config.toml`, so a malformed config
-/// cannot block the recovery path. A record that cannot be read refuses; no
-/// record proceeds.
+/// cannot block the recovery path. Every target the record holds is judged
+/// against its current tip, so a hold the operator has since resolved (by
+/// restoring the accepted tip) no longer refuses. A record that cannot be read
+/// refuses; no record proceeds.
 pub(crate) fn refuse_unreviewed_move(repo_root: &Path) -> Result<()> {
     let work_dir = resolve_state_dir(repo_root);
     let record = work_dir.join(RECORD_FILE);
@@ -47,12 +51,9 @@ pub(crate) fn refuse_unreviewed_move(repo_root: &Path) -> Result<()> {
     if !present {
         return Ok(());
     }
-    let unreadable = || format!("cannot read the target guard record {}", record.display());
-    if let Some((target, hold)) = recorded_holds(&work_dir).with_context(unreadable)?.first() {
-        return refusal(target, hold);
-    }
-    for reference in guarded_refs(&work_dir).with_context(unreadable)? {
-        let target = target_key(&reference);
+    let targets = recorded_targets(&work_dir)
+        .with_context(|| format!("cannot read the target guard record {}", record.display()))?;
+    for target in &targets {
         if !branch_exists_strict(target, repo_root)? {
             bail!(
                 "the target branch {target} no longer exists, so loom cannot tell whether it \
@@ -68,11 +69,6 @@ pub(crate) fn refuse_unreviewed_move(repo_root: &Path) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// An object id cut to 12 characters.
-pub(super) fn abbrev(id: &str) -> &str {
-    id.get(..12).unwrap_or(id)
 }
 
 fn refusal(target: &str, hold: &Hold) -> Result<()> {

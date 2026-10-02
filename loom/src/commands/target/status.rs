@@ -3,17 +3,20 @@
 use anyhow::Result;
 use std::path::Path;
 
-use super::{abbrev, resolve_context};
+use super::resolve_context;
 use crate::git::branch::branch_ref;
 use crate::git::merge::rev_parse;
 use crate::git::target_guard::{
-    accept_command, accepted_tip, attestation_latched, attestation_mode, pending_hold,
+    abbrev, accept_command, accepted_tip, attestation_latched, attestation_mode, pending_hold,
     recorded_hold, recorded_holds, restore_commands, target_key, AttestationMode, Hold,
     RECORD_FILE,
 };
 
 /// Print the report for the current workspace's target. Read-only: it takes
-/// no lock and writes nothing, and exits 0 whatever it finds.
+/// no lock and writes nothing. It exits 0 for every state of the guard, an
+/// unreadable record and a target branch that does not resolve included; a
+/// malformed `config.toml` or a git failure while reading the repository is an
+/// error.
 pub fn execute() -> Result<()> {
     let (work_dir, repo_root, target) = resolve_context()?;
     print!("{}", report(&repo_root, &work_dir, &target)?);
@@ -24,7 +27,10 @@ pub fn execute() -> Result<()> {
 /// state of the target with the commands to review, accept or restore a hold.
 pub(crate) fn report(repo_root: &Path, work_dir: &Path, target: &str) -> Result<String> {
     let key = target_key(target);
-    let current = rev_parse(repo_root, &branch_ref(key))?;
+    let current = match rev_parse(repo_root, &branch_ref(key)) {
+        Ok(current) => current,
+        Err(error) => return Ok(unresolved_report(work_dir, key, &error)),
+    };
     if let Err(error) = recorded_holds(work_dir) {
         return Ok(unreadable_report(work_dir, key, &current, &error));
     }
@@ -41,8 +47,10 @@ pub(crate) fn report(repo_root: &Path, work_dir: &Path, target: &str) -> Result<
         attestation_line(repo_root, work_dir, key)?,
     ];
     match (recorded_hold(work_dir, key)?, accepted) {
+        // A target restored to its accepted tip is clear, whatever hold the
+        // record still carries: the next check drops it.
+        (_, Some(accepted)) if accepted == current => lines.push("State: in sync".into()),
         (Some(hold), _) => lines.extend(held_lines(repo_root, key, &hold)?),
-        (None, Some(accepted)) if accepted == current => lines.push("State: in sync".into()),
         (None, Some(accepted)) => {
             let pending = pending_hold(repo_root, work_dir, key)?;
             lines.extend(moved_lines(&accepted, &current, pending));
@@ -50,6 +58,34 @@ pub(crate) fn report(repo_root: &Path, work_dir: &Path, target: &str) -> Result<
         (None, None) => lines.push("State: not guarded yet".into()),
     }
     Ok(lines.join("\n") + "\n")
+}
+
+/// The report when the target branch does not resolve (deleted, or unreadable
+/// by git): restore it at the accepted tip, or remove the record to start over.
+fn unresolved_report(work_dir: &Path, key: &str, error: &anyhow::Error) -> String {
+    let reference = branch_ref(key);
+    let record = work_dir.join(RECORD_FILE);
+    let mut lines = vec![
+        format!("Target: {key}"),
+        format!("State: {reference} does not resolve: {error:#}"),
+    ];
+    match accepted_tip(work_dir, key) {
+        Ok(Some(accepted)) => {
+            lines.push(format!("Accepted: {accepted}"));
+            lines.push(format!("Restore: git update-ref {reference} {accepted}"));
+        }
+        Ok(None) => lines.push("Accepted: not recorded yet".to_string()),
+        Err(error) => lines.push(format!(
+            "Guard record {} is unreadable: {error:#}",
+            record.display()
+        )),
+    }
+    lines.push(format!(
+        "To start over instead, remove {} once you have reviewed the repository; loom then \
+         records the target afresh",
+        record.display()
+    ));
+    lines.join("\n") + "\n"
 }
 
 /// The report when the guard record cannot be read: the daemon holds the
