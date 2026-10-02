@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use crate::git::branch::resolve_target_branch;
 use crate::git::{blocked_merge_inputs, MergeBlock};
-use crate::models::stage::Stage;
+use crate::models::stage::{Stage, StageStatus};
+use crate::orchestrator::core::persistence::Persistence;
 use crate::orchestrator::core::{clear_status_line, Orchestrator};
 use crate::orchestrator::signals::find_live_merge_session_for_stage;
 
@@ -89,6 +90,28 @@ impl Orchestrator {
                 "Retry of a blocked merge failed; retrying next tick"
             ),
             Landing::Held | Landing::Conflict(_) | Landing::Blocked(_) => {}
+        }
+    }
+
+    /// Drop the retry memo of every stage that is no longer `MergeBlocked`
+    /// with a typed block: a stage that left that state by other means (an
+    /// operator re-queue, a conflict) must not carry its entry into a later
+    /// block with identical inputs, which would skip that block's first retry.
+    pub(super) fn prune_retry_memos(&mut self) {
+        let remembered: Vec<String> = self
+            .blocked_merge_inputs
+            .keys()
+            .chain(self.refused_merge_attempts.keys())
+            .cloned()
+            .collect();
+        for stage_id in remembered {
+            let still_blocked = self.load_stage(&stage_id).is_ok_and(|stage| {
+                stage.status == StageStatus::MergeBlocked && stage.merge.block.is_some()
+            });
+            if !still_blocked {
+                self.blocked_merge_inputs.remove(&stage_id);
+                self.refused_merge_attempts.remove(&stage_id);
+            }
         }
     }
 

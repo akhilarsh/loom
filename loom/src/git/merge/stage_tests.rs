@@ -176,6 +176,27 @@ fn target_not_checked_out_is_advanced_with_update_ref() {
 }
 
 #[test]
+fn a_full_ref_target_is_advanced_with_update_ref() {
+    let repo = init_repo();
+    let root = repo.path();
+    stage_branch(root, "s1", &[("b.txt", "branch")]);
+    git_ok(root, &["checkout", "-b", "other"]);
+    let work = lock_dir();
+
+    let result = merge_stage(
+        "s1",
+        "refs/heads/main",
+        root,
+        work.path(),
+        MergeGate::Enforce,
+    )
+    .unwrap();
+
+    assert!(matches!(result, MergeResult::Success { .. }), "{result:?}");
+    assert_eq!(parent_count(root, "main"), 2);
+}
+
+#[test]
 fn target_checked_out_in_another_worktree_blocks() {
     let repo = init_repo();
     let root = repo.path();

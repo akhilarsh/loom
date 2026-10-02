@@ -919,7 +919,7 @@ impl Recovery for Orchestrator {
                 &target_branch,
                 &self.config.repo_root,
             )
-            .unwrap_or(0);
+            .unwrap_or(1); // a failed probe counts as work: never discard on doubt
             let mut mutation_applied = false;
             let updated =
                 update_stage_at_path(stage_id, stage_path, &self.config.work_dir, |stage| {

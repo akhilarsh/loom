@@ -162,7 +162,7 @@ fn require_merged_history(
     )?;
     if resources.branch_exists {
         require_ancestor(
-            &resources.branch_name,
+            &branch_ref(&resources.branch_name),
             target_branch,
             repo_root,
             "stage branch head",
@@ -177,7 +177,7 @@ fn require_merged_history(
     }
     if resources.base_branch_present {
         require_ancestor(
-            &resources.base_branch_name,
+            &branch_ref(&resources.base_branch_name),
             target_branch,
             repo_root,
             "stage base branch head",

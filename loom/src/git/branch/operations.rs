@@ -25,9 +25,27 @@ pub fn delete_branch(name: &str, force: bool, repo_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Get the current branch name
+/// Get the current branch name, or `HEAD` on a detached HEAD.
+///
+/// Reads the symbolic ref rather than `rev-parse --abbrev-ref`, which prints
+/// `heads/<name>` when a tag of the same name exists.
 pub fn current_branch(repo_root: &Path) -> Result<String> {
-    run_git_checked(&["rev-parse", "--abbrev-ref", "HEAD"], repo_root)
+    let output = run_git(&["symbolic-ref", "-q", "HEAD"], repo_root)?;
+    if output.status.success() {
+        let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return Ok(head
+            .strip_prefix("refs/heads/")
+            .unwrap_or(&head)
+            .to_string());
+    }
+    // `-q` exits 1 with no output on a detached HEAD; anything else is a failure.
+    if output.status.code() == Some(1) {
+        return Ok("HEAD".to_string());
+    }
+    anyhow::bail!(
+        "git symbolic-ref HEAD failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    )
 }
 
 /// List all branches
@@ -162,5 +180,32 @@ mod tests {
         let result = resolve_target_branch(&config_branch, repo_root);
 
         assert_eq!(result, "main");
+    }
+
+    fn git_in(repo_root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?} failed");
+    }
+
+    #[test]
+    fn current_branch_ignores_a_tag_named_like_the_branch() {
+        let temp_dir = init_test_repo();
+        let repo_root = temp_dir.path();
+        assert_eq!(current_branch(repo_root).unwrap(), "main");
+
+        git_in(repo_root, &["tag", "main"]);
+        assert_eq!(current_branch(repo_root).unwrap(), "main");
+    }
+
+    #[test]
+    fn current_branch_is_head_when_detached() {
+        let temp_dir = init_test_repo();
+        let repo_root = temp_dir.path();
+        git_in(repo_root, &["checkout", "-q", "--detach"]);
+        assert_eq!(current_branch(repo_root).unwrap(), "HEAD");
     }
 }

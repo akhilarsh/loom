@@ -4,6 +4,7 @@
 //! optionally initializes from a plan file, and creates stage files.
 
 mod backend;
+mod base_branch;
 mod cleanup;
 mod execute;
 mod plan_setup;

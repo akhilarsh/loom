@@ -201,3 +201,26 @@ fn a_watched_directory_disables_memoization() {
     assert_eq!(on_disk(&orchestrator).status, StageStatus::MergeBlocked);
     assert!(!orchestrator.blocked_merge_inputs.contains_key(ID));
 }
+
+#[test]
+fn a_stage_that_left_merge_blocked_loses_its_retry_memo() {
+    let (_repo, mut orchestrator) = blocked_stage();
+    orchestrator.retry_blocked_merge(&on_disk(&orchestrator));
+    orchestrator
+        .refused_merge_attempts
+        .insert(ID.to_string(), Instant::now());
+
+    orchestrator.prune_retry_memos();
+    assert!(orchestrator.blocked_merge_inputs.contains_key(ID));
+    assert!(orchestrator.refused_merge_attempts.contains_key(ID));
+
+    update_stage(ID, &orchestrator.config.work_dir, |stage| {
+        stage.route_to_review("operator takes over");
+        Ok(())
+    })
+    .unwrap();
+    orchestrator.prune_retry_memos();
+
+    assert!(!orchestrator.blocked_merge_inputs.contains_key(ID));
+    assert!(!orchestrator.refused_merge_attempts.contains_key(ID));
+}

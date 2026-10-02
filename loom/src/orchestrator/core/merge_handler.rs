@@ -369,7 +369,7 @@ impl Orchestrator {
             return Ok(0);
         }
         let mut spawned = 0;
-        // Read all stage files
+        self.prune_retry_memos();
         for entry in std::fs::read_dir(&stages_dir)? {
             let entry = entry?;
             let path = entry.path();

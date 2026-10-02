@@ -1,8 +1,8 @@
 //! Plan initialization and stage creation for loom init.
 
+use super::base_branch::checked_out_branch;
 use crate::fs::stage_files::stage_file_path;
 use crate::fs::work_dir::{self, WorkDir};
-use crate::git::branch::current_branch;
 use crate::models::session::{SessionBackendKind, TerminalConfig};
 use crate::models::stage::{PlanIdentity, Stage};
 use crate::orchestrator::provision::persist_plan_snapshots;
@@ -185,8 +185,7 @@ pub fn initialize_with_plan(
         println!("  {} {}", "⚠".yellow().bold(), warning.yellow());
     }
 
-    let base_branch =
-        current_branch(&std::env::current_dir()?).context("Failed to get current git branch")?;
+    let base_branch = checked_out_branch(&std::env::current_dir()?)?;
 
     // Store source_path as relative to the project root so it works from
     // both the main repo and worktrees (where the state directory is a symlink).

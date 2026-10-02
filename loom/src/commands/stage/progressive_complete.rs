@@ -4,11 +4,13 @@
 //! completes successfully with passing acceptance criteria.
 
 use anyhow::{bail, Result};
+use chrono::Utc;
 use std::path::Path;
 
 use crate::git::branch::branch_name_for_stage;
 use crate::git::get_branch_head;
 use crate::git::merge::{MergeBlock, MergeGate};
+use crate::models::failure::{FailureInfo, FailureType};
 use crate::models::stage::Stage;
 use crate::orchestrator::merge_lifecycle::MergeLifecycle;
 use crate::orchestrator::{get_merge_point, merge_completed_stage, ProgressiveMergeResult};
@@ -161,7 +163,7 @@ fn block_failed_merge(
     error: &anyhow::Error,
 ) -> Result<MergeOutcome> {
     eprintln!("Progressive merge failed: {error}");
-    let outcome = mark_blocked(stage, work_dir, completed_commit)?;
+    let outcome = mark_blocked(stage, work_dir, completed_commit, &format!("{error:#}"))?;
     eprintln!("Stage '{}' marked as MergeBlocked", stage.id);
     eprintln!("  Fix the issue and run: loom stage retry {}", stage.id);
     Ok(outcome)
@@ -178,7 +180,25 @@ fn block_missing_branch(
         stage_id = %stage.id,
         "Progressive merge: branch missing — cannot verify merge succeeded"
     );
-    mark_blocked(stage, work_dir, completed_commit)
+    let reason = format!(
+        "branch {} is missing, so the merge cannot be verified",
+        branch_name_for_stage(&stage.id)
+    );
+    mark_blocked(stage, work_dir, completed_commit, &reason)
+}
+
+/// Enter `MergeBlocked` without a typed block: an untyped failure replaces any
+/// typed block an earlier attempt left, and `reason` goes into `failure_info`
+/// so `loom status` shows it, as the daemon's merge failures do.
+fn block_untyped(stage: &mut Stage, reason: &str) -> Result<()> {
+    stage.clear_merge_block();
+    stage.try_mark_merge_blocked()?;
+    stage.failure_info = Some(FailureInfo {
+        failure_type: FailureType::InfrastructureError,
+        detected_at: Utc::now(),
+        evidence: reason.lines().map(str::to_owned).collect(),
+    });
+    Ok(())
 }
 
 /// Re-apply only the merge-block transition and the captured commit onto the
@@ -187,14 +207,12 @@ fn mark_blocked(
     stage: &mut Stage,
     work_dir: &Path,
     completed_commit: Option<String>,
+    reason: &str,
 ) -> Result<MergeOutcome> {
-    // An untyped failure replaces any typed block an earlier attempt left.
-    stage.clear_merge_block();
-    stage.try_mark_merge_blocked()?;
+    block_untyped(stage, reason)?;
     update_stage(&stage.id, work_dir, |s| {
         s.completed_commit = completed_commit.clone();
-        s.clear_merge_block();
-        s.try_mark_merge_blocked()
+        block_untyped(s, reason)
     })?;
     Ok(MergeOutcome::Blocked)
 }
@@ -370,27 +388,4 @@ pub fn complete_with_merge(
 }
 
 #[cfg(test)]
-mod mark_blocked_tests {
-    use super::*;
-    use crate::models::stage::StageStatus;
-    use crate::verify::transitions::{load_stage, save_stage};
-
-    #[test]
-    fn an_untyped_merge_failure_drops_a_stale_typed_block() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let mut stage = Stage {
-            id: "s".to_string(),
-            status: StageStatus::Executing,
-            ..Stage::default()
-        };
-        stage.merge.block = Some(MergeBlock::TargetMoved);
-        save_stage(&stage, dir.path()).unwrap();
-
-        mark_blocked(&mut stage, dir.path(), None).unwrap();
-
-        let saved = load_stage("s", dir.path()).unwrap();
-        assert_eq!(saved.status, StageStatus::MergeBlocked);
-        assert_eq!(saved.merge.block, None);
-        assert_eq!(stage.merge.block, None);
-    }
-}
+mod mark_blocked_tests;

@@ -128,6 +128,25 @@ fn verified_cleanup_refuses_unmerged_stage_base_branch() {
 }
 
 #[test]
+fn verified_cleanup_ignores_a_tag_shadowing_the_stage_branch() {
+    let temp = init_repo();
+    let root = temp.path();
+    let (worktree, commit) = create_stage_worktree(root, "shadowed");
+    merge_stage(root, "shadowed");
+    // The branch gains an unmerged commit while a tag of the same name sits
+    // at the merged commit; a bare branch name would resolve to the tag.
+    fs::write(worktree.join("later.txt"), "unmerged\n").unwrap();
+    git_ok(&worktree, &["add", "later.txt"]);
+    git_ok(&worktree, &["commit", "-m", "unmerged work"]);
+    git_ok(root, &["tag", "loom/shadowed", &commit]);
+
+    let error = cleanup_verified_stage("shadowed", &commit, "main", root).unwrap_err();
+    assert!(error.to_string().contains("stage branch head"));
+    assert!(worktree.exists());
+    assert!(branch_exists_strict("loom/shadowed", root).unwrap());
+}
+
+#[test]
 fn verified_cleanup_refuses_when_both_resources_are_absent() {
     let temp = init_repo();
     let root = temp.path();

@@ -228,9 +228,22 @@ fn stash_warning_outranks_every_other_state() {
     assert!(note.contains("the merge of stash-stage stashed your uncommitted changes"));
     assert!(note.contains("git stash pop"), "{note}");
     assert!(
-        note.contains("git update-ref -d refs/loom/autostash/stash-stage-9"),
+        note.contains("(backups: refs/loom/autostash/stash-stage-9)"),
         "{note}"
     );
+    assert!(note.contains("git update-ref -d <ref>"), "{note}");
+}
+
+#[test]
+fn stash_warning_lists_every_backup_ref() {
+    let mut stage = make_stage_summary("stash-stage", StageStatus::Completed);
+    stage.stash_warning =
+        Some("refs/loom/autostash/stash-stage-1, refs/loom/autostash/stash-stage-2".to_string());
+
+    let entries = attention_entries(&[stage]);
+
+    let note = entries[0].note.as_deref().unwrap();
+    assert!(note.contains("refs/loom/autostash/stash-stage-1, refs/loom/autostash/stash-stage-2"));
 }
 
 #[test]

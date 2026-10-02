@@ -123,8 +123,8 @@ pub fn attention_entries(stages: &[StageSummary]) -> Vec<AttentionEntry> {
 
 fn attention_entry(stage: &StageSummary) -> Option<AttentionEntry> {
     // Unrestored changes are data at risk, so they outrank every other state.
-    if let Some(backup_ref) = stage.stash_warning.as_deref() {
-        return Some(stash_entry(stage, backup_ref));
+    if let Some(backup_refs) = stage.stash_warning.as_deref() {
+        return Some(stash_entry(stage, backup_refs));
     }
     if stage.cleanup_warning.is_some() {
         return Some(cleanup_entry(stage));
@@ -136,13 +136,13 @@ fn attention_entry(stage: &StageSummary) -> Option<AttentionEntry> {
     status_entry(stage)
 }
 
-/// `backup_ref` is the ref the merge kept the stashed changes in.
-fn stash_entry(stage: &StageSummary, backup_ref: &str) -> AttentionEntry {
+/// `backup_refs` is every ref a merge kept stashed changes in, joined by ", ".
+fn stash_entry(stage: &StageSummary, backup_refs: &str) -> AttentionEntry {
     let guidance = Guidance {
         note: Some(format!(
             "the merge of {} stashed your uncommitted changes in the main checkout and could \
-             not put them back: restore them with `git stash pop` (or from {backup_ref}), then \
-             delete the backup with `git update-ref -d {backup_ref}`",
+             not put them back: restore them with `git stash list` / `git stash pop` (backups: \
+             {backup_refs}), then delete each backup with `git update-ref -d <ref>`",
             stage.id
         )),
         ..Guidance::run("git stash list")

@@ -78,11 +78,33 @@ fn a_refused_fast_forward_with_a_working_pop_puts_everything_back() {
 }
 
 #[test]
-fn a_fast_forward_that_errors_with_a_working_pop_puts_everything_back() {
+fn a_fast_forward_that_errors_leaves_the_stash_unpopped() {
     let repo = init_repo();
     let root = repo.path();
     overlapping_checkout(root);
-    let (head, edited) = (rev(root, "main"), read(root));
+    let head = rev(root, "main");
+    // The pop would work: it must not be tried on a tree of unknown state.
+    let _guard = inject(Failures {
+        fast_forward_error: true,
+        ..Failures::default()
+    });
+
+    let MergeResult::Blocked(MergeBlock::StashNotRestored { backup_ref }) = merge(root) else {
+        panic!("expected StashNotRestored");
+    };
+
+    assert_eq!(rev(root, "main"), head);
+    git_out(root, &["rev-parse", "--verify", &backup_ref]);
+    assert!(git_out(root, &["stash", "list"]).contains("stash@{0}"));
+    assert_eq!(read(root), LINES, "the changes are only in the stash");
+}
+
+#[test]
+fn a_fast_forward_that_errors_without_a_stash_is_a_refusal() {
+    let repo = init_repo();
+    let root = repo.path();
+    stage_branch(root, "s1", &[("g.txt", "new\n")]);
+    let head = rev(root, "main");
     let _guard = inject(Failures {
         fast_forward_error: true,
         ..Failures::default()
@@ -95,29 +117,6 @@ fn a_fast_forward_that_errors_with_a_working_pop_puts_everything_back() {
     };
     assert!(detail.contains("simulated spawn failure"), "{detail}");
     assert_eq!(rev(root, "main"), head);
-    assert_eq!(read(root), edited);
-    assert_eq!(git_out(root, &["stash", "list"]), "");
-}
-
-#[test]
-fn a_fast_forward_that_errors_with_a_failing_pop_names_the_stash() {
-    let repo = init_repo();
-    let root = repo.path();
-    overlapping_checkout(root);
-    let head = rev(root, "main");
-    let _guard = inject(Failures {
-        fast_forward_error: true,
-        pop: true,
-        ..Failures::default()
-    });
-
-    let MergeResult::Blocked(MergeBlock::StashNotRestored { backup_ref }) = merge(root) else {
-        panic!("expected StashNotRestored");
-    };
-
-    assert_eq!(rev(root, "main"), head);
-    git_out(root, &["rev-parse", "--verify", &backup_ref]);
-    assert!(git_out(root, &["stash", "list"]).contains("stash@{0}"));
 }
 
 #[test]

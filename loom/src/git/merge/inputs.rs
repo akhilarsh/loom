@@ -17,7 +17,7 @@ use super::checkout_files::{checked_stdout, porcelain_status};
 use super::checkout_state::status_paths;
 use super::in_progress::git_dir_for_repo_path;
 use super::operator_operation;
-use crate::git::branch::branch_name_for_stage;
+use crate::git::branch::{branch_name_for_stage, branch_ref};
 use crate::git::runner::run_git;
 
 /// Hash of the inputs of an `UncommittedOverlap`, `FastForwardRefused`,
@@ -39,8 +39,8 @@ pub fn blocked_merge_inputs(
     let mut hasher = DefaultHasher::new();
     let stage_branch = branch_name_for_stage(stage_id);
     for reference in [
-        format!("refs/heads/{target_branch}"),
-        format!("refs/heads/{stage_branch}"),
+        branch_ref(target_branch),
+        branch_ref(&stage_branch),
         "HEAD".to_string(),
     ] {
         hash_tip(&mut hasher, repo_root, &reference)?;

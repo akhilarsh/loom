@@ -22,11 +22,11 @@ const OVERLAP_HEADERS: [&str; 4] = [
 ];
 
 /// `merge --ff-only` from `old` to `new`, then restore a stash made for it
-/// (when `backup_ref` is set). Every exit restores first: on a refused or
-/// failed fast-forward the stash is popped and `removed` is written back; a
-/// pop that fails is a [`MergeBlock::StashNotRestored`], never an `Err`. A
-/// fast-forward that errors (git did not start, or timed out) is reported as
-/// a refusal, since the operator's checkout has to be put back either way.
+/// (when `backup_ref` is set). After a clean refusal (git exited non-zero
+/// having changed nothing) the stash is popped and `removed` is written back;
+/// a pop that fails is a [`MergeBlock::StashNotRestored`], never an `Err`.
+/// A fast-forward that errors (git did not start, or timed out mid-checkout)
+/// leaves the checkout in an unknown state, so see [`after_errored_fast_forward`].
 pub(super) fn fast_forward(
     repo: &Path,
     (old, new): (&str, &str),
@@ -42,7 +42,15 @@ pub(super) fn fast_forward(
             return Ok(Advance::Advanced { stash });
         }
         Ok(Err(stderr)) => stderr,
-        Err(error) => format!("{error:#}"),
+        Err(error) => {
+            return Ok(after_errored_fast_forward(
+                repo,
+                new,
+                removed,
+                backup_ref,
+                &format!("{error:#}"),
+            ))
+        }
     };
     let stash_restored = match backup_ref {
         Some(_) => pop_stash(repo),
@@ -58,6 +66,30 @@ pub(super) fn fast_forward(
         return Ok(Advance::Blocked(MergeBlock::TargetMoved));
     }
     Ok(Advance::Blocked(refused_block(&stderr)))
+}
+
+/// The block after a fast-forward that errored. A killed checkout may have
+/// left the working tree half updated, so the stash is not popped onto it: it
+/// stays, named by [`MergeBlock::StashNotRestored`]. Removed untracked files
+/// are written back only where nothing exists now. With no stash made, the
+/// error is reported as a refusal.
+fn after_errored_fast_forward(
+    repo: &Path,
+    new: &str,
+    removed: &[String],
+    backup_ref: Option<String>,
+    error: &str,
+) -> Advance {
+    let absent: Vec<String> = removed
+        .iter()
+        .filter(|path| repo.join(path).symlink_metadata().is_err())
+        .cloned()
+        .collect();
+    restore_files(repo, new, &absent);
+    match backup_ref {
+        Some(backup_ref) => Advance::Blocked(MergeBlock::StashNotRestored { backup_ref }),
+        None => Advance::Blocked(refused_block(error)),
+    }
 }
 
 /// `Ok(Err(stderr))` when git refused the fast-forward.

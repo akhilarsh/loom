@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::git::branch::branch_ref;
 use crate::git::runner::{run_git, run_git_checked};
 use crate::git::worktree::list_worktrees;
 
@@ -239,9 +240,10 @@ pub fn advance_target(
 /// whose directory is gone (deleted, not yet pruned) holds nothing: `update-ref`
 /// is safe there.
 fn checked_out_at(repo: &Path, branch: &str) -> Result<Option<PathBuf>> {
+    let reference = branch_ref(branch);
     Ok(list_worktrees(repo)?
         .into_iter()
-        .filter(|wt| wt.branch.as_deref() == Some(branch))
+        .filter(|wt| wt.branch.as_deref().map(branch_ref).as_ref() == Some(&reference))
         .find(|wt| !matches!(wt.path.try_exists(), Ok(false)))
         .map(|wt| wt.path))
 }
@@ -260,7 +262,7 @@ fn update_ref(
     pending: &mut PendingMerge,
 ) -> Result<Advance> {
     let (old, new) = (pending.old().to_string(), pending.commit()?);
-    let reference = format!("refs/heads/{target}");
+    let reference = branch_ref(target);
     let reason = format!("loom: merge loom/{stage_id}");
     let output = run_git(&["update-ref", "-m", &reason, &reference, &new, &old], repo)?;
     if output.status.success() {
