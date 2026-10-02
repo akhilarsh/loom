@@ -118,3 +118,13 @@ the only reason attribution does not reach every commit.
 **Prevention:** before telling the operator anything about a stage's current state, read it from `loom status` or the stage file. Treat transcripts as evidence of past behavior only.
 
 **Fix:** the operator corrected it.
+
+## A Commit Piped Through tail Hid a Pre-Commit Failure (2026-10-02)
+
+**What happened**: the orchestrator committed three groups with `git commit ... | tail -1`. The pre-commit rustdoc check rejected the first commit (a public doc linked a private fn), `tail` showed only a trailing line, and the next two `git add` calls stacked every group into one staged set. The failure surfaced only when `git log` showed no new commit.
+
+**Why**: a pipeline's exit status is the last command's, and `tail -1` keeps whatever line happens to be last, so neither the status nor the output said the commit failed.
+
+**Prevention**: check `git commit`'s own exit status (redirect its output to a file and test `$?`, or grep the output for `error`), and confirm with `git log --oneline -1` before staging the next group.
+
+**Fix**: unstaged, fixed the doc link, committed each group with its exit status checked.

@@ -47,7 +47,7 @@
 | [plan-lifecycle-and-fields](architecture/plan-lifecycle-and-fields.md) | Plan fields v1/v2, checks, lints | 252 |
 | [quota-poller](architecture/quota-poller.md) | Usage-quota polling, caching, rendering | 31 |
 | [remote-control](architecture/remote-control.md) | Capability detection, preflight, naming | 82 |
-| [security-and-isolation](architecture/security-and-isolation.md) | 4-layer worktree defense | 194 |
+| [security-and-isolation](architecture/security-and-isolation.md) | 4-layer worktree defense | 195 |
 | [signal-generation](architecture/signal-generation.md) | Signal assembly: cache, append helpers, prefixes | 202 |
 | [skill-catalog](architecture/skill-catalog.md) | Two skill roots; 63 catalogued skills | 148 |
 | [source-graph](architecture/source-graph.md) | Source graph honesty contract, extractor, limits | 367 |
@@ -148,7 +148,7 @@
 | [store-without-consumer](mistakes/store-without-consumer.md) | Store written, never read | 94 |
 | [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, ownership | 305 |
 | [subagent-liveness-and-watch](mistakes/subagent-liveness-and-watch.md) | Subagent liveness; watch traps | 327 |
-| [subagent-orchestration](mistakes/subagent-orchestration.md) | Delegation model, defect reports, gotchas | 120 |
+| [subagent-orchestration](mistakes/subagent-orchestration.md) | Delegation model, defect reports, gotchas | 130 |
 | [test-concurrency-and-fixtures](mistakes/test-concurrency-and-fixtures.md) | Racy tests: fds, ETXTBSY, stdin | 217 |
 | [testing-and-lint](mistakes/testing-and-lint.md) | Lint/test discipline | 336 |
 | [tests-that-cannot-fail](mistakes/tests-that-cannot-fail.md) | Tests that pass with the bug | 284 |
