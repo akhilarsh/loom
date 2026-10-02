@@ -231,6 +231,53 @@ fn target_held_serializes_and_names_both_tips() {
 }
 
 #[test]
+fn target_held_without_an_accepted_tip_says_the_record_could_not_be_read() {
+    let block = MergeBlock::TargetHeld {
+        target: "main".to_string(),
+        accepted: String::new(),
+        observed: "b".repeat(40),
+    };
+
+    let text = block.to_string();
+
+    assert!(text.contains("record could not be read"), "{text}");
+    assert!(
+        text.contains(&"b".repeat(12)) && !text.contains(&"b".repeat(13)),
+        "{text}"
+    );
+    assert!(
+        !text.contains("moved outside loom") && !text.contains('→'),
+        "{text}"
+    );
+}
+
+#[test]
+fn target_held_without_an_observed_tip_prints_unknown_in_both_forms() {
+    let unreadable_record = MergeBlock::TargetHeld {
+        target: "main".to_string(),
+        accepted: String::new(),
+        observed: String::new(),
+    }
+    .to_string();
+    let unreadable_tip = MergeBlock::TargetHeld {
+        target: "main".to_string(),
+        accepted: "a".repeat(40),
+        observed: String::new(),
+    }
+    .to_string();
+
+    assert!(
+        unreadable_record.contains("record could not be read")
+            && unreadable_record.contains("held at unknown;"),
+        "{unreadable_record}"
+    );
+    assert!(
+        unreadable_tip.contains(&format!("({} → unknown)", "a".repeat(12))),
+        "{unreadable_tip}"
+    );
+}
+
+#[test]
 fn stash_reapply_notice_says_whether_the_merge_landed_without_the_changes() {
     let restored = StashReapply {
         backup_ref: "refs/loom/autostash/s1-1".to_string(),

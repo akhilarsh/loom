@@ -1,76 +1,15 @@
 //! The record, refs file, ledger, accept, lock and restore commands, the
-//! runner's replace-ref and graft shutoff, and the fixtures the guard's other
-//! test files share.
+//! runner's replace-ref and graft shutoff, and the helpers the guard's other
+//! test files share beside the fixtures of [`super::test_support`].
 
+use super::test_support::{commit_file, git, git_env, repo, Repo};
 use super::*;
 use crate::git::merge::control_paths::changed_paths;
-use std::path::PathBuf;
-use std::process::Command;
-use tempfile::TempDir;
-
-/// A scratch repository on `main` and its state directory `root/.loom/work`.
-pub(super) struct Repo {
-    _dir: TempDir,
-    pub(super) root: PathBuf,
-    pub(super) work: PathBuf,
-}
-
-/// Trimmed stdout of a git command that must succeed, with ambient config
-/// shut out and `envs` added.
-fn git_env(dir: &Path, args: &[&str], envs: &[(&str, &Path)]) -> String {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", dir.join(".loom-test-no-global"))
-        .env("GIT_CONFIG_SYSTEM", dir.join(".loom-test-no-system"))
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@t.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@t.com")
-        .envs(envs.iter().copied())
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-pub(super) fn git(dir: &Path, args: &[&str]) -> String {
-    git_env(dir, args, &[])
-}
-
-/// A repository on `main` with `README.md` committed, `.loom/` and
-/// `.worktrees/` excluded, and the state directory created.
-pub(super) fn repo() -> Repo {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    git(&root, &["init", "-b", "main"]);
-    git(&root, &["config", "user.name", "t"]);
-    git(&root, &["config", "user.email", "t@t.com"]);
-    std::fs::write(root.join(".git/info/exclude"), ".loom/\n.worktrees/\n").unwrap();
-    commit(&root, "README.md");
-    let work = root.join(".loom/work");
-    std::fs::create_dir_all(&work).unwrap();
-    Repo {
-        _dir: dir,
-        root,
-        work,
-    }
-}
 
 /// Commit `path` (its content is its name) on the branch checked out at
 /// `dir`; returns the commit.
 pub(super) fn commit(dir: &Path, path: &str) -> String {
-    let file = dir.join(path);
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(&file, path).unwrap();
-    git(dir, &["add", path]);
-    git(dir, &["commit", "-m", path]);
-    git(dir, &["rev-parse", "HEAD"])
+    commit_file(dir, path, path)
 }
 
 /// A commit on no branch whose tree is `base`'s plus `path`, a child of
@@ -101,19 +40,6 @@ pub(super) fn tip(root: &Path) -> String {
 /// Point `main` at `commit` without touching the checkout.
 pub(super) fn move_main(root: &Path, commit: &str) {
     git(root, &["update-ref", "refs/heads/main", commit]);
-}
-
-/// Install a stand-in for loom's hook, so `attestation_mode` is `Active`. It
-/// is not executable, so git never runs it: the tests write the ledger.
-pub(super) fn activate(root: &Path) {
-    let hook = root.join(".git/hooks/reference-transaction");
-    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
-    std::fs::write(&hook, format!("#!/bin/sh\n# {HOOK_MARKER}\nexit 0\n")).unwrap();
-    assert_eq!(
-        attestation_mode(root, &root.join(".loom/work")),
-        AttestationMode::Active,
-        "attestation must be on (is core.hooksPath set at global or system scope?)"
-    );
 }
 
 /// The ledger line the hook writes for a host move of `main`.
@@ -230,9 +156,6 @@ fn a_corrupt_record_is_unevaluable_and_left_unchanged() {
         [HoldReason::Unevaluable { .. }]
     ));
     assert_eq!(read(&repo.work.join(RECORD_FILE)), "{not json");
-    assert!(restore_commands(&repo.root, "main", &hold)
-        .unwrap()
-        .is_empty());
     let b = tip(&repo.root);
     accept(&repo.root, &repo.work, "main", &b).unwrap();
     assert_eq!(accepted_tip(&repo.work, "main").unwrap(), Some(b));
@@ -309,8 +232,8 @@ fn hold_alert_names_the_move_and_its_reasons_briefly() {
 
     assert_eq!(
         alert,
-        "Target main held: moved outside loom 1a2b3c4→5d6e7f8 (not a fast-forward; touches \
-         a, b, c and 2 more). Merges into main wait. Review: loom target status"
+        "Target main held: moved outside loom 1a2b3c4d1a2b→5d6e7f805d6e (not a fast-forward; \
+         touches a, b, c and 2 more). Merges into main wait. Review: loom target status"
     );
 }
 
@@ -333,4 +256,48 @@ fn replace_refs_do_not_change_the_changed_paths() {
     git(&repo.root, &["replace", &x, &d]);
 
     assert_eq!(changed_paths(&repo.root, &a, &x).unwrap(), vec!["src/x.rs"]);
+}
+
+#[test]
+fn recorded_targets_are_the_record_keys_in_order() {
+    let repo = repo();
+    assert!(recorded_targets(&repo.work).unwrap().is_empty());
+    git(&repo.root, &["branch", "develop"]);
+    check(&repo.root, &repo.work, "refs/heads/main").unwrap();
+    check(&repo.root, &repo.work, "develop").unwrap();
+
+    assert_eq!(recorded_targets(&repo.work).unwrap(), ["develop", "main"]);
+
+    std::fs::write(repo.work.join(RECORD_FILE), "{not json").unwrap();
+    assert!(recorded_targets(&repo.work).is_err());
+}
+
+#[test]
+fn pending_hold_of_an_unreadable_record_is_the_hold_check_returns() {
+    let repo = repo();
+    std::fs::write(repo.work.join(RECORD_FILE), "{not json").unwrap();
+
+    let pending = pending_hold(&repo.root, &repo.work, "main")
+        .unwrap()
+        .unwrap();
+
+    let checked = held(guard(&repo));
+    assert_eq!(pending.accepted, "");
+    assert_eq!(
+        (&pending.observed, &pending.reasons),
+        (&checked.observed, &checked.reasons)
+    );
+    assert_eq!(read(&repo.work.join(RECORD_FILE)), "{not json");
+}
+
+#[test]
+fn accept_refuses_a_record_it_cannot_read_and_leaves_it() {
+    let repo = repo();
+    let record = repo.work.join(RECORD_FILE);
+    std::fs::create_dir(&record).unwrap();
+
+    let error = accept(&repo.root, &repo.work, "main", &tip(&repo.root)).unwrap_err();
+
+    assert!(format!("{error:#}").contains(RECORD_FILE), "{error:#}");
+    assert!(record.is_dir());
 }

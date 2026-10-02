@@ -22,9 +22,12 @@ use std::path::Path;
 use std::time::Duration;
 
 pub use attestation::{append_attestation, attestation_mode, AttestationMode};
+pub(crate) use record::knowledge_prefix;
 pub use record::{
     accepted_tip, attestation_latched, guarded_refs, record_advance, recorded_hold, recorded_holds,
+    recorded_targets,
 };
+pub(crate) use text::short;
 pub use text::{accept_command, hold_alert, restore_commands};
 
 use crate::git::branch::{branch_ref, is_ancestor_of};
@@ -32,7 +35,7 @@ use crate::git::merge::lock::MergeLock;
 use crate::git::merge::{rev_parse, verify_merge_succeeded};
 use attestation::create_ledger;
 use evaluate::{evaluate, one_line, Scope};
-use record::{read_record, write_record, GuardRecord, TargetEntry};
+use record::{read_record, read_record_for_accept, write_record, GuardRecord, TargetEntry};
 
 /// The record of accepted tips, holds and attestation latches, in the state
 /// directory.
@@ -103,8 +106,8 @@ pub(crate) fn target_key(target: &str) -> &str {
     target.strip_prefix("refs/heads/").unwrap_or(target)
 }
 
-/// An object id cut to 12 characters for a log line.
-fn abbrev(id: &str) -> &str {
+/// An object id cut to 12 characters, for operator text and log lines.
+pub(crate) fn abbrev(id: &str) -> &str {
     id.get(..12).unwrap_or(id)
 }
 
@@ -160,8 +163,9 @@ pub fn check_locked(
     let (state, updated) = match judge(repo_root, work_dir, key, &entry, tip) {
         Verdict::Accepted => {
             let cleared = TargetEntry {
+                accepted: entry.accepted.clone(),
                 hold: None,
-                ..entry.clone()
+                attestation: entry.attestation,
             };
             (
                 GuardState::Clear {
@@ -306,11 +310,15 @@ fn trust_on_first_use(
 }
 
 /// The hold `check` would record for `target`'s current tip, without writing
-/// anything. `None` when the record has no entry for `target` or the move
-/// would be accepted.
+/// anything or taking the merge lock. `None` when the record has no entry for
+/// `target` or the move would be accepted. A record that cannot be read gives
+/// the unevaluable hold [`check_locked`] returns for it.
 pub fn pending_hold(repo_root: &Path, work_dir: &Path, target: &str) -> Result<Option<Hold>> {
     let key = target_key(target);
-    let record = read_record(work_dir)?;
+    let record = match read_record(work_dir) {
+        Ok(record) => record,
+        Err(error) => return Ok(Some(unreadable_hold(&target_tip(repo_root, key)?, &error))),
+    };
     let Some(entry) = record.targets.get(key) else {
         return Ok(None);
     };
@@ -340,7 +348,8 @@ pub fn merged_into_accepted(
 /// The operator's acceptance of `target`'s current tip, which `expected`
 /// (any commit name, an abbreviated id too) must name. Clears the hold and
 /// sets the latch to the current attestation mode: the only place it falls.
-/// A record that cannot be read is replaced by a fresh one.
+/// A record that does not parse is replaced by a fresh one; a record that
+/// cannot be read is an error.
 pub fn accept(repo_root: &Path, work_dir: &Path, target: &str, expected: &str) -> Result<Accepted> {
     let key = target_key(target);
     let lock = MergeLock::acquire(work_dir, ACCEPT_LOCK_TIMEOUT)
@@ -351,10 +360,7 @@ pub fn accept(repo_root: &Path, work_dir: &Path, target: &str, expected: &str) -
     if wanted != tip {
         bail!("the target moved since you reviewed it: {key} is now at {tip}; review again");
     }
-    let mut record = read_record(work_dir).unwrap_or_else(|error| {
-        tracing::warn!("target guard: replacing the unreadable record: {error:#}");
-        GuardRecord::default()
-    });
+    let mut record = read_record_for_accept(work_dir)?;
     let entry = TargetEntry {
         accepted: tip.clone(),
         hold: None,
@@ -376,4 +382,10 @@ mod attestation_tests;
 #[cfg(test)]
 mod evaluate_tests;
 #[cfg(test)]
+mod memo_tests;
+#[cfg(test)]
+pub(crate) mod test_support;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_tests;

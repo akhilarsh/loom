@@ -90,13 +90,16 @@ fn violation_reason(repo_root: &Path, changed: &[String], label: &str) -> Option
 
 /// Paths that differ between `base` and `branch_rev`, unquoted: `-z` output is
 /// NUL-separated and git never C-quotes it. Read untrimmed, so a path's own
-/// leading or trailing whitespace survives.
+/// leading or trailing whitespace survives. Gitlink changes are always listed:
+/// `--ignore-submodules=none` overrides an `ignore` setting in the checkout's
+/// `.gitmodules`, which a merged branch can set.
 pub(crate) fn changed_paths(repo_root: &Path, base: &str, branch_rev: &str) -> Result<Vec<String>> {
     let args = [
         "diff",
         "-z",
         "--name-only",
         "--no-renames",
+        "--ignore-submodules=none",
         base,
         branch_rev,
     ];

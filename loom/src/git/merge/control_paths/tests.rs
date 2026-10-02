@@ -116,6 +116,29 @@ fn an_ordinary_branch_has_no_violation() {
 }
 
 #[test]
+fn a_gitlink_change_is_listed_even_when_gitmodules_ignores_it() {
+    let repo = init_repo();
+    let root = repo.path();
+    let seed = rev(root, "main");
+    let gitmodules = "[submodule \"sub\"]\n\tpath = sub\n\turl = ./sub\n\tignore = all\n";
+    std::fs::write(root.join(".gitmodules"), gitmodules).unwrap();
+    git_ok(root, &["add", ".gitmodules"]);
+    let gitlink = |commit: &str| format!("160000,{commit},sub");
+    git_ok(
+        root,
+        &["update-index", "--add", "--cacheinfo", &gitlink(&seed)],
+    );
+    git_ok(root, &["commit", "-m", "add sub"]);
+    let before = rev(root, "main");
+    git_ok(root, &["update-index", "--cacheinfo", &gitlink(&before)]);
+    git_ok(root, &["commit", "-m", "move sub"]);
+
+    let paths = changed_paths(root, &before, &rev(root, "main")).unwrap();
+
+    assert_eq!(paths, vec!["sub"]);
+}
+
+#[test]
 fn a_missing_revision_is_an_error_not_a_pass() {
     let repo = init_repo();
 
