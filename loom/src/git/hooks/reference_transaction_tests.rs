@@ -1,6 +1,6 @@
 //! Tests for the `reference-transaction` hook installer.
 
-use super::reference_transaction::SCRIPT;
+use super::reference_transaction::{write_script, SCRIPT};
 use super::{
     install_reference_transaction_hook, is_reference_transaction_hook_installed, HookInstall,
 };
@@ -86,6 +86,22 @@ fn foreign_hook_is_left_untouched() {
     assert_eq!(installed, HookInstall::ForeignHookPresent);
     assert_eq!(fs::read(&hook).unwrap(), foreign);
     assert!(!is_reference_transaction_hook_installed(temp.path()));
+}
+
+#[test]
+fn failed_rename_removes_the_staged_file() {
+    let (_temp, hook) = repo();
+    // A directory at the hook's path makes the rename fail. The installer reads
+    // that path first and stops on a directory, so call `write_script` directly.
+    let occupant = hook.join("occupant");
+    fs::create_dir_all(&occupant).unwrap();
+
+    let error = write_script(&hook).unwrap_err();
+
+    let message = format!("{error:#}");
+    assert!(message.contains("Failed to install hook"), "{message}");
+    assert!(!hook.with_extension("loom-new").exists());
+    assert!(occupant.is_dir());
 }
 
 #[test]

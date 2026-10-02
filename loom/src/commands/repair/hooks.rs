@@ -1,27 +1,36 @@
-//! Repair checks and fixes for the git pre-commit hook and the committed
-//! `.claude/settings.json` permissions (hooks/env belong in
-//! settings.local.json instead — see `settings_checks`).
+//! Repair checks and fixes for the git pre-commit and reference-transaction
+//! hooks and the committed `.claude/settings.json` permissions (hooks/env
+//! belong in settings.local.json instead — see `settings_checks`).
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use super::{RepairIssue, Severity};
 use crate::fs::permissions::LOOM_PERMISSIONS;
+use crate::git::hooks::{
+    install_reference_transaction_hook, is_reference_transaction_hook_installed, HookInstall,
+};
 use crate::git::is_pre_commit_hook_installed;
 
-/// Check the git hook, Claude permissions, and Codex-native hook installation.
+#[cfg(test)]
+mod tests;
+
+/// Check the git hooks, Claude permissions, and Codex-native hook installation.
 pub(super) fn check(repo_root: &Path) -> Vec<RepairIssue> {
     let mut issues = Vec::new();
 
     // Outside a repository there is nothing to install into; `loom init`
-    // bootstraps git first and installs the hook in its startup repair.
-    if repo_root.join(".git").is_dir() && !is_pre_commit_hook_installed(repo_root) {
-        issues.push(RepairIssue {
-            severity: Severity::Info,
-            description: "Git pre-commit hook not installed".to_string(),
-            fix_description: "Install loom pre-commit hook".to_string(),
-        });
+    // bootstraps git first and installs the hooks in its startup repair.
+    if repo_root.join(".git").is_dir() {
+        if !is_pre_commit_hook_installed(repo_root) {
+            issues.push(RepairIssue {
+                severity: Severity::Info,
+                description: "Git pre-commit hook not installed".to_string(),
+                fix_description: "Install loom pre-commit hook".to_string(),
+            });
+        }
+        issues.extend(reference_transaction_issue(repo_root));
     }
 
     if let Some(issue) = settings_permissions_issue(repo_root) {
@@ -36,6 +45,47 @@ pub(super) fn check(repo_root: &Path) -> Vec<RepairIssue> {
     }
 
     issues
+}
+
+/// Description prefix of the reference-transaction hook issues, which
+/// `WorkspaceFix::classify` matches on.
+pub(super) const REFERENCE_TRANSACTION_ISSUE: &str = "Git reference-transaction hook";
+
+/// The issue for a missing reference-transaction hook, or for a hook another
+/// tool owns, which `loom` reports and never overwrites. Without loom's hook
+/// the target guard cannot attest operator moves of the target.
+fn reference_transaction_issue(repo_root: &Path) -> Option<RepairIssue> {
+    if is_reference_transaction_hook_installed(repo_root) {
+        return None;
+    }
+    let foreign = repo_root.join(".git/hooks/reference-transaction").exists();
+    Some(if foreign {
+        RepairIssue {
+            severity: Severity::Warning,
+            description: format!("{REFERENCE_TRANSACTION_ISSUE} belongs to another tool"),
+            fix_description: "None: loom never overwrites another tool's hook, so the target \
+                              guard runs without attestation until loom's hook is added to it"
+                .to_string(),
+        }
+    } else {
+        RepairIssue {
+            severity: Severity::Info,
+            description: format!("{REFERENCE_TRANSACTION_ISSUE} not installed"),
+            fix_description: "Install loom reference-transaction hook".to_string(),
+        }
+    })
+}
+
+/// Install loom's reference-transaction hook. `Ok(false)` when it was already
+/// in place; an error, with the hook untouched, when another tool owns it.
+pub(super) fn fix_reference_transaction_hook(repo_root: &Path) -> Result<bool> {
+    match install_reference_transaction_hook(repo_root)? {
+        HookInstall::Installed => Ok(true),
+        HookInstall::UpToDate => Ok(false),
+        HookInstall::ForeignHookPresent => bail!(
+            ".git/hooks/reference-transaction belongs to another tool; loom left it untouched"
+        ),
+    }
 }
 
 /// Whether `.claude/settings.json` exists and carries every LOOM_PERMISSIONS entry.

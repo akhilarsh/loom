@@ -347,16 +347,4 @@ fn print_summary(plan_path: Option<&Path>, stage_count: usize) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::stop_daemon_and_prune;
-
-    #[test]
-    fn clean_refuses_before_stopping_anything_while_the_target_is_held() {
-        let (repo, _accepted, _moved) = crate::commands::target::tests::held_repo(true);
-
-        let error = stop_daemon_and_prune(&repo.root, true).unwrap_err();
-
-        assert!(error.to_string().contains("loom target status"), "{error}");
-        assert!(repo.work.join("target-guard.json").is_file());
-    }
-}
+mod tests;

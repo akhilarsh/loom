@@ -1,6 +1,7 @@
 //! `attestation_mode` and the record's attestation latch.
 
-use super::tests::{activate, attest, commit, git, guard, held, record, repo};
+use super::test_support::{activate, git, repo};
+use super::tests::{attest, commit, guard, held, record};
 use super::*;
 
 fn off_reason(root: &Path, work: &Path) -> String {
@@ -52,6 +53,18 @@ fn a_missing_or_foreign_hook_turns_attestation_off() {
 }
 
 #[test]
+fn a_hook_git_cannot_execute_turns_attestation_off() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = repo();
+    activate(&repo.root);
+    let hook = repo.root.join(".git/hooks/reference-transaction");
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let reason = off_reason(&repo.root, &repo.work);
+    assert!(reason.contains("not executable"), "{reason}");
+}
+
+#[test]
 fn another_state_directory_turns_attestation_off() {
     let repo = repo();
     activate(&repo.root);
@@ -94,6 +107,22 @@ fn accept_while_off_lowers_the_latch() {
     assert!(!attestation_latched(&repo.work, "main").unwrap());
     let y = commit(&repo.root, "src/y.rs");
     assert_eq!(guard(&repo), GuardState::Clear { accepted: y });
+}
+
+#[test]
+fn accept_while_active_keeps_the_latch() {
+    let repo = repo();
+    activate(&repo.root);
+    record(&repo);
+    let x = commit(&repo.root, "src/x.rs");
+    assert!(is_unattested(guard(&repo)));
+
+    accept(&repo.root, &repo.work, "main", &x).unwrap();
+
+    assert!(attestation_latched(&repo.work, "main").unwrap());
+    git(&repo.root, &["config", "core.hooksPath", "/dev/null"]);
+    commit(&repo.root, "src/y.rs");
+    assert!(is_unattested(guard(&repo)));
 }
 
 #[test]

@@ -16,6 +16,7 @@ use super::execute::{startup_repair_lines, startup_repairs};
 use crate::commands::repair::workspace::AppliedRepair;
 use crate::fs::permissions::LOOM_PERMISSIONS;
 use crate::fs::work_integrity::validate_work_dir_state;
+use crate::git::hooks::install_reference_transaction_hook;
 use crate::git::install_pre_commit_hook;
 
 /// `startup_repairs(root, false)` runs `repair_workspace`, whose
@@ -188,6 +189,7 @@ fn init_repair_renders_no_line_for_a_clean_workspace() {
     write_complete_settings_json(root);
     fs::create_dir_all(root.join(".git")).unwrap();
     install_pre_commit_hook(root).unwrap();
+    install_reference_transaction_hook(root).unwrap();
 
     // Everything repo-local is now clean. The installed Claude and Codex hook
     // checks read `HOME`, not the scratch repo — `startup_repairs_isolated`

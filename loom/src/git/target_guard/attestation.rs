@@ -8,6 +8,7 @@
 //! skipped.
 
 use anyhow::{ensure, Context, Result};
+use nix::unistd::{access, AccessFlags};
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -33,9 +34,10 @@ pub(super) struct LedgerStep {
     pub(super) to: String,
 }
 
-/// `Active` when loom's hook is installed in the common git directory, git
-/// runs hooks from there (`core.hooksPath` unset), and the hook finds
-/// `work_dir` as its state directory; otherwise `Off` with the reason.
+/// `Active` when loom's hook is installed, executable, in the common git
+/// directory, git runs hooks from there (`core.hooksPath` unset), and the
+/// hook finds `work_dir` as its state directory; otherwise `Off` with the
+/// reason.
 pub fn attestation_mode(repo_root: &Path, work_dir: &Path) -> AttestationMode {
     match off_reason(repo_root, work_dir) {
         Some(reason) => AttestationMode::Off { reason },
@@ -52,9 +54,17 @@ fn off_reason(repo_root: &Path, work_dir: &Path) -> Option<String> {
     let Ok(common) = common_dir(repo_root) else {
         return Some("the git common directory could not be found".to_string());
     };
-    let hook = std::fs::read_to_string(common.join("hooks/reference-transaction"));
+    let hook_path = common.join("hooks/reference-transaction");
+    let hook = std::fs::read_to_string(&hook_path);
     if !hook.is_ok_and(|script| script.contains(HOOK_MARKER)) {
         return Some("loom's reference-transaction hook is not installed".to_string());
+    }
+    // git runs a hook only when `access(X_OK)` allows it.
+    if access(&hook_path, AccessFlags::X_OK).is_err() {
+        return Some(
+            "loom's reference-transaction hook is not executable, so git does not run it"
+                .to_string(),
+        );
     }
     // The hook looks for `.loom/work` beside the common git directory.
     let hook_state = common.parent().map(|dir| dir.join(".loom/work"));

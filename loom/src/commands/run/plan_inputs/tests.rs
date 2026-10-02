@@ -1,6 +1,6 @@
 use super::{mark_plan_in_progress, require_committed_plan};
-use crate::commands::target::tests::activate;
 use crate::fs::{plan_lifecycle, work_dir::WorkDir};
+use crate::git::target_guard::test_support::activate;
 use crate::git::target_guard::{check, GuardState, LEDGER_FILE};
 use std::fs;
 use std::path::Path;

@@ -15,6 +15,8 @@ case "$phase" in prepared | aborted) ;; *) skip ;; esac
 # Ignore replace refs and grafts, as loom's own git does.
 export GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null/loom-no-grafts
 
+# git, sed and dirname resolve through PATH, which a session controls. A fake one can
+# skip this hook, but then no ledger line exists, and the daemon holds a move without one.
 common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || skip
 work="$(dirname "$common")/.loom/work"
 refs="$work/target-guard.refs"
@@ -34,11 +36,12 @@ done <"$refs"
 
 # Whether $cur..$new fast-forwards and changes only paths under $allow. Git
 # quotes an unusual path, which then starts with `"` and fails the check.
+# --ignore-submodules=none keeps a .gitmodules `ignore = all` from hiding a gitlink change.
 knowledge_only() {
 	[ -n "$cur" ] && [ -n "$allow" ] && [ "$new" != "$zero" ] || return 1
 	git merge-base --is-ancestor "$cur" "$new" 2>/dev/null || return 1
-	paths=$(git -c core.quotePath=true diff --name-only --no-renames "$cur" "$new" \
-		2>/dev/null) || return 1
+	paths=$(git -c core.quotePath=true diff --name-only --no-renames --ignore-submodules=none \
+		"$cur" "$new" 2>/dev/null) || return 1
 	[ -n "$paths" ] || return 0
 	while IFS= read -r path; do
 		case "$path" in "$allow"*) ;; *) return 1 ;; esac

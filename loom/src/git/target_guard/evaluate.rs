@@ -1,6 +1,6 @@
 //! Evaluating a move of the target that loom did not make, from the accepted
-//! tip to the observed one, with only the record, the ledger and git run
-//! through the runner (replace refs and grafts off).
+//! tip to the observed one, using only the record, the ledger and git
+//! commands run through the runner.
 
 use anyhow::{bail, Result};
 use std::collections::HashSet;
@@ -227,11 +227,21 @@ fn unattested_paths(repo: &Path, from: &str, to: &str) -> Result<Vec<String>> {
 }
 
 /// The `loom/*` branches with commits in `tip` that `accepted` lacks, by
-/// short name.
+/// short name. Only refs to commits are judged: a ref written by hand can
+/// name a blob, a tree or a tag, and `merge-base` failing on it would make
+/// every evaluation fail.
 fn stage_work(repo: &Path, accepted: &str, tip: &str) -> Result<Vec<String>> {
-    let args = ["for-each-ref", "--format=%(refname)", "refs/heads/loom/"];
+    let args = [
+        "for-each-ref",
+        "--format=%(objecttype) %(refname)",
+        "refs/heads/loom/",
+    ];
     let mut branches = Vec::new();
-    for reference in run_git_checked(&args, repo)?.lines() {
+    let listing = run_git_checked(&args, repo)?;
+    let commits = listing
+        .lines()
+        .filter_map(|line| line.strip_prefix("commit "));
+    for reference in commits {
         if carries_unaccepted_work(repo, accepted, tip, reference)? {
             let short = reference.strip_prefix("refs/heads/").unwrap_or(reference);
             branches.push(short.to_string());

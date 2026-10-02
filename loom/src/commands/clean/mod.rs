@@ -46,10 +46,7 @@ struct CleanStats {
 pub fn execute(all: bool, worktrees: bool, sessions: bool, state: bool) -> Result<()> {
     let repo_root = std::env::current_dir()?;
 
-    print_header();
-
-    // Base graph GC (A.14): runs every invocation — see print_base_graph_section.
-    print_base_graph_section(&repo_root);
+    begin_clean(&repo_root, all || state)?;
 
     // Bare invocation with no flags: do NOT treat as --all. Prune-only + help.
     if !all && !worktrees && !sessions && !state {
@@ -94,6 +91,21 @@ pub fn execute(all: bool, worktrees: bool, sessions: bool, state: bool) -> Resul
     Ok(())
 }
 
+/// The first steps of every `loom clean`. A run that will destroy the state
+/// directory (`--all`, `--state`) refuses first while the target branch holds a
+/// move loom did not accept, before anything is pruned, confirmed, stopped or
+/// deleted: removing the target guard record would make the next run trust an
+/// unreviewed move. Then the header, and the base graph GC (A.14), which runs
+/// every invocation.
+fn begin_clean(repo_root: &Path, destroys_state: bool) -> Result<()> {
+    if destroys_state {
+        crate::commands::target::refuse_unreviewed_move(repo_root)?;
+    }
+    print_header();
+    print_base_graph_section(repo_root);
+    Ok(())
+}
+
 /// Stop a running daemon before `clean_worktrees`/`clean_sessions` runs.
 ///
 /// A live daemon holds its singleton flock on the state directory by path;
@@ -101,17 +113,13 @@ pub fn execute(all: bool, worktrees: bool, sessions: bool, state: bool) -> Resul
 /// leaves the old daemon ticking over whatever the next `loom init`/`loom
 /// run` writes there. Must run before `clean_worktrees`/`clean_sessions`,
 /// since a live daemon respawns sessions and recreates worktrees while
-/// they are being removed. Refuses first while the target branch holds a move
-/// loom did not accept.
+/// they are being removed.
 fn stop_daemon_before_destroying_state(
     repo_root: &Path,
     clean_all: bool,
     state: bool,
 ) -> Result<()> {
     if clean_all || state {
-        // Before anything is stopped or deleted: removing the target guard
-        // record would make the next run trust an unreviewed move.
-        crate::commands::target::refuse_unreviewed_move(repo_root)?;
         let work_dir = resolve_state_dir(repo_root);
         if DaemonServer::check_status(&work_dir) != DaemonStatus::NotRunning {
             println!("\n{}", "Daemon".bold());
@@ -305,6 +313,7 @@ fn print_summary(stats: &CleanStats) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::target_guard::test_support::held_repo;
     use std::fs;
     use tempfile::TempDir;
 
@@ -332,9 +341,9 @@ mod tests {
 
     #[test]
     fn clean_state_refuses_while_the_target_holds_an_unreviewed_move() {
-        let (repo, _accepted, _moved) = crate::commands::target::tests::held_repo(true);
+        let (repo, _accepted, _moved) = held_repo(true);
 
-        let error = stop_daemon_before_destroying_state(&repo.root, false, true).unwrap_err();
+        let error = begin_clean(&repo.root, true).unwrap_err();
 
         assert!(error.to_string().contains("loom target status"), "{error}");
         assert!(repo.work.is_dir());

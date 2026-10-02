@@ -21,7 +21,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::git::target_guard::{hold_alert, recorded_holds};
+#[path = "scheduling_report_guard.rs"]
+mod guard;
 
 /// File name inside `.loom/work/` holding the report.
 const REPORT_FILE: &str = "scheduling.json";
@@ -52,8 +53,10 @@ pub enum BlockReason {
     DependencyCheckFailed { detail: String },
     /// Base-branch resolution reported the stage as not schedulable.
     SchedulingNotReady { detail: String },
-    /// A knowledge stage waits while the target branch is held. Resolves
-    /// once the operator accepts or restores the target.
+    /// The target guard holds the stage back: a knowledge stage waits while
+    /// the target branch is held, and a stage cut from the target waits
+    /// while the guard record cannot be read. Resolves once the operator
+    /// accepts or restores the target, or the record reads again.
     TargetHeld,
 }
 
@@ -169,20 +172,15 @@ pub struct Alert {
 ///
 /// A target hold recorded by the target guard comes first, as a warning,
 /// whether the daemon runs or not: it is a recorded fact that outlives the
-/// daemon. Everything else is gated on `daemon_running`. The tick and the
+/// daemon. So does a guard record that cannot be read, which holds every
+/// target. Everything else is gated on `daemon_running`. The tick and the
 /// scheduling report describe live scheduling, and a daemon killed with
 /// SIGKILL leaves both behind: without the gate, a stopped daemon would
 /// report its final tick as a stall and its last blocked stages as though
 /// they were still waiting.
 pub fn alerts(work_dir: &Path, daemon_running: bool) -> Vec<Alert> {
-    let mut alerts: Vec<Alert> = recorded_holds(work_dir)
-        .unwrap_or_default()
-        .iter()
-        .map(|(target, hold)| Alert {
-            severity: Severity::Warning,
-            text: hold_alert(target, hold),
-        })
-        .collect();
+    // guard_alerts (scheduling_report_guard.rs) renders each recorded hold with hold_alert().
+    let mut alerts = guard::guard_alerts(work_dir);
     if !daemon_running {
         return alerts;
     }

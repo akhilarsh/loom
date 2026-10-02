@@ -10,6 +10,7 @@ use std::time::Duration;
 use serial_test::serial;
 use tempfile::TempDir;
 
+use crate::fs::permissions::scratch_home::ScratchHome;
 use crate::fs::work_dir::write_terminal_config;
 use crate::git::hooks::is_reference_transaction_hook_installed;
 use crate::git::merge::lock::MergeLock;
@@ -24,11 +25,11 @@ use crate::orchestrator::scheduling_report::{alerts, BlockReason, Severity};
 use crate::plan::{schema::StageDefinition, ExecutionGraph};
 use crate::verify::transitions::{load_stage, save_stage};
 
-const ID: &str = "s";
+pub(super) const ID: &str = "s";
 
 /// Run `git` in `dir` with ambient configuration shut out, assert it
 /// succeeded, and return its trimmed stdout.
-fn git(dir: &Path, args: &[&str]) -> String {
+pub(super) fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -46,12 +47,12 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-fn tip(root: &Path, name: &str) -> String {
+pub(super) fn tip(root: &Path, name: &str) -> String {
     git(root, &["rev-parse", name])
 }
 
 /// Commit `name` holding `text` on the checked-out branch; returns the tip.
-fn commit(dir: &Path, name: &str, text: &str) -> String {
+pub(super) fn commit(dir: &Path, name: &str, text: &str) -> String {
     let file = dir.join(name);
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(file, text).unwrap();
@@ -62,7 +63,7 @@ fn commit(dir: &Path, name: &str, text: &str) -> String {
 
 /// A repository on `main` holding `seed.txt`, with the state directories
 /// excluded from its status as in a real project.
-fn repo() -> TempDir {
+pub(super) fn repo() -> TempDir {
     let repo = TempDir::new().unwrap();
     let root = repo.path();
     git(root, &["init", "-q", "-b", "main"]);
@@ -75,14 +76,14 @@ fn repo() -> TempDir {
 
 /// `loom/s` with one commit beyond `main`, and `main` checked out; returns
 /// the branch tip.
-fn stage_branch(root: &Path) -> String {
+pub(super) fn stage_branch(root: &Path) -> String {
     git(root, &["checkout", "-q", "-b", "loom/s"]);
     let work = commit(root, "work.txt", "stage work");
     git(root, &["checkout", "-q", "main"]);
     work
 }
 
-fn graph(ids: &[&str]) -> ExecutionGraph {
+pub(super) fn graph(ids: &[&str]) -> ExecutionGraph {
     let definitions = ids.iter().map(|id| StageDefinition {
         id: id.to_string(),
         name: id.to_string(),
@@ -94,7 +95,7 @@ fn graph(ids: &[&str]) -> ExecutionGraph {
 
 /// An orchestrator over `root` on the tmux lane, so building it never probes
 /// the host for a terminal emulator.
-fn orchestrator(root: &Path, graph: ExecutionGraph) -> Orchestrator {
+pub(super) fn orchestrator(root: &Path, graph: ExecutionGraph) -> Orchestrator {
     let work_dir = root.join(".loom").join("work");
     let backend = SessionBackendKind::Tmux;
     write_terminal_config(&work_dir, &TerminalConfig { backend }).unwrap();
@@ -111,7 +112,7 @@ fn orchestrator(root: &Path, graph: ExecutionGraph) -> Orchestrator {
 /// An orchestrator whose guard recorded `main`, then saw it moved by a
 /// commit of `.claude/settings.json`, a control path held whatever the
 /// attestation mode. Returns it with the accepted and the moved tip.
-fn held(root: &Path, graph: ExecutionGraph) -> (Orchestrator, String, String) {
+pub(super) fn held(root: &Path, graph: ExecutionGraph) -> (Orchestrator, String, String) {
     let mut orchestrator = orchestrator(root, graph);
     assert_eq!(orchestrator.check_target_guard(), None);
     let accepted = tip(root, "main");
@@ -121,34 +122,6 @@ fn held(root: &Path, graph: ExecutionGraph) -> (Orchestrator, String, String) {
         "the move was not held"
     );
     (orchestrator, accepted, moved)
-}
-
-/// Pins `HOME` to a scratch directory while worktree creation registers
-/// trust in `~/.claude.json`, restoring the previous value on drop.
-struct ScratchHome {
-    _dir: TempDir,
-    original: Option<std::ffi::OsString>,
-}
-
-impl ScratchHome {
-    fn set() -> Self {
-        let dir = TempDir::new().unwrap();
-        let original = std::env::var_os("HOME");
-        std::env::set_var("HOME", dir.path());
-        Self {
-            _dir: dir,
-            original,
-        }
-    }
-}
-
-impl Drop for ScratchHome {
-    fn drop(&mut self) {
-        match &self.original {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
-    }
 }
 
 #[test]
@@ -164,7 +137,7 @@ fn a_repeated_hold_is_returned_unchanged_and_logs_no_error() {
 }
 
 #[test]
-fn a_contended_check_keeps_the_previous_state() {
+fn a_contended_check_of_a_restored_target_clears_the_hold() {
     let repo = repo();
     let root = repo.path();
     let (mut orchestrator, accepted, _) = held(root, graph(&[]));
@@ -175,7 +148,7 @@ fn a_contended_check_keeps_the_previous_state() {
     let contended = orchestrator.check_target_guard();
     lock.release().unwrap();
 
-    assert!(contended.is_some(), "a contended check dropped the hold");
+    assert_eq!(contended, None, "a contended check kept a restored hold");
     assert_eq!(orchestrator.check_target_guard(), None);
 }
 

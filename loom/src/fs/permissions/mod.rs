@@ -16,6 +16,8 @@ mod trust;
 pub(crate) mod write_rules;
 
 #[cfg(test)]
+pub(crate) mod scratch_home;
+#[cfg(test)]
 mod tests;
 
 // Re-export public API

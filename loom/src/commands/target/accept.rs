@@ -4,10 +4,12 @@
 use anyhow::{bail, Result};
 use std::path::Path;
 
-use super::{abbrev, resolve_context};
-use crate::git::branch::branch_ref;
+use super::resolve_context;
+use crate::git::branch::current_branch;
 use crate::git::runner::run_git;
-use crate::git::target_guard::{accept, attestation_mode, target_key, Accepted, AttestationMode};
+use crate::git::target_guard::{
+    abbrev, accept, attestation_mode, target_key, Accepted, AttestationMode,
+};
 
 /// Accept the target's current tip, which `to` must name.
 pub fn execute(to: &str) -> Result<()> {
@@ -56,8 +58,7 @@ pub(crate) fn checkout_note(
     accepted: &Accepted,
 ) -> Result<Option<String>> {
     let key = target_key(target);
-    let head = run_git(&["symbolic-ref", "-q", "HEAD"], repo_root)?;
-    if !head.status.success() || String::from_utf8_lossy(&head.stdout).trim() != branch_ref(key) {
+    if current_branch(repo_root)? != key {
         return Ok(None);
     }
     let staged = run_git(&["diff", "--cached", "--quiet", &accepted.to], repo_root)?;

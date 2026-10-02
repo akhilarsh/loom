@@ -1,112 +1,15 @@
-//! `loom target` report, accept and refusal logic, and the repository
-//! fixtures other modules' guard tests share.
+//! `loom target` report, accept and refusal logic.
 
 use super::accept::{checkout_note, refuse_inside_session};
 use super::refuse_unreviewed_move;
 use super::status::report;
-use crate::git::target_guard::{
-    attestation_mode, check, Accepted, AttestationMode, GuardState, HOOK_MARKER, RECORD_FILE,
+use crate::git::target_guard::test_support::{
+    activate, commit_file, git, held_repo, recorded, repo, Repo,
 };
+use crate::git::target_guard::{check, Accepted, RECORD_FILE};
 use serial_test::serial;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use tempfile::TempDir;
 
-/// A scratch repository on `main` and its state directory `root/.loom/work`.
-pub(crate) struct Repo {
-    _dir: TempDir,
-    pub(crate) root: PathBuf,
-    pub(crate) work: PathBuf,
-}
-
-/// Trimmed stdout of a git command that must succeed, with ambient config
-/// shut out.
-pub(crate) fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env_remove("LOOM_SESSION_ID")
-        .env("GIT_CONFIG_GLOBAL", dir.join(".loom-test-no-global"))
-        .env("GIT_CONFIG_SYSTEM", dir.join(".loom-test-no-system"))
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@t.com")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@t.com")
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-/// Write `path` (relative to `dir`) with `text`, commit it, and return the
-/// new commit.
-pub(crate) fn commit_file(dir: &Path, path: &str, text: &str) -> String {
-    let file = dir.join(path);
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(&file, text).unwrap();
-    git(dir, &["add", path]);
-    git(dir, &["commit", "-m", path]);
-    git(dir, &["rev-parse", "HEAD"])
-}
-
-/// A repository on `main` with `README.md` committed, `.loom/` and
-/// `.worktrees/` excluded, and the state directory created.
-pub(crate) fn repo() -> Repo {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    git(&root, &["init", "-q", "-b", "main"]);
-    std::fs::write(root.join(".git/info/exclude"), ".loom/\n.worktrees/\n").unwrap();
-    commit_file(&root, "README.md", "readme\n");
-    let work = root.join(".loom/work");
-    std::fs::create_dir_all(&work).unwrap();
-    Repo {
-        _dir: dir,
-        root,
-        work,
-    }
-}
-
-/// Install a stand-in for loom's hook, so `attestation_mode` is `Active`. It
-/// is not executable, so git never runs it: tests write the ledger.
-pub(crate) fn activate(root: &Path) {
-    let hook = root.join(".git/hooks/reference-transaction");
-    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
-    std::fs::write(&hook, format!("#!/bin/sh\n# {HOOK_MARKER}\nexit 0\n")).unwrap();
-    assert_eq!(
-        attestation_mode(root, &root.join(".loom/work")),
-        AttestationMode::Active,
-        "attestation must be on (is core.hooksPath set at global or system scope?)"
-    );
-}
-
-/// The state directory with `main` recorded at its current tip.
-fn recorded() -> (Repo, String) {
-    let repo = repo();
-    let first = check(&repo.root, &repo.work, "main").unwrap();
-    assert!(matches!(first, Some(GuardState::Clear { .. })));
-    let accepted = git(&repo.root, &["rev-parse", "main"]);
-    (repo, accepted)
-}
-
-/// A recorded `main` moved by an operator commit that changes a control path;
-/// `evaluate` records the hold. Returns the repository, the accepted tip and
-/// the held tip.
-pub(crate) fn held_repo(evaluate: bool) -> (Repo, String, String) {
-    let (repo, accepted) = recorded();
-    let moved = commit_file(&repo.root, ".claude/settings.json", "{}\n");
-    if evaluate {
-        let held = check(&repo.root, &repo.work, "main").unwrap();
-        assert!(matches!(held, Some(GuardState::Held(_))), "{held:?}");
-    }
-    (repo, accepted, moved)
-}
-
-fn report_of(repo: &Repo) -> String {
+pub(super) fn report_of(repo: &Repo) -> String {
     report(&repo.root, &repo.work, "main").unwrap()
 }
 
@@ -266,14 +169,38 @@ fn report_says_attestation_is_on_when_the_hook_is_active() {
     assert!(report_of(&repo).contains("\nAttestation: on\n"));
 }
 
+/// Pins `LOOM_SESSION_ID` (`None` removes it) for one test and puts back the
+/// original value on drop, a panic included: the stage running this suite has
+/// the variable set.
+struct SessionEnv(Option<std::ffi::OsString>);
+
+impl SessionEnv {
+    fn set(value: Option<&str>) -> Self {
+        let original = std::env::var_os("LOOM_SESSION_ID");
+        match value {
+            Some(value) => std::env::set_var("LOOM_SESSION_ID", value),
+            None => std::env::remove_var("LOOM_SESSION_ID"),
+        }
+        Self(original)
+    }
+}
+
+impl Drop for SessionEnv {
+    fn drop(&mut self) {
+        match &self.0 {
+            Some(original) => std::env::set_var("LOOM_SESSION_ID", original),
+            None => std::env::remove_var("LOOM_SESSION_ID"),
+        }
+    }
+}
+
 #[test]
 #[serial]
 fn accept_refuses_inside_a_loom_session() {
-    std::env::set_var("LOOM_SESSION_ID", "session-7");
-    let refused = refuse_inside_session();
-    std::env::remove_var("LOOM_SESSION_ID");
+    let _session = SessionEnv::set(Some("session-7"));
 
-    let message = refused.unwrap_err().to_string();
+    let message = refuse_inside_session().unwrap_err().to_string();
+
     assert!(
         message.contains("this is loom session session-7"),
         "{message}"
@@ -287,12 +214,10 @@ fn accept_refuses_inside_a_loom_session() {
 #[test]
 #[serial]
 fn accept_proceeds_outside_a_loom_session() {
-    std::env::remove_var("LOOM_SESSION_ID");
+    let _session = SessionEnv::set(None);
     assert!(refuse_inside_session().is_ok());
     std::env::set_var("LOOM_SESSION_ID", "");
-    let empty = refuse_inside_session();
-    std::env::remove_var("LOOM_SESSION_ID");
-    assert!(empty.is_ok());
+    assert!(refuse_inside_session().is_ok());
 }
 
 #[test]

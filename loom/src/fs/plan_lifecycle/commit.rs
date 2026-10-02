@@ -1,15 +1,15 @@
 //! Post-completion commit: keep the default branch clean after a plan is
 //! marked done.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use colored::Colorize;
 use std::path::Path;
 
 use crate::fs::work_dir::WorkDir;
 use crate::git::branch::{branch_ref, current_branch};
-use crate::git::runner::{run_git, run_git_checked};
+use crate::git::merge::control_paths::changed_paths;
+use crate::git::runner::run_git_checked;
 use crate::git::target_guard;
-use crate::sandbox::KNOWLEDGE_WRITE_GLOB;
 
 /// Commit tracked changes to keep the default branch clean after plan completion.
 ///
@@ -116,31 +116,10 @@ pub(crate) fn attest_plan_commit(
     target_guard::append_attestation(work_dir, &reference, &from, &after)
 }
 
-/// Every path `from..to` changes, exactly as git reports it (NUL separated,
-/// no rename detection, nothing trimmed).
-fn changed_paths(repo_root: &Path, from: &str, to: &str) -> Result<Vec<String>> {
-    let args = ["diff", "--name-only", "-z", "--no-renames", from, to];
-    let output = run_git(&args, repo_root)?;
-    if !output.status.success() {
-        bail!(
-            "git diff {from} {to} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .split('\0')
-        .filter(|path| !path.is_empty())
-        .map(str::to_string)
-        .collect())
-}
-
 /// Whether `path` (as git reports it) is one of `allowed` or under the
 /// knowledge prefix.
 fn is_own(path: &str, repo_root: &Path, allowed: &[&Path]) -> bool {
-    let knowledge = KNOWLEDGE_WRITE_GLOB
-        .strip_suffix("**")
-        .unwrap_or(KNOWLEDGE_WRITE_GLOB);
-    path.starts_with(knowledge)
+    path.starts_with(target_guard::knowledge_prefix())
         || allowed
             .iter()
             .copied()
@@ -150,19 +129,26 @@ fn is_own(path: &str, repo_root: &Path, allowed: &[&Path]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::target::tests::{activate, commit_file, git, repo, Repo};
+    use crate::git::target_guard::test_support::{activate, commit_file, git, repo, Repo};
     use crate::git::target_guard::{check, GuardState, LEDGER_FILE};
 
     const OLD: &str = "doc/plans/IN_PROGRESS-PLAN-x.md";
     const NEW: &str = "doc/plans/DONE-PLAN-x.md";
     const OTHER_PLAN: &str = "doc/plans/PLAN-other.md";
+    const REVIEW: &str = "doc/plans/REVIEW-x.md";
+    const OTHER_REVIEW: &str = "doc/plans/REVIEW-other.md";
 
-    /// An attesting repository with the plan, another plan, a knowledge file
-    /// and a source file committed, and `main` recorded.
+    /// An attesting repository with the plan, another plan, both plans'
+    /// review documents, a knowledge file and a source file committed, and
+    /// `main` recorded.
     fn plan_repo() -> Repo {
         let repo = repo();
         activate(&repo.root);
-        for path in [OLD, OTHER_PLAN, "doc/loom/knowledge/a.md", "src/x.rs"] {
+        let paths = [OLD, OTHER_PLAN, REVIEW, OTHER_REVIEW];
+        for path in paths
+            .into_iter()
+            .chain(["doc/loom/knowledge/a.md", "src/x.rs"])
+        {
             commit_file(&repo.root, path, "v1\n");
         }
         let first = check(&repo.root, &repo.work, "main").unwrap();
@@ -178,6 +164,11 @@ mod tests {
         let work_dir = WorkDir::new(&repo.root).unwrap();
         let (old, new) = (repo.root.join(OLD), repo.root.join(NEW));
         commit_post_completion_changes(&work_dir, &old, &new).unwrap();
+    }
+
+    /// Name `x` as the active plan in the state directory's `config.toml`.
+    fn configure_plan_x(repo: &Repo) {
+        std::fs::write(repo.work.join("config.toml"), "[plan]\nplan_id = \"x\"\n").unwrap();
     }
 
     fn ledger(repo: &Repo) -> String {
@@ -230,5 +221,31 @@ mod tests {
         complete(&repo);
 
         assert_eq!(ledger(&repo), "");
+    }
+
+    #[test]
+    fn a_commit_of_the_plans_own_review_document_is_attested() {
+        let repo = plan_repo();
+        configure_plan_x(&repo);
+        std::fs::write(repo.root.join(REVIEW), "v2\n").unwrap();
+
+        complete(&repo);
+
+        let after = git(&repo.root, &["rev-parse", "HEAD"]);
+        let from = git(&repo.root, &["rev-parse", "HEAD^"]);
+        assert!(ledger(&repo).contains(&format!("attest {from} {after} refs/heads/main\n")));
+        assert!(matches!(guard(&repo), GuardState::Clear { .. }));
+    }
+
+    #[test]
+    fn a_commit_of_another_plans_review_document_is_not_attested() {
+        let repo = plan_repo();
+        configure_plan_x(&repo);
+        std::fs::write(repo.root.join(OTHER_REVIEW), "sandbox: changed\n").unwrap();
+
+        complete(&repo);
+
+        assert_eq!(ledger(&repo), "");
+        assert!(matches!(guard(&repo), GuardState::Held(_)));
     }
 }

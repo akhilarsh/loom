@@ -35,7 +35,7 @@ pub(super) struct TargetEntry {
 }
 
 /// The path prefix knowledge stages write under (`doc/loom/knowledge/`).
-pub(super) fn knowledge_prefix() -> &'static str {
+pub(crate) fn knowledge_prefix() -> &'static str {
     KNOWLEDGE_WRITE_GLOB
         .strip_suffix("**")
         .unwrap_or(KNOWLEDGE_WRITE_GLOB)
@@ -57,10 +57,28 @@ fn read_if_exists(path: &Path) -> Result<Option<String>> {
 /// does not parse is an error.
 pub(super) fn read_record(work_dir: &Path) -> Result<GuardRecord> {
     let path = work_dir.join(RECORD_FILE);
-    let Some(text) = read_if_exists(&path)? else {
-        return Ok(GuardRecord::default());
-    };
-    serde_json::from_str(&text).with_context(|| format!("{} does not parse", path.display()))
+    parse_record(&path)?.with_context(|| format!("{} does not parse", path.display()))
+}
+
+/// [`read_record`] for the operator's accept, which repairs a corrupt record:
+/// a file that does not parse gives an empty record. A file that cannot be
+/// read is still an error.
+pub(super) fn read_record_for_accept(work_dir: &Path) -> Result<GuardRecord> {
+    let path = work_dir.join(RECORD_FILE);
+    Ok(parse_record(&path)?.unwrap_or_else(|error| {
+        let path = path.display();
+        tracing::warn!("target guard: replacing {path}, which does not parse: {error}");
+        GuardRecord::default()
+    }))
+}
+
+/// The record at `path`: the outer error is a file that cannot be read, the
+/// inner one a file that does not parse. Empty when the file does not exist.
+fn parse_record(path: &Path) -> Result<serde_json::Result<GuardRecord>> {
+    Ok(match read_if_exists(path)? {
+        Some(text) => serde_json::from_str(&text),
+        None => Ok(GuardRecord::default()),
+    })
 }
 
 /// Write the refs file, then the record: a crash between the two leaves the
@@ -90,6 +108,12 @@ pub fn guarded_refs(work_dir: &Path) -> Result<Vec<String>> {
         .filter_map(|line| line.strip_prefix("ref "))
         .map(str::to_string)
         .collect())
+}
+
+/// Every target the record has an entry for, sorted; empty when the record
+/// does not exist.
+pub fn recorded_targets(work_dir: &Path) -> Result<Vec<String>> {
+    Ok(read_record(work_dir)?.targets.into_keys().collect())
 }
 
 /// The tip loom last accepted for `target`, if the record has an entry.

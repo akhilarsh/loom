@@ -1,7 +1,8 @@
 //! Worktree resolution and knowledge-stage sandbox/hook setup for spawn.
 //!
-//! Extracted from `stage_executor.rs` to keep that file under the
-//! maintainability limit. Behavior is unchanged from before the move.
+//! A stage branch cut from the target starts at the tip the target guard
+//! accepted, so a spawn during a hold does not inherit the move; while the
+//! guard record cannot be read, the spawn waits.
 
 use anyhow::{Context, Result};
 

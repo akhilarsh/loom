@@ -1,10 +1,8 @@
 //! The evaluation of moves loom did not make: each hold reason, the
 //! attestation chain walk over a ledger, and stage work.
 
-use super::tests::{
-    activate, attest, commit, crafted, git, guard, held, ledger_line, move_main, record, repo, tip,
-    Repo,
-};
+use super::test_support::{activate, git, repo, Repo};
+use super::tests::{attest, commit, crafted, guard, held, ledger_line, move_main, record, tip};
 use super::*;
 
 fn reasons(state: GuardState) -> Vec<HoldReason> {
@@ -148,6 +146,22 @@ fn an_orphan_stage_branch_is_neither_stage_work_nor_unevaluable() {
     let repo = repo();
     let orphan = crafted(&repo.root, &tip(&repo.root), "x.txt", false);
     git(&repo.root, &["update-ref", "refs/heads/loom/x", &orphan]);
+    record(&repo);
+    let b = commit(&repo.root, "src/op.rs");
+
+    assert_eq!(guard(&repo), GuardState::Clear { accepted: b });
+}
+
+#[test]
+fn a_stage_ref_to_a_blob_is_skipped() {
+    let repo = repo();
+    let blob = git(&repo.root, &["hash-object", "-w", "README.md"]);
+    // git refuses to point a branch at a blob; a session can write the file.
+    let loose = repo.root.join(".git/refs/heads/loom");
+    std::fs::create_dir_all(&loose).unwrap();
+    std::fs::write(loose.join("blob"), format!("{blob}\n")).unwrap();
+    let listed = ["for-each-ref", "--format=%(objecttype)", "refs/heads/loom/"];
+    assert_eq!(git(&repo.root, &listed), "blob");
     record(&repo);
     let b = commit(&repo.root, "src/op.rs");
 

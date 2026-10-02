@@ -184,8 +184,8 @@ impl Orchestrator {
     /// Re-verify a `Completed + merged=true` non-knowledge stage at sync time.
     ///
     /// Derives `completed_commit` from `loom/<id>` HEAD when missing, then
-    /// checks ancestry against the (pre-resolved) target branch. If the
-    /// ancestry check fails OR the branch is also missing, reverts
+    /// checks ancestry with `merged_into_accepted()` against the accepted tip of
+    /// the (pre-resolved) target. If that check fails OR the branch is missing, reverts
     /// `merged=false` so dependents don't treat the stage as satisfied. A
     /// guard that cannot be evaluated leaves the flag unchanged.
     ///
@@ -448,7 +448,11 @@ impl Recovery for Orchestrator {
                             // just derived), run the ancestry check against the
                             // pass-hoisted target branch (P-3).
                             if let Some(completed_commit) = stage.completed_commit.clone() {
-                                match self.merged_into_accepted(&completed_commit, &target_branch) {
+                                match self.probe_accepted(
+                                    &stage.id,
+                                    &completed_commit,
+                                    &target_branch,
+                                ) {
                                     Ok(true) => {
                                         tracing::info!(
                                             stage_id = %stage.id,
@@ -496,16 +500,10 @@ impl Recovery for Orchestrator {
                                         );
                                         stuck_completed_stage_ids.push(stage.id.clone());
                                     }
-                                    Err(e) => {
+                                    Err(_) => {
                                         // Verification failed (e.g., transient git
-                                        // error). Do NOT write merged=true. Also a
-                                        // retry candidate.
-                                        tracing::error!(
-                                            stage_id = %stage.id,
-                                            error = %e,
-                                            "Merge verification errored for completed stage; \
-                                             leaving as Completed + !merged"
-                                        );
+                                        // error), logged by the probe. Do NOT write
+                                        // merged=true. Also a retry candidate.
                                         stuck_completed_stage_ids.push(stage.id.clone());
                                     }
                                 }

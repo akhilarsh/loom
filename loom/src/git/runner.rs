@@ -30,6 +30,13 @@ pub const NO_HOOKS_ARGS: [&str; 4] = [
     "core.fsmonitor=false",
 ];
 
+/// Global git args that make git read commits from their objects. A stage
+/// session can write `<common git dir>/objects/info/commit-graph`, a cache of
+/// each commit's parents and tree that git trusts without reading the
+/// commit, so a forged graph would change every ancestry test and diff loom
+/// runs. Must precede the subcommand in argv.
+const NO_COMMIT_GRAPH_ARGS: [&str; 2] = ["-c", "core.commitGraph=false"];
+
 mod pinned;
 pub(crate) use pinned::run_git_pinned_within;
 pub use pinned::{run_git_pinned, run_git_pinned_checked};
@@ -97,10 +104,13 @@ fn run_git_program(
     run_bounded_git(command, exec_args, label, timeout)
 }
 
-/// `args` behind [`NO_HOOKS_ARGS`], the argv every runner call executes.
+/// `args` behind [`NO_HOOKS_ARGS`] and [`NO_COMMIT_GRAPH_ARGS`], the argv
+/// every runner call executes.
 fn global_args<'a>(args: &[&'a str]) -> Vec<&'a str> {
-    let mut exec_args = Vec::with_capacity(NO_HOOKS_ARGS.len() + args.len());
+    let globals = NO_HOOKS_ARGS.len() + NO_COMMIT_GRAPH_ARGS.len();
+    let mut exec_args = Vec::with_capacity(globals + args.len());
     exec_args.extend_from_slice(&NO_HOOKS_ARGS);
+    exec_args.extend_from_slice(&NO_COMMIT_GRAPH_ARGS);
     exec_args.extend_from_slice(args);
     exec_args
 }
@@ -190,6 +200,9 @@ pub fn run_git_bool(args: &[&str], repo_root: &Path) -> bool {
         .map(|output| output.status.success())
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod commit_graph_tests;
 
 #[cfg(test)]
 mod tests {

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::git::branch::branch_ref;
 use crate::git::runner::{run_git, run_git_checked};
+use crate::git::target_guard::short;
 use crate::git::worktree::list_worktrees;
 
 /// Outcome of `git merge-tree --write-tree` for two commits.
@@ -45,6 +46,8 @@ pub enum MergeBlock {
     StashNotRestored { backup_ref: String },
     /// The target guard holds the target: it moved outside loom from
     /// `accepted` to `observed`, and merges into it wait for the operator.
+    /// `accepted` is empty when the guard record could not be read, and
+    /// `observed` when the live tip could not be read.
     TargetHeld {
         target: String,
         accepted: String,
@@ -85,14 +88,34 @@ impl fmt::Display for MergeBlock {
                 target,
                 accepted,
                 observed,
-            } => write!(
-                f,
-                "target {target} moved outside loom ({} → {}); merges into it wait until the \
-                 operator accepts or restores it (loom target status)",
-                accepted.get(..12).unwrap_or(accepted),
-                observed.get(..12).unwrap_or(observed)
-            ),
+            } => fmt_target_held(f, target, accepted, observed),
         }
+    }
+}
+
+/// The operator text of [`MergeBlock::TargetHeld`]; an empty tip prints as
+/// "unknown".
+fn fmt_target_held(
+    f: &mut fmt::Formatter<'_>,
+    target: &str,
+    accepted: &str,
+    observed: &str,
+) -> fmt::Result {
+    if accepted.is_empty() {
+        write!(
+            f,
+            "the target guard record could not be read, so target {target} is held at {}; \
+             merges into it wait until the operator accepts its tip (loom target status)",
+            short(observed)
+        )
+    } else {
+        write!(
+            f,
+            "target {target} moved outside loom ({} → {}); merges into it wait until the \
+             operator accepts or restores it (loom target status)",
+            short(accepted),
+            short(observed)
+        )
     }
 }
 

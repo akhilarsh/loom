@@ -156,12 +156,18 @@ pub struct Orchestrator {
     /// A deferred cleanup is not recorded here and is retried every tick. In
     /// memory only: a daemon restart sweeps once more.
     pub(super) settled_leftovers: HashSet<String>,
-    /// The target guard's hold as of the last `check_target_guard` that got
-    /// an answer; `None` while the target is clear. In memory: the guard
-    /// record in the state directory is the source of truth.
+    /// The target guard's hold as of the last `check_target_guard`; `None`
+    /// while the target is clear. A check that errors leaves it held. In
+    /// memory: the guard record in the state directory is the source of truth.
     pub(super) target_hold: Option<crate::git::target_guard::Hold>,
+    /// Whether `target_hold` was printed for the operator. A hold judged
+    /// while the merge lock was busy, or kept for an error, was not.
+    pub(super) target_hold_announced: bool,
     /// The last target-guard error logged, so a repeating one logs once.
     pub(super) target_guard_error: Option<String>,
+    /// The last error of a merged-ness probe against the accepted tip, so one
+    /// repeating for every stage on every tick logs once.
+    pub(super) merge_probe_error: Option<String>,
     /// Injectable Remote Control probe, so crash classification is unit
     /// testable without depending on the host's own claude install.
     pub(super) remote_control_active: fn(&Path) -> bool,
@@ -173,15 +179,9 @@ impl Orchestrator {
         if config.max_parallel_sessions == 0 {
             anyhow::bail!("max_parallel_sessions must be at least 1");
         }
-        let monitor_config = MonitorConfig {
-            poll_interval: config.poll_interval,
-            work_dir: config.work_dir.clone(),
-            ..Default::default()
-        };
-        let mut monitor = Monitor::new(monitor_config);
         let backend = Arc::new(SessionBackend::from_config(config.work_dir.clone())?);
         let liveness = LivenessService::new(Arc::clone(&backend));
-        monitor.set_liveness(liveness.clone());
+        let monitor = Self::new_monitor(&config, liveness.clone());
 
         let skill_index = if config.enable_skill_routing {
             Self::load_skill_index(&config)
@@ -215,9 +215,23 @@ impl Orchestrator {
             deferred_cleanups: HashMap::new(),
             settled_leftovers: HashSet::new(),
             target_hold: None,
+            target_hold_announced: false,
             target_guard_error: None,
+            merge_probe_error: None,
             remote_control_active: crate::remote_control::resolve,
         })
+    }
+
+    /// A monitor that polls at the configured interval and reads session
+    /// liveness through `liveness`.
+    fn new_monitor(config: &OrchestratorConfig, liveness: LivenessService) -> Monitor {
+        let mut monitor = Monitor::new(MonitorConfig {
+            poll_interval: config.poll_interval,
+            work_dir: config.work_dir.clone(),
+            ..Default::default()
+        });
+        monitor.set_liveness(liveness);
+        monitor
     }
 
     /// Reconcile any orphaned plan-amendment snapshots from a prior crash.

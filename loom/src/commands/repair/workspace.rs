@@ -253,6 +253,7 @@ pub(super) enum WorkspaceFix {
     GitignoreWork,
     GitignoreWorktrees,
     PreCommitHook,
+    ReferenceTransactionHook,
     HooksAndSettings,
     HookScripts,
 }
@@ -272,6 +273,8 @@ impl WorkspaceFix {
             Some(Self::GitignoreWorktrees)
         } else if description.contains("pre-commit hook not installed") {
             Some(Self::PreCommitHook)
+        } else if description.contains(super::hooks::REFERENCE_TRANSACTION_ISSUE) {
+            Some(Self::ReferenceTransactionHook)
         } else if description.contains("Project .claude/settings.json incomplete")
             || description.contains("Hooks found in .claude/settings.json")
         {
@@ -302,6 +305,9 @@ impl WorkspaceFix {
             Self::GitignoreWork => fix_gitignore_work(repo_root).map(|()| true),
             Self::GitignoreWorktrees => fix_gitignore_worktrees(repo_root).map(|()| true),
             Self::PreCommitHook => crate::git::install_pre_commit_hook(repo_root).map(|_| true),
+            Self::ReferenceTransactionHook => {
+                super::hooks::fix_reference_transaction_hook(repo_root)
+            }
             Self::HooksAndSettings => super::hooks::fix_hooks(repo_root, verbose).map(|()| true),
             Self::HookScripts => super::hooks::install_hook_assets().map(|()| true),
         }
