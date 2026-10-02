@@ -140,6 +140,24 @@ fn report_without_a_record_says_the_target_is_not_guarded_yet() {
 }
 
 #[test]
+fn report_with_an_unreadable_record_still_reports_and_offers_accept() {
+    let (repo, _accepted) = recorded();
+    let tip = git(&repo.root, &["rev-parse", "main"]);
+    std::fs::write(repo.work.join(RECORD_FILE), "{ not json").unwrap();
+    let text = report_of(&repo);
+    assert!(text.contains("Target: main"), "{text}");
+    assert!(text.contains(&format!("Current: {tip}")), "{text}");
+    assert!(text.contains(RECORD_FILE), "{text}");
+    assert!(text.contains("unreadable"), "{text}");
+    assert!(text.contains("unevaluable"), "{text}");
+    assert!(
+        text.contains(&format!("loom target accept --to {tip}")),
+        "{text}"
+    );
+    assert!(!text.contains("Restore"), "{text}");
+}
+
+#[test]
 fn report_with_a_clear_record_is_in_sync() {
     let (repo, accepted) = recorded();
 

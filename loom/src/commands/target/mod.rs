@@ -41,7 +41,10 @@ fn resolve_context() -> Result<(PathBuf, PathBuf, String)> {
 pub(crate) fn refuse_unreviewed_move(repo_root: &Path) -> Result<()> {
     let work_dir = resolve_state_dir(repo_root);
     let record = work_dir.join(RECORD_FILE);
-    if !record.exists() {
+    let present = record
+        .try_exists()
+        .with_context(|| format!("cannot stat the target guard record {}", record.display()))?;
+    if !present {
         return Ok(());
     }
     let unreadable = || format!("cannot read the target guard record {}", record.display());

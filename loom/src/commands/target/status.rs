@@ -8,7 +8,8 @@ use crate::git::branch::branch_ref;
 use crate::git::merge::rev_parse;
 use crate::git::target_guard::{
     accept_command, accepted_tip, attestation_latched, attestation_mode, pending_hold,
-    recorded_hold, restore_commands, target_key, AttestationMode, Hold,
+    recorded_hold, recorded_holds, restore_commands, target_key, AttestationMode, Hold,
+    RECORD_FILE,
 };
 
 /// Print the report for the current workspace's target. Read-only: it takes
@@ -24,6 +25,9 @@ pub fn execute() -> Result<()> {
 pub(crate) fn report(repo_root: &Path, work_dir: &Path, target: &str) -> Result<String> {
     let key = target_key(target);
     let current = rev_parse(repo_root, &branch_ref(key))?;
+    if let Err(error) = recorded_holds(work_dir) {
+        return Ok(unreadable_report(work_dir, key, &current, &error));
+    }
     let accepted = accepted_tip(work_dir, key)?;
     let mut lines = vec![
         format!("Target: {key}"),
@@ -46,6 +50,23 @@ pub(crate) fn report(repo_root: &Path, work_dir: &Path, target: &str) -> Result<
         (None, None) => lines.push("State: not guarded yet".into()),
     }
     Ok(lines.join("\n") + "\n")
+}
+
+/// The report when the guard record cannot be read: the daemon holds the
+/// target as unevaluable with no accepted tip, so the only way out is to
+/// accept the current tip.
+fn unreadable_report(work_dir: &Path, key: &str, current: &str, error: &anyhow::Error) -> String {
+    let lines = [
+        format!("Target: {key}"),
+        format!("Current: {current}"),
+        format!(
+            "Guard record {} is unreadable: {error:#}",
+            work_dir.join(RECORD_FILE).display()
+        ),
+        "State: HELD as unevaluable; no accepted tip is known".to_string(),
+        format!("Accept: loom target accept --to {current}"),
+    ];
+    lines.join("\n") + "\n"
 }
 
 fn attestation_line(repo_root: &Path, work_dir: &Path, key: &str) -> Result<String> {
