@@ -13,6 +13,7 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 
+use crate::git::branch::branch_ref;
 use crate::git::read_hooks_path_scope;
 use crate::git::runner::run_git;
 
@@ -29,16 +30,17 @@ pub enum MergeGate {
     Bypass,
 }
 
-/// A human-review reason when the diff of `branch_rev` since it split from
-/// `target_rev` touches a control path, else `None`. The reason names
-/// `branch_rev`. An error means the diff could not be computed; callers that
-/// guard a merge treat it as a refusal.
+/// A human-review reason when the diff of branch `branch` since it split from
+/// branch `target` touches a control path, else `None`. The reason names
+/// `branch`. Both are branch names, resolved as `refs/heads/<name>` so a tag
+/// of the same name cannot stand in. An error means the diff could not be
+/// computed; callers that guard a merge treat it as a refusal.
 pub fn control_path_violation(
     repo_root: &Path,
-    target_rev: &str,
-    branch_rev: &str,
+    target: &str,
+    branch: &str,
 ) -> Result<Option<String>> {
-    control_path_violation_as(repo_root, target_rev, branch_rev, branch_rev)
+    control_path_violation_as(repo_root, &branch_ref(target), &branch_ref(branch), branch)
 }
 
 /// [`control_path_violation`] with the reason naming `label` (a branch name)
@@ -51,6 +53,24 @@ pub fn control_path_violation_as(
 ) -> Result<Option<String>> {
     let base = crate::git::run_git_checked(&["merge-base", target_rev, branch_rev], repo_root)?;
     let changed = changed_paths(repo_root, &base, branch_rev)?;
+    Ok(violation_reason(repo_root, &changed, label))
+}
+
+/// [`control_path_violation_as`] over the exact change a merge would land:
+/// the diff from `old` to the merged `tree`. The merge-base diff alone is
+/// ambiguous on a history with several merge bases.
+pub fn tree_change_violation(
+    repo_root: &Path,
+    old: &str,
+    tree: &str,
+    label: &str,
+) -> Result<Option<String>> {
+    let changed = changed_paths(repo_root, old, tree)?;
+    Ok(violation_reason(repo_root, &changed, label))
+}
+
+/// The human-review reason naming the control paths among `changed`, if any.
+fn violation_reason(repo_root: &Path, changed: &[String], label: &str) -> Option<String> {
     let hooks_prefix = hooks_dir_prefix(repo_root);
     let offending: Vec<String> = changed
         .iter()
@@ -60,12 +80,12 @@ pub fn control_path_violation_as(
         .map(|path| format!("{path:?}"))
         .collect();
     if offending.is_empty() {
-        return Ok(None);
+        return None;
     }
-    Ok(Some(format!(
+    Some(format!(
         "branch {label} touches control path(s) requiring human review: {}",
         offending.join(", ")
-    )))
+    ))
 }
 
 /// Paths that differ between `base` and `branch_rev`, unquoted: `-z` output is

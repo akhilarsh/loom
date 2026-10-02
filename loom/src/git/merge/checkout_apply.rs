@@ -117,8 +117,8 @@ fn reapply(
         return Ok(overlap(tracked));
     }
 
-    let backup_ref = backup_ref_name(stage_id);
-    run_git_checked(&["update-ref", &backup_ref, &stash_commit], repo)?;
+    let backup_ref = backup_ref_name(stage_id, &stash_commit);
+    create_backup_ref(repo, &backup_ref, &stash_commit)?;
     let tree = pending.tree().to_string();
     if let Err(error) = remove_files(repo, &tree, &remove_untracked) {
         tracing::warn!(%error, "Cannot remove untracked files the merge replaces");
@@ -150,11 +150,20 @@ fn dry_run_reapplies(repo: &Path, (old, new): (&str, &str), stash_commit: &str) 
     Ok(dry.status.success())
 }
 
-fn backup_ref_name(stage_id: &str) -> String {
+/// `refs/loom/autostash/<stage>-<unix secs>-<first 12 hex of the stash
+/// commit>`: two attempts in one second keep distinct backups.
+fn backup_ref_name(stage_id: &str, stash_commit: &str) -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    format!("refs/loom/autostash/{stage_id}-{secs}")
+    let short: String = stash_commit.chars().take(12).collect();
+    format!("refs/loom/autostash/{stage_id}-{secs}-{short}")
+}
+
+/// Create `backup_ref` at `stash_commit`; the empty old value makes git
+/// refuse a ref that already exists instead of overwriting its backup.
+fn create_backup_ref(repo: &Path, backup_ref: &str, stash_commit: &str) -> Result<()> {
+    run_git_checked(&["update-ref", backup_ref, stash_commit, ""], repo).map(|_| ())
 }
 
 /// Delete a backup ref made for a stash that was never pushed.

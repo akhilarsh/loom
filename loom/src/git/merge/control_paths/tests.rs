@@ -224,3 +224,23 @@ fn resolve_hooks_dir_prefix_is_none_when_every_scope_is_unset() {
     let root = Path::new("/repo");
     assert_eq!(resolve_hooks_dir_prefix(root, None, None, None), None);
 }
+
+#[test]
+fn the_landing_tree_diff_names_control_paths() {
+    let repo = init_repo();
+    let root = repo.path();
+    branch_adding(root, "gated", &[".claude/settings.json", "src/ok.rs"]);
+    branch_adding(root, "plain", &["src/ok.rs"]);
+    let tree_of = |id: &str| rev(root, &format!("refs/heads/loom/{id}^{{tree}}"));
+    let old = rev(root, "refs/heads/main");
+
+    let reason = tree_change_violation(root, &old, &tree_of("gated"), "loom/gated")
+        .unwrap()
+        .expect("a control path in the landing diff is held");
+    assert!(reason.contains(".claude/settings.json"), "{reason}");
+    assert!(!reason.contains("src/ok.rs"), "{reason}");
+    assert_eq!(
+        tree_change_violation(root, &old, &tree_of("plain"), "loom/plain").unwrap(),
+        None
+    );
+}

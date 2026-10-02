@@ -3,6 +3,7 @@
 use anyhow::Result;
 use std::path::Path;
 
+use super::naming::branch_ref;
 use crate::git::runner::{run_git, run_git_checked};
 
 #[cfg(test)]
@@ -15,7 +16,8 @@ use std::process::Command;
 ///
 /// # Arguments
 /// * `commit_sha` - The commit SHA to check
-/// * `branch` - The branch name to check against
+/// * `branch` - The branch to check against: pass [`branch_ref`] for a branch
+///   name (a bare name resolves tags first), or a SHA
 /// * `repo_root` - Path to the git repository root
 ///
 /// # Returns
@@ -67,14 +69,15 @@ pub fn is_ancestor_of(commit_sha: &str, branch: &str, repo_root: &Path) -> Resul
 /// Uses `git rev-parse` to resolve the branch name to its HEAD commit SHA.
 ///
 /// # Arguments
-/// * `branch` - The branch name to get HEAD for (e.g., "loom/stage-1")
+/// * `branch` - The branch name to get HEAD for (e.g., "loom/stage-1"); resolved
+///   as `refs/heads/<branch>`, so a tag of the same name cannot answer
 /// * `repo_root` - Path to the git repository root
 ///
 /// # Returns
 /// * `Ok(sha)` - The full commit SHA of the branch HEAD
 /// * `Err` if the branch doesn't exist or git command fails
 pub fn get_branch_head(branch: &str, repo_root: &Path) -> Result<String> {
-    run_git_checked(&["rev-parse", branch], repo_root)
+    run_git_checked(&["rev-parse", &branch_ref(branch)], repo_root)
 }
 
 /// Count commits on `branch` that are not on `base`.
@@ -88,8 +91,18 @@ pub fn get_branch_head(branch: &str, repo_root: &Path) -> Result<String> {
 /// * `branch` - The branch with potentially new commits (e.g., `loom/<stage>`)
 /// * `base` - The branch to compare against (e.g., `main`)
 /// * `repo_root` - Path to the git repository root
+///
+/// Both arguments are branch names, resolved as `refs/heads/<name>`; use
+/// [`commits_between`] for revisions such as `HEAD` or a SHA.
 pub fn commits_ahead_of(branch: &str, base: &str, repo_root: &Path) -> Result<usize> {
-    let range = format!("{base}..{branch}");
+    commits_between(&branch_ref(branch), &branch_ref(base), repo_root)
+}
+
+/// [`commits_ahead_of`] over revisions, passed to git as given: the count of
+/// commits reachable from `tip` and not from `base`.
+pub fn commits_between(tip: &str, base: &str, repo_root: &Path) -> Result<usize> {
+    let branch = tip;
+    let range = format!("{base}..{tip}");
     let output = run_git(&["rev-list", "--count", &range], repo_root)?;
     if !output.status.success() {
         // A non-zero exit is ambiguous: it can mean either a missing ref

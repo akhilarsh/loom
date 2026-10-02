@@ -17,13 +17,15 @@ use anyhow::{bail, Result};
 use std::path::Path;
 use std::time::Duration;
 
-use super::branch::{branch_exists, branch_name_for_stage, is_ancestor_of};
+use super::branch::{branch_exists, branch_name_for_stage, branch_ref, is_ancestor_of};
 use crate::git::runner::run_git_checked;
 use lock::MergeLock;
 use operation::operator_operation;
 
 // Re-export status types for use by other modules
-pub use control_paths::{control_path_violation, control_path_violation_as, MergeGate};
+pub use control_paths::{
+    control_path_violation, control_path_violation_as, tree_change_violation, MergeGate,
+};
 pub use in_progress::{
     detect_in_progress_merge_at, detect_in_progress_merge_at_worktree, detect_in_progress_merges,
     git_dir_for_repo_path, merge_head_exists, ActiveMergeState, InProgressMerge, MergeLocation,
@@ -76,7 +78,8 @@ pub enum MergeResult {
 ///    lock, so a commit made to the branch while the lock was awaited cannot
 ///    slip past it.
 /// 3. Compute the merge with `git merge-tree`; conflicts leave everything
-///    untouched.
+///    untouched. With the gate enforced, the diff from the target to the
+///    merged tree is gated as well.
 /// 4. Advance the target with [`advance_target`], which writes the merge
 ///    commit with `git commit-tree` only when the advance can happen.
 pub fn merge_stage(
@@ -104,8 +107,8 @@ pub fn merge_stage(
         bail!("Branch '{branch_name}' does not exist");
     }
     // Full ref names: a tag named like the branch must not win.
-    let old = tree::rev_parse(repo_root, &format!("refs/heads/{target_branch}"))?;
-    let branch_tip = tree::rev_parse(repo_root, &format!("refs/heads/{branch_name}"))?;
+    let old = tree::rev_parse(repo_root, &branch_ref(target_branch))?;
+    let branch_tip = tree::rev_parse(repo_root, &branch_ref(&branch_name))?;
     if is_ancestor_of(&branch_tip, &old, repo_root)? {
         return Ok(MergeResult::AlreadyUpToDate);
     }
@@ -118,7 +121,13 @@ pub fn merge_stage(
         }
     }
 
-    merge_and_advance(repo_root, stage_id, target_branch, &old, &branch_tip)
+    merge_and_advance(
+        repo_root,
+        stage_id,
+        target_branch,
+        (&old, &branch_tip),
+        gate,
+    )
 }
 
 /// Compute and land the merge of `branch_tip` into `old`.
@@ -126,8 +135,8 @@ fn merge_and_advance(
     repo_root: &Path,
     stage_id: &str,
     target_branch: &str,
-    old: &str,
-    branch_tip: &str,
+    (old, branch_tip): (&str, &str),
+    gate: MergeGate,
 ) -> Result<MergeResult> {
     let merged_tree = match merge_tree(repo_root, old, branch_tip)? {
         TreeMerge::Clean { tree } => tree,
@@ -137,6 +146,13 @@ fn merge_and_advance(
             })
         }
     };
+    if gate == MergeGate::Enforce {
+        // The exact change that lands, not only the merge-base diff.
+        let label = branch_name_for_stage(stage_id);
+        if let Some(reason) = tree_change_violation(repo_root, old, &merged_tree, &label)? {
+            return Ok(MergeResult::Held { reason });
+        }
+    }
     let msg = format!(
         "Merge {} into {target_branch}",
         branch_name_for_stage(stage_id)
@@ -217,13 +233,15 @@ pub fn verify_merge_succeeded(
     target_branch: &str,
     repo_root: &Path,
 ) -> Result<bool> {
-    is_ancestor_of(completed_commit, target_branch, repo_root)
+    is_ancestor_of(completed_commit, &branch_ref(target_branch), repo_root)
 }
 
 #[cfg(test)]
 mod stage_overlap_tests;
 #[cfg(test)]
 mod stage_tests;
+#[cfg(test)]
+mod tag_shadow_tests;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]

@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use super::MergeLifecycle;
-use crate::git::branch::{branch_name_for_stage, commits_ahead_of, is_ancestor_of};
+use crate::git::branch::{branch_name_for_stage, branch_ref, commits_ahead_of, is_ancestor_of};
 use crate::git::cleanup::branch_exists_strict;
 use crate::git::merge::verify_merge_succeeded;
 use crate::verify::transitions::load_stage;
@@ -85,7 +85,7 @@ fn uncontained_worktree_head(
         // No branch and no worktree: there is nothing left to lose.
         return None;
     }
-    match is_ancestor_of("HEAD", target_branch, &worktree) {
+    match is_ancestor_of("HEAD", &branch_ref(target_branch), &worktree) {
         Ok(true) => None,
         Ok(false) => Some(format!(
             "the worktree HEAD holds commits that are not in '{target_branch}'"
@@ -128,3 +128,6 @@ fn recorded_commit(stage_id: &str, work_dir: &Path) -> Option<String> {
         }
     }
 }
+
+#[cfg(test)]
+mod tag_tests;

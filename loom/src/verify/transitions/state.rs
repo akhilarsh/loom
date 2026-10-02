@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::git::branch::is_ancestor_of;
+use crate::git::branch::{branch_ref, is_ancestor_of};
 use crate::models::stage::{Stage, StageStatus, StageType};
 
 use super::persistence::{list_all_stages, load_stage, update_stage};
@@ -244,7 +244,7 @@ pub fn describe_dependency_block(
                             false,
                         ),
                         Some(ref commit) => {
-                            match is_ancestor_of(commit, target_branch, repo_root) {
+                            match is_ancestor_of(commit, &branch_ref(target_branch), repo_root) {
                                 Ok(true) => continue, // Satisfied.
                                 Ok(false) => (
                                     format!(
@@ -344,7 +344,7 @@ pub fn are_all_dependencies_satisfied(
             return Ok(false);
         };
 
-        match is_ancestor_of(completed_commit, target_branch, repo_root) {
+        match is_ancestor_of(completed_commit, &branch_ref(target_branch), repo_root) {
             Ok(true) => continue,
             Ok(false) => {
                 tracing::error!(

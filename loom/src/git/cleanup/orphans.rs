@@ -3,7 +3,9 @@
 use super::branch::branch_exists_strict;
 use super::{prune_worktrees, CleanupConfig, CleanupResult};
 use crate::fs::stage_files::find_stage_file;
-use crate::git::branch::{branch_name_for_stage, commits_ahead_of, default_branch, is_ancestor_of};
+use crate::git::branch::{
+    branch_name_for_stage, branch_ref, commits_ahead_of, default_branch, is_ancestor_of,
+};
 use crate::models::stage::{Stage, StageStatus};
 use crate::orchestrator::merge_lifecycle::{CleanupOutcome, MergeLifecycle};
 use crate::verify::transitions::parse_stage_from_markdown;
@@ -141,10 +143,9 @@ fn classify_stage(stage_id: &str, stage: &Stage, target: &str, repo_root: &Path)
         );
         return false;
     }
-    let completed_is_merged = stage
-        .completed_commit
-        .as_deref()
-        .is_some_and(|commit| is_ancestor_of(commit, target, repo_root).unwrap_or(false));
+    let completed_is_merged = stage.completed_commit.as_deref().is_some_and(|commit| {
+        is_ancestor_of(commit, &branch_ref(target), repo_root).unwrap_or(false)
+    });
     let branch_is_merged = branch_has_no_unmerged_work(stage_id, target, repo_root);
     let safe =
         branch_is_merged && (completed_is_merged || matches!(stage.status, StageStatus::Skipped));

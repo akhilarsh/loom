@@ -7,7 +7,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::git::branch::{branch_exists, branch_name_for_stage, is_ancestor_of};
+use crate::git::branch::{branch_exists, branch_name_for_stage, branch_ref, is_ancestor_of};
 use crate::models::stage::{Stage, StageType};
 
 /// The merge state of a completed stage.
@@ -69,7 +69,7 @@ pub fn check_merge_state(stage: &Stage, merge_point: &str, repo_root: &Path) -> 
     // Without this ordering, the orchestrator cannot detect successful resolutions,
     // causing infinite re-spawning of merge sessions.
     if let Some(ref completed_commit) = stage.completed_commit {
-        match is_ancestor_of(completed_commit, merge_point, repo_root) {
+        match is_ancestor_of(completed_commit, &branch_ref(merge_point), repo_root) {
             Ok(true) => return Ok(MergeState::Merged),
             Ok(false) => {
                 // Commit exists but not in target - check if branch still exists

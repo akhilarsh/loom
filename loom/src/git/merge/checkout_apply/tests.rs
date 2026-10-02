@@ -37,6 +37,7 @@ fn a_refused_fast_forward_whose_pop_fails_names_the_stash() {
     let _guard = inject(Failures {
         fast_forward: true,
         pop: true,
+        ..Failures::default()
     });
 
     let MergeResult::Blocked(MergeBlock::StashNotRestored { backup_ref }) = merge(root) else {
@@ -59,6 +60,7 @@ fn a_refused_fast_forward_with_a_working_pop_puts_everything_back() {
     let _guard = inject(Failures {
         fast_forward: true,
         pop: false,
+        ..Failures::default()
     });
 
     let result = merge(root);
@@ -76,6 +78,72 @@ fn a_refused_fast_forward_with_a_working_pop_puts_everything_back() {
 }
 
 #[test]
+fn a_fast_forward_that_errors_with_a_working_pop_puts_everything_back() {
+    let repo = init_repo();
+    let root = repo.path();
+    overlapping_checkout(root);
+    let (head, edited) = (rev(root, "main"), read(root));
+    let _guard = inject(Failures {
+        fast_forward_error: true,
+        ..Failures::default()
+    });
+
+    let result = merge(root);
+
+    let MergeResult::Blocked(MergeBlock::FastForwardRefused { detail }) = &result else {
+        panic!("expected FastForwardRefused, got {result:?}");
+    };
+    assert!(detail.contains("simulated spawn failure"), "{detail}");
+    assert_eq!(rev(root, "main"), head);
+    assert_eq!(read(root), edited);
+    assert_eq!(git_out(root, &["stash", "list"]), "");
+}
+
+#[test]
+fn a_fast_forward_that_errors_with_a_failing_pop_names_the_stash() {
+    let repo = init_repo();
+    let root = repo.path();
+    overlapping_checkout(root);
+    let head = rev(root, "main");
+    let _guard = inject(Failures {
+        fast_forward_error: true,
+        pop: true,
+        ..Failures::default()
+    });
+
+    let MergeResult::Blocked(MergeBlock::StashNotRestored { backup_ref }) = merge(root) else {
+        panic!("expected StashNotRestored");
+    };
+
+    assert_eq!(rev(root, "main"), head);
+    git_out(root, &["rev-parse", "--verify", &backup_ref]);
+    assert!(git_out(root, &["stash", "list"]).contains("stash@{0}"));
+}
+
+#[test]
+fn backup_ref_names_differ_for_different_stashes_in_one_second() {
+    let a = backup_ref_name("s1", "aaaaaaaaaaaaaaaaaaaaaaaa");
+    let b = backup_ref_name("s1", "bbbbbbbbbbbbbbbbbbbbbbbb");
+    assert_ne!(a, b);
+    assert!(a.starts_with("refs/loom/autostash/s1-") && a.ends_with("-aaaaaaaaaaaa"));
+}
+
+#[test]
+fn an_existing_backup_ref_is_not_overwritten() {
+    let repo = init_repo();
+    let root = repo.path();
+    let first = rev(root, "main");
+    commit_file(root, "x.txt", "x", "second");
+    let second = rev(root, "main");
+    let name = "refs/loom/autostash/s1-1-aaaaaaaaaaaa";
+
+    create_backup_ref(root, name, &first).unwrap();
+
+    assert!(create_backup_ref(root, name, &second).is_err());
+    assert_eq!(git_out(root, &["rev-parse", name]), first);
+}
+
+#[test]
 fn a_landed_merge_whose_pops_fail_is_a_success_with_the_stash_kept() {
     let repo = init_repo();
     let root = repo.path();
@@ -84,6 +152,7 @@ fn a_landed_merge_whose_pops_fail_is_a_success_with_the_stash_kept() {
     let _guard = inject(Failures {
         fast_forward: false,
         pop: true,
+        ..Failures::default()
     });
 
     let MergeResult::Success {

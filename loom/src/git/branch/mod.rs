@@ -17,10 +17,12 @@ mod operations;
 mod status;
 
 // Re-export all public items
-pub use ancestry::{commits_ahead_of, get_branch_head, is_ancestor_of, is_branch_merged};
+pub use ancestry::{
+    commits_ahead_of, commits_between, get_branch_head, is_ancestor_of, is_branch_merged,
+};
 pub use cleanup::cleanup_merged_branches;
 pub use info::BranchInfo;
-pub use naming::{branch_name_for_stage, stage_id_from_branch};
+pub use naming::{branch_name_for_stage, branch_ref, stage_id_from_branch};
 pub use operations::{
     branch_exists, create_branch, current_branch, default_branch, delete_branch, list_branches,
     list_loom_branches, resolve_target_branch,

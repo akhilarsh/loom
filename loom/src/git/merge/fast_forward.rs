@@ -22,35 +22,42 @@ const OVERLAP_HEADERS: [&str; 4] = [
 ];
 
 /// `merge --ff-only` from `old` to `new`, then restore a stash made for it
-/// (when `backup_ref` is set). On a refused fast-forward the stash is popped
-/// and `removed` is written back.
+/// (when `backup_ref` is set). Every exit restores first: on a refused or
+/// failed fast-forward the stash is popped and `removed` is written back; a
+/// pop that fails is a [`MergeBlock::StashNotRestored`], never an `Err`. A
+/// fast-forward that errors (git did not start, or timed out) is reported as
+/// a refusal, since the operator's checkout has to be put back either way.
 pub(super) fn fast_forward(
     repo: &Path,
     (old, new): (&str, &str),
     removed: &[String],
     backup_ref: Option<String>,
 ) -> Result<Advance> {
-    if let Err(stderr) = try_fast_forward(repo, new)? {
-        let stash_restored = match backup_ref {
-            Some(_) => pop_stash(repo),
-            None => true,
-        };
-        restore_files(repo, new, removed);
-        if let (false, Some(backup_ref)) = (stash_restored, backup_ref) {
-            return Ok(Advance::Blocked(MergeBlock::StashNotRestored {
+    let stderr = match try_fast_forward(repo, new) {
+        Ok(Ok(())) => {
+            let stash = backup_ref.map(|backup_ref| StashReapply {
+                restored: pop_stash(repo),
                 backup_ref,
-            }));
+            });
+            return Ok(Advance::Advanced { stash });
         }
-        if rev_parse(repo, "HEAD")? != old {
-            return Ok(Advance::Blocked(MergeBlock::TargetMoved));
-        }
-        return Ok(Advance::Blocked(refused_block(&stderr)));
+        Ok(Err(stderr)) => stderr,
+        Err(error) => format!("{error:#}"),
+    };
+    let stash_restored = match backup_ref {
+        Some(_) => pop_stash(repo),
+        None => true,
+    };
+    restore_files(repo, new, removed);
+    if let (false, Some(backup_ref)) = (stash_restored, backup_ref) {
+        return Ok(Advance::Blocked(MergeBlock::StashNotRestored {
+            backup_ref,
+        }));
     }
-    let stash = backup_ref.map(|backup_ref| StashReapply {
-        restored: pop_stash(repo),
-        backup_ref,
-    });
-    Ok(Advance::Advanced { stash })
+    if rev_parse(repo, "HEAD")? != old {
+        return Ok(Advance::Blocked(MergeBlock::TargetMoved));
+    }
+    Ok(Advance::Blocked(refused_block(&stderr)))
 }
 
 /// `Ok(Err(stderr))` when git refused the fast-forward.
@@ -58,6 +65,10 @@ fn try_fast_forward(repo: &Path, new: &str) -> Result<std::result::Result<(), St
     #[cfg(test)]
     if failpoint::fast_forward() {
         return Ok(Err("simulated refusal".to_string()));
+    }
+    #[cfg(test)]
+    if failpoint::fast_forward_error() {
+        anyhow::bail!("simulated spawn failure");
     }
     let output = run_git(&["merge", "--ff-only", "--quiet", new], repo)?;
     if output.status.success() {
@@ -105,7 +116,7 @@ pub(super) fn refused_block(stderr: &str) -> MergeBlock {
     }
 }
 
-/// Test-only switches that make the fast-forward or the stash pop fail on
+/// Test-only switches that make the fast-forward refuse or error, or the stash pop fail on
 /// the current thread, to reach paths git does not fail on by itself.
 #[cfg(test)]
 pub(super) mod failpoint {
@@ -114,11 +125,12 @@ pub(super) mod failpoint {
     #[derive(Clone, Copy, Default)]
     pub struct Failures {
         pub fast_forward: bool,
+        pub fast_forward_error: bool,
         pub pop: bool,
     }
 
     thread_local! {
-        static FAILURES: Cell<Failures> = const { Cell::new(Failures { fast_forward: false, pop: false }) };
+        static FAILURES: Cell<Failures> = const { Cell::new(Failures { fast_forward: false, fast_forward_error: false, pop: false }) };
     }
 
     /// Resets the switches when dropped.
@@ -137,6 +149,10 @@ pub(super) mod failpoint {
 
     pub(super) fn fast_forward() -> bool {
         FAILURES.with(|cell| cell.get().fast_forward)
+    }
+
+    pub(super) fn fast_forward_error() -> bool {
+        FAILURES.with(|cell| cell.get().fast_forward_error)
     }
 
     pub(super) fn pop() -> bool {

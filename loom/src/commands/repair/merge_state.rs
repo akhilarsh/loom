@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 
 use super::{RepairIssue, Severity};
 use crate::fs::work_dir::{load_config, WorkDir};
-use crate::git::branch::{is_ancestor_of, resolve_target_branch};
+use crate::git::branch::{branch_ref, is_ancestor_of, resolve_target_branch};
 use crate::git::{branch_exists, branch_name_for_stage};
 use crate::models::stage::{Stage, StageStatus, StageType};
 use crate::verify::transitions::{list_all_stages, update_stage};
@@ -102,7 +102,7 @@ fn audit_merged_stage(
     // CRITICAL: merged=true and we have a commit SHA.
     // Verify the commit is actually an ancestor of the target branch.
     // If it isn't, the stage was marked merged without a real merge.
-    match is_ancestor_of(commit, target_branch, repo_root) {
+    match is_ancestor_of(commit, &branch_ref(target_branch), repo_root) {
         Ok(true) => {
             // All good — commit is in target branch.
         }

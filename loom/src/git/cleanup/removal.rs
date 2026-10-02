@@ -5,7 +5,7 @@ use super::batch::cleanup_after_merge;
 use super::branch::branch_exists_strict;
 use super::config::{CleanupConfig, CleanupResult};
 use super::worktree::worktree_directory_exists;
-use crate::git::branch::{branch_name_for_stage, is_ancestor_of};
+use crate::git::branch::{branch_name_for_stage, branch_ref, is_ancestor_of};
 use crate::git::runner::run_git_checked;
 use crate::git::worktree::is_worktree_scaffold_path;
 use crate::verify::tool_artifacts::is_tool_artifact;
@@ -187,7 +187,7 @@ fn require_merged_history(
 }
 
 fn require_ancestor(commit: &str, target: &str, repo_root: &Path, label: &str) -> Result<()> {
-    if !is_ancestor_of(commit, target, repo_root)
+    if !is_ancestor_of(commit, &branch_ref(target), repo_root)
         .with_context(|| format!("Failed to verify {label} against '{target}'"))?
     {
         bail!("The {label} '{commit}' is not retained by target branch '{target}'");

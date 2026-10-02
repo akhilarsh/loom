@@ -25,7 +25,7 @@ use crate::context::store::CACHE_RELATIVE_DIR;
 use crate::context::view::{build_cold, relink, ResolvedView, ViewIdentity};
 use crate::fs::safe_read::read_bounded;
 use crate::fs::work_dir::WorkDir;
-use crate::git::branch::{commits_ahead_of, is_ancestor_of};
+use crate::git::branch::{commits_between, is_ancestor_of};
 use crate::git::runner::run_git_checked;
 use crate::git::worktree::is_worktree_scaffold_path;
 
@@ -196,7 +196,7 @@ fn nearest_ancestor_base(base_dir: &Path, worktree: &Path) -> Result<Option<Stri
         // A revision git cannot resolve here is unusable, not an error: a
         // base can outlive the commit it describes.
         if matches!(is_ancestor_of(&revision, "HEAD", worktree), Ok(true)) {
-            let distance = commits_ahead_of("HEAD", &revision, worktree)?;
+            let distance = commits_between("HEAD", &revision, worktree)?;
             ancestors.push((distance, revision));
         }
     }
