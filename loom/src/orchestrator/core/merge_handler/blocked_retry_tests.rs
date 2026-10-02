@@ -224,3 +224,78 @@ fn a_stage_that_left_merge_blocked_loses_its_retry_memo() {
     assert!(!orchestrator.blocked_merge_inputs.contains_key(ID));
     assert!(!orchestrator.refused_merge_attempts.contains_key(ID));
 }
+
+const BACKUP_REF: &str = "refs/loom/autostash/s-1-abc";
+
+fn stash_list(root: &Path) -> String {
+    let out = std::process::Command::new("git")
+        .args(["stash", "list"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn a_block_with_the_operator_work_in_a_backup_stash_is_not_retried_until_the_ref_is_gone() {
+    let (repo, mut orchestrator) = blocked_stage();
+    let root = repo.path();
+    // The cause of the block is gone: only the backup ref holds the retry.
+    git_ok(root, &["stash", "push", "-q", "--include-untracked"]);
+    git_ok(root, &["update-ref", BACKUP_REF, "HEAD"]);
+    update_stage(ID, &orchestrator.config.work_dir, |stage| {
+        stage.block_merge(MergeBlock::StashNotRestored {
+            backup_ref: BACKUP_REF.to_string(),
+        });
+        Ok(())
+    })
+    .unwrap();
+    let (objects, stage_file, stashes) = (
+        object_counts(root),
+        stage_file_text(&orchestrator),
+        stash_list(root),
+    );
+
+    orchestrator.retry_blocked_merge(&on_disk(&orchestrator));
+
+    assert_eq!(object_counts(root), objects);
+    assert_eq!(stage_file_text(&orchestrator), stage_file);
+    assert_eq!(stash_list(root), stashes);
+    assert_eq!(on_disk(&orchestrator).status, StageStatus::MergeBlocked);
+
+    git_ok(root, &["update-ref", "-d", BACKUP_REF]);
+    orchestrator.retry_blocked_merge(&on_disk(&orchestrator));
+
+    let stage = on_disk(&orchestrator);
+    assert_eq!(stage.status, StageStatus::Completed);
+    assert!(stage.merged);
+}
+
+#[test]
+fn a_stage_with_an_unrestored_backup_ref_that_still_exists_is_not_retried() {
+    let (repo, mut orchestrator) = blocked_stage();
+    git_ok(repo.path(), &["stash", "push", "-q", "--include-untracked"]);
+    git_ok(repo.path(), &["update-ref", BACKUP_REF, "HEAD"]);
+    let mut stage = on_disk(&orchestrator);
+    stage.merge.unrestored.push(BACKUP_REF.to_string());
+
+    orchestrator.retry_blocked_merge(&stage);
+
+    assert_eq!(on_disk(&orchestrator).status, StageStatus::MergeBlocked);
+}
+
+#[test]
+fn a_memo_survives_a_stage_file_that_cannot_be_read() {
+    let (_repo, mut orchestrator) = blocked_stage();
+    orchestrator.retry_blocked_merge(&on_disk(&orchestrator));
+    let stages = orchestrator.config.work_dir.join("stages");
+    let file = crate::fs::stage_files::find_stage_file(&stages, ID)
+        .unwrap()
+        .unwrap();
+    std::fs::write(file, "---\n: not yaml [\n---\n").unwrap();
+    assert!(load_stage(ID, &orchestrator.config.work_dir).is_err());
+
+    orchestrator.prune_retry_memos();
+
+    assert!(orchestrator.blocked_merge_inputs.contains_key(ID));
+}

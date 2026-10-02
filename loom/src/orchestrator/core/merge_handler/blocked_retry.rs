@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::git::branch::resolve_target_branch;
+use crate::git::runner::run_git_bool;
 use crate::git::{blocked_merge_inputs, MergeBlock};
 use crate::models::stage::{Stage, StageStatus};
 use crate::orchestrator::core::persistence::Persistence;
@@ -22,6 +23,30 @@ fn overlap_paths(stage: &Stage) -> Vec<String> {
         Some(MergeBlock::UncommittedOverlap { paths }) => paths.clone(),
         _ => Vec::new(),
     }
+}
+
+/// The backup refs of unrestored stashes the stage holds, the block's own
+/// first: each keeps changes of the operator that the checkout lacks.
+fn unrestored_backup_refs(stage: &Stage) -> Vec<&str> {
+    let held = match &stage.merge.block {
+        Some(MergeBlock::StashNotRestored { backup_ref }) => Some(backup_ref),
+        _ => None,
+    };
+    held.into_iter()
+        .chain(&stage.merge.unrestored)
+        .map(String::as_str)
+        .collect()
+}
+
+/// Whether the operator's work still sits in a backup stash of `stage`: one
+/// of its unrestored backup refs exists. A retry would stash the checkout
+/// again, possibly half updated, under a new ref; the operator deleting the
+/// ref after restoring resumes the retries.
+fn holds_backup_stash(repo_root: &Path, stage: &Stage) -> bool {
+    unrestored_backup_refs(stage).into_iter().any(|backup_ref| {
+        backup_ref.starts_with("refs/loom/autostash/")
+            && run_git_bool(&["rev-parse", "--verify", "--quiet", backup_ref], repo_root)
+    })
 }
 
 /// A memo entry older than this is ignored: a safety net for inputs the
@@ -58,9 +83,14 @@ impl Orchestrator {
     /// the last blocked attempt saw, for at most ten minutes: an attempt
     /// writes git objects even when the target cannot advance. An attempt
     /// that watches a directory is never skipped, and a `FastForwardRefused`
-    /// one is retried at most once a minute.
+    /// one is retried at most once a minute. A stage whose operator work
+    /// still sits in a backup stash is not retried at all.
     pub(super) fn retry_blocked_merge_at(&mut self, stage: &Stage, now: Instant) {
         let stage_id = stage.id.as_str();
+        if holds_backup_stash(&self.config.repo_root, stage) {
+            tracing::debug!(stage_id = %stage_id, "Operator changes are in a backup stash; retry paused");
+            return;
+        }
         if self.refused_retry_pending(stage_id, now) {
             tracing::debug!(stage_id = %stage_id, "Fast-forward refusal retried too recently; skipped");
             return;
@@ -94,7 +124,8 @@ impl Orchestrator {
     }
 
     /// Drop the retry memo of every stage that is no longer `MergeBlocked`
-    /// with a typed block: a stage that left that state by other means (an
+    /// with a typed block, as read from its file (a read error keeps the
+    /// memo): a stage that left that state by other means (an
     /// operator re-queue, a conflict) must not carry its entry into a later
     /// block with identical inputs, which would skip that block's first retry.
     pub(super) fn prune_retry_memos(&mut self) {
@@ -105,10 +136,10 @@ impl Orchestrator {
             .cloned()
             .collect();
         for stage_id in remembered {
-            let still_blocked = self.load_stage(&stage_id).is_ok_and(|stage| {
-                stage.status == StageStatus::MergeBlocked && stage.merge.block.is_some()
+            let left_blocked = self.load_stage(&stage_id).is_ok_and(|stage| {
+                stage.status != StageStatus::MergeBlocked || stage.merge.block.is_none()
             });
-            if !still_blocked {
+            if left_blocked {
                 self.blocked_merge_inputs.remove(&stage_id);
                 self.refused_merge_attempts.remove(&stage_id);
             }

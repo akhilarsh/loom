@@ -190,3 +190,44 @@ fn a_failing_stash_snapshot_blocks_and_leaves_the_checkout_alone() {
     assert_eq!(git_out(root, &["stash", "list"]), "");
     assert_eq!(git_out(root, &["for-each-ref", "refs/loom"]), "");
 }
+
+#[test]
+fn an_errored_fast_forward_writes_removed_files_back_only_where_absent() {
+    let repo = init_repo();
+    let root = repo.path();
+    stage_branch(
+        root,
+        "s1",
+        &[("a.txt", "branch a\n"), ("b.txt", "branch b\n")],
+    );
+    // `a.txt` came back while the fast-forward ran; `b.txt` is still gone.
+    std::fs::write(root.join("a.txt"), "operator's a\n").unwrap();
+    let _guard = inject(Failures {
+        fast_forward_error: true,
+        ..Failures::default()
+    });
+    let removed = vec!["a.txt".to_string(), "b.txt".to_string()];
+
+    let advance = fast_forward(
+        root,
+        (&rev(root, "main"), &rev(root, "loom/s1")),
+        &removed,
+        Some("refs/loom/autostash/s1-1-abc".to_string()),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        advance,
+        Advance::Blocked(MergeBlock::StashNotRestored { .. })
+    ));
+    assert_eq!(
+        std::fs::read(root.join("a.txt")).unwrap(),
+        b"operator's a\n",
+        "a file already present is untouched"
+    );
+    assert_eq!(
+        std::fs::read(root.join("b.txt")).unwrap(),
+        b"branch b\n",
+        "an absent file is restored"
+    );
+}

@@ -1,15 +1,20 @@
 //! The branch `loom init` records as the plan's merge target.
 
 use crate::git::branch::current_branch;
+use crate::git::runner::run_git_bool;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
 /// The branch checked out in `repo_root`. Refuses a detached HEAD: stages
-/// merge into a named branch, and `HEAD` is not one.
+/// merge into a named branch, and `HEAD` is not one. Refuses a branch with no
+/// commit, which stage worktrees cannot branch from.
 pub(super) fn checked_out_branch(repo_root: &Path) -> Result<String> {
     let branch = current_branch(repo_root).context("Failed to get current git branch")?;
     if branch == "HEAD" {
         bail!("loom init needs a checked-out branch to merge stages into; HEAD is detached");
+    }
+    if !run_git_bool(&["rev-parse", "--verify", "--quiet", "HEAD"], repo_root) {
+        bail!("loom init needs at least one commit on {branch}");
     }
     Ok(branch)
 }
@@ -45,6 +50,19 @@ mod tests {
     fn records_the_checked_out_branch() {
         let tmp = repo();
         assert_eq!(checked_out_branch(tmp.path()).unwrap(), "main");
+    }
+
+    #[test]
+    fn refuses_a_branch_with_no_commit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        run_git_checked(&["init", "-q", "-b", "main"], tmp.path()).unwrap();
+        let error = checked_out_branch(tmp.path()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("loom init needs at least one commit on main"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -183,7 +183,12 @@ fn a_dead_unfrozen_writer_routed_to_handoff_is_charged() {
     let session = load_session_exact(&work, &session_id).unwrap().unwrap();
 
     let recovered = super::super::orphan_adoption::recover_orphaned_stage(
-        &mut stage, &session, &work, 1, "main", false,
+        &mut stage,
+        &session,
+        &work,
+        Ok(1),
+        "main",
+        false,
     );
 
     assert!(recovered);

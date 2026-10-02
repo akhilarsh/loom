@@ -919,7 +919,7 @@ impl Recovery for Orchestrator {
                 &target_branch,
                 &self.config.repo_root,
             )
-            .unwrap_or(1); // a failed probe counts as work: never discard on doubt
+            .map_err(|error| error.to_string());
             let mut mutation_applied = false;
             let updated =
                 update_stage_at_path(stage_id, stage_path, &self.config.work_dir, |stage| {
@@ -934,7 +934,7 @@ impl Recovery for Orchestrator {
                                 stage,
                                 &session,
                                 &self.config.work_dir,
-                                commits_ahead,
+                                commits_ahead.clone(),
                                 &target_branch,
                                 self.config.manual_mode,
                             );
@@ -957,7 +957,7 @@ impl Recovery for Orchestrator {
             tracing::warn!(
                 stage_id = %stage_id,
                 status = ?updated.status,
-                commits_ahead,
+                commits_ahead = ?commits_ahead,
                 "Recovered orphaned current session"
             );
             if let Err(error) = self.graph.mark_status(stage_id, updated.status.clone()) {

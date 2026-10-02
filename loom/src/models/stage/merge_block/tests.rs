@@ -196,6 +196,7 @@ fn merge_record_keeps_top_level_keys_and_round_trips() {
     let plain = serde_yaml::to_string(&stage).unwrap();
     assert!(!plain.contains("merge_block:"), "{plain}");
     assert!(!plain.contains("merge_stash:"), "{plain}");
+    assert!(!plain.contains("merge_unrestored_stashes:"), "{plain}");
 
     stage.merge = MergeRecord {
         block: Some(MergeBlock::TargetMoved),
@@ -212,6 +213,11 @@ fn merge_record_keeps_top_level_keys_and_round_trips() {
     );
     assert!(
         text.lines().any(|l| l.starts_with("merge_stash:")),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("merge_unrestored_stashes:")),
         "{text}"
     );
     let back: Stage = serde_yaml::from_str(&text).unwrap();

@@ -43,7 +43,8 @@ pub(super) fn register_live_current_session(
 
 /// Settle the stage of a current `session` found dead after a daemon
 /// restart: requeue it, or route it to handoff when its branch already holds
-/// `commits_ahead` commits past `target_branch`.
+/// commits past `target_branch`. A `commits_ahead` that failed to count is
+/// treated as work: a branch is never discarded on doubt.
 ///
 /// A contract writer is charged to the contract respawn budget first, and
 /// its stage goes to `NeedsHumanReview` instead once that budget is spent
@@ -60,7 +61,7 @@ pub(super) fn recover_orphaned_stage(
     stage: &mut Stage,
     session: &Session,
     work_dir: &Path,
-    commits_ahead: usize,
+    commits_ahead: Result<usize, String>,
     target_branch: &str,
     manual_mode: bool,
 ) -> bool {
@@ -77,12 +78,35 @@ pub(super) fn recover_orphaned_stage(
             return false;
         }
     }
-    route_orphaned_stage(stage, commits_ahead, target_branch);
+    route_orphaned_stage(stage, &commits_ahead, target_branch);
     true
 }
 
-fn route_orphaned_stage(stage: &mut Stage, commits_ahead: usize, target_branch: &str) {
-    let route_to_handoff = commits_ahead > 0;
+/// The `close_reason` of a stage routed to handoff.
+fn handoff_reason(
+    stage_id: &str,
+    commits_ahead: &Result<usize, String>,
+    target_branch: &str,
+) -> String {
+    let found = match commits_ahead {
+        Ok(count) => format!("branch has {count} commit(s) ahead of {target_branch}"),
+        Err(error) => format!(
+            "could not count commits ahead of {target_branch} ({error}); \
+             treating the branch as holding work"
+        ),
+    };
+    format!(
+        "Session orphaned; {found} — needs handoff (use `loom check {stage_id}` to diagnose \
+         or `loom stage retry --kill-session {stage_id}` to retry)"
+    )
+}
+
+fn route_orphaned_stage(
+    stage: &mut Stage,
+    commits_ahead: &Result<usize, String>,
+    target_branch: &str,
+) {
+    let route_to_handoff = commits_ahead.as_ref().map_or(true, |count| *count > 0);
     if route_to_handoff {
         if let Err(error) = stage.try_mark_needs_handoff() {
             stage.force_status_with_reason(
@@ -103,12 +127,7 @@ fn route_orphaned_stage(stage: &mut Stage, commits_ahead: usize, target_branch: 
     }
     stage.session = None;
     stage.close_reason = Some(if route_to_handoff {
-        format!(
-            "Session orphaned; branch has {commits_ahead} commit(s) ahead of {target_branch} \
-             — needs handoff (use `loom check {}` to diagnose or `loom stage retry \
-             --kill-session {}` to retry)",
-            stage.id, stage.id
-        )
+        handoff_reason(&stage.id, commits_ahead, target_branch)
     } else {
         "Session crashed/orphaned".to_string()
     });
@@ -304,5 +323,34 @@ impl Orchestrator {
         self.active_sessions
             .insert(evidence.stage_id.clone(), session);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_counted_branch_names_its_commits() {
+        let reason = handoff_reason("s", &Ok(3), "main");
+        assert!(
+            reason.starts_with(
+                "Session orphaned; branch has 3 commit(s) ahead of main — needs handoff"
+            ),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn an_uncounted_branch_names_the_error_not_a_count() {
+        let reason = handoff_reason("s", &Err("git failed".to_string()), "main");
+        assert!(
+            reason.contains(
+                "could not count commits ahead of main (git failed); \
+                 treating the branch as holding work"
+            ),
+            "{reason}"
+        );
+        assert!(!reason.contains("commit(s)"), "{reason}");
     }
 }
