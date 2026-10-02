@@ -4,6 +4,7 @@
 //! - Corrupted .loom/work directory (symlink in main repo)
 //! - Missing .gitignore entries
 //! - Missing git pre-commit hook
+//! - Missing loom reference-transaction hook (the target guard's attestation)
 
 use anyhow::Result;
 use colored::Colorize;
