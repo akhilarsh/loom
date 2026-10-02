@@ -19,6 +19,9 @@ mod heartbeat_apply;
 mod inbox_drain;
 mod judge_close;
 mod merge_handler;
+#[cfg(test)]
+#[path = "merge_lifecycle_e2e_tests.rs"]
+mod merge_lifecycle_e2e_tests;
 mod orchestrator;
 mod orphan_adoption;
 mod persistence;
