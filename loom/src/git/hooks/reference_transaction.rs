@@ -85,12 +85,20 @@ fn has_installed_mode(hook_path: &Path) -> Result<bool> {
 }
 
 /// Write [`SCRIPT`] beside `hook_path`, make it executable, then rename it
-/// into place: git never runs a partly written or non-executable hook.
-fn write_script(hook_path: &Path) -> Result<()> {
+/// into place: git never runs a partly written or non-executable hook. A
+/// failure removes the staged file.
+pub(super) fn write_script(hook_path: &Path) -> Result<()> {
     let staged = hook_path.with_extension("loom-new");
-    fs::write(&staged, SCRIPT)
-        .with_context(|| format!("Failed to write hook: {}", staged.display()))?;
-    make_executable(&staged)?;
-    fs::rename(&staged, hook_path)
-        .with_context(|| format!("Failed to install hook: {}", hook_path.display()))
+    let installed = fs::write(&staged, SCRIPT)
+        .with_context(|| format!("Failed to write hook: {}", staged.display()))
+        .and_then(|()| make_executable(&staged))
+        .and_then(|()| {
+            fs::rename(&staged, hook_path)
+                .with_context(|| format!("Failed to install hook: {}", hook_path.display()))
+        });
+    if installed.is_err() {
+        // Best effort: the error that matters is the one in `installed`.
+        let _ = fs::remove_file(&staged);
+    }
+    installed
 }
