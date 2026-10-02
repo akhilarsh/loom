@@ -67,8 +67,7 @@ pub fn create_worktree(
     // branch, else HEAD:
     // git worktree add -b loom/{stage_id} .worktrees/{stage_id} [{start}]
     let worktree_path_str = worktree_path.to_string_lossy().to_string();
-    let mut args: Vec<&str> = vec!["worktree", "add", "-b", &branch_name];
-    args.push(&worktree_path_str);
+    let mut args: Vec<&str> = vec!["worktree", "add", "-b", &branch_name, &worktree_path_str];
     if let Some(start) = start_point.or(base_branch) {
         args.push(start);
     }
@@ -83,18 +82,30 @@ pub fn create_worktree(
         recreate_or_reuse_branch(stage_id, repo_root, &args, base_branch, start_point)?;
     }
 
+    scaffold_worktree(&worktree_path, repo_root)?;
+
+    let mut worktree = Worktree::new(stage_id.to_string(), worktree_path, branch_name);
+    worktree.mark_active();
+
+    Ok(worktree)
+}
+
+/// Set up a freshly added worktree: state-root symlink, `.claude/`, the root
+/// `CLAUDE.md`, Claude Code trust, and the shared git excludes. Trust and
+/// exclude failures only warn.
+fn scaffold_worktree(worktree_path: &Path, repo_root: &Path) -> Result<()> {
     // Create symlink to the main repo's state root (.loom/work, or .work on
     // a legacy workspace)
-    ensure_work_symlink(&worktree_path, repo_root)?;
+    ensure_work_symlink(worktree_path, repo_root)?;
 
     // Set up .claude/ directory for worktree.
-    setup_claude_directory(&worktree_path, repo_root)?;
+    setup_claude_directory(worktree_path, repo_root)?;
 
     // Symlink project-root CLAUDE.md
-    setup_root_claude_md(&worktree_path, repo_root)?;
+    setup_root_claude_md(worktree_path, repo_root)?;
 
     // Register worktree as trusted so Claude Code skips the "trust this folder?" prompt
-    if let Err(e) = trust_worktree(&worktree_path) {
+    if let Err(e) = trust_worktree(worktree_path) {
         eprintln!("Warning: Failed to register worktree trust: {e}");
     }
 
@@ -102,10 +113,7 @@ pub fn create_worktree(
         eprintln!("Warning: Failed to add settings.local.json to worktree gitignore: {e}");
     }
 
-    let mut worktree = Worktree::new(stage_id.to_string(), worktree_path, branch_name);
-    worktree.mark_active();
-
-    Ok(worktree)
+    Ok(())
 }
 
 /// Finish a `worktree add -b` (`add_args`) that failed because the branch
@@ -281,3 +289,7 @@ pub fn get_or_create_worktree(
     // Create new worktree
     create_worktree(stage_id, repo_root, base_branch, start_point)
 }
+
+#[cfg(test)]
+#[path = "operations_start_point_tests.rs"]
+mod start_point_tests;
