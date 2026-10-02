@@ -91,7 +91,7 @@ fn violation_reason(repo_root: &Path, changed: &[String], label: &str) -> Option
 /// Paths that differ between `base` and `branch_rev`, unquoted: `-z` output is
 /// NUL-separated and git never C-quotes it. Read untrimmed, so a path's own
 /// leading or trailing whitespace survives.
-fn changed_paths(repo_root: &Path, base: &str, branch_rev: &str) -> Result<Vec<String>> {
+pub(crate) fn changed_paths(repo_root: &Path, base: &str, branch_rev: &str) -> Result<Vec<String>> {
     let args = [
         "diff",
         "-z",
@@ -139,14 +139,18 @@ pub fn is_control_path(path: &str, hooks_prefix: Option<&str>) -> bool {
 /// The repo-relative prefix of the tracked git hooks directory
 /// (`core.hooksPath`), or `None` when it is unset at every scope or resolves
 /// outside the repository.
+///
+/// A `config.worktree` value outranks the local one, as in
+/// `configured_hooks_path`: git runs the hooks it names.
 pub fn hooks_dir_prefix(repo_root: &Path) -> Option<String> {
     // Scoped reads (see `read_hooks_path_scope` for why), one per scope.
+    let worktree = read_hooks_path_scope(repo_root, "--worktree");
     let local = read_hooks_path_scope(repo_root, "--local");
     let global = read_hooks_path_scope(repo_root, "--global");
     let system = read_hooks_path_scope(repo_root, "--system");
     resolve_hooks_dir_prefix(
         repo_root,
-        local.as_deref(),
+        worktree.as_deref().or(local.as_deref()),
         global.as_deref(),
         system.as_deref(),
     )

@@ -1,11 +1,19 @@
 //! Git hook installation for loom
 //!
-//! Installs git hooks to prevent accidental commits of .loom/work/ and .worktrees/
+//! Installs the pre-commit hook that prevents accidental commits of .loom/work/
+//! and .worktrees/, and the reference-transaction hook that attests host moves
+//! of a guarded target ([`install_reference_transaction_hook`]).
 
 use anyhow::{bail, Context, Result};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+
+mod reference_transaction;
+
+pub use reference_transaction::{
+    install_reference_transaction_hook, is_reference_transaction_hook_installed, HookInstall,
+};
 
 /// Marker for loom's pre-commit hook section (for idempotent installation)
 const LOOM_HOOK_START_MARKER: &str = "# LOOM_PRE_COMMIT_HOOK_START";
@@ -99,7 +107,7 @@ fn updated_hook_content(hook_path: &Path, loom_section: &str) -> Result<Option<S
     }
 }
 
-/// Make the pre-commit hook executable
+/// Make a hook executable (mode 0755)
 fn make_executable(hook_path: &Path) -> Result<()> {
     let mut perms = fs::metadata(hook_path)
         .with_context(|| format!("Failed to get metadata for hook: {}", hook_path.display()))?
@@ -160,26 +168,39 @@ pub fn is_pre_commit_hook_installed(repo_root: &Path) -> bool {
     }
 }
 
-/// `git config <scope> --get core.hooksPath` in `repo_root` (`scope` is `--local`,
-/// `--global` or `--system`), or `None` when unset at that scope or the read fails.
+/// `git config <scope> --includes --get core.hooksPath` in `repo_root` (`scope` is
+/// `--worktree`, `--local`, `--global` or `--system`), or `None` when unset at that
+/// scope or the read fails.
 ///
 /// The reads are scoped because the git runner prepends `-c core.hooksPath=/dev/null`
 /// to every command, which wins on precedence over an unscoped `config --get` and
 /// over `rev-parse --git-path hooks`: an unscoped read always returns `/dev/null`.
+/// A scoped read skips `include.path` files unless `--includes` is given, while git
+/// applies a value set in one.
 pub fn read_hooks_path_scope(repo_root: &Path, scope: &str) -> Option<String> {
-    let configured =
-        super::run_git_checked(&["config", scope, "--get", "core.hooksPath"], repo_root).ok()?;
+    let args = ["config", scope, "--includes", "--get", "core.hooksPath"];
+    let configured = super::run_git_checked(&args, repo_root).ok()?;
     let trimmed = configured.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// The effective `core.hooksPath`: the first of the local, global and system scopes
-/// that sets it, which is git's own precedence order. `None` when no scope sets it.
+/// The effective `core.hooksPath`: the first of the worktree, local, global and
+/// system scopes that sets it, which is git's own precedence order. `None` when no
+/// scope sets it.
+///
+/// The worktree scope is `config.worktree`, which git reads only with
+/// `extensions.worktreeConfig` on. With the extension off, a `--worktree` read
+/// returns the local value in a repository without linked worktrees and fails in
+/// one with them, which reads as unset: right, as git then reads no
+/// `config.worktree`.
 pub fn configured_hooks_path(repo_root: &Path) -> Option<String> {
-    ["--local", "--global", "--system"]
+    ["--worktree", "--local", "--global", "--system"]
         .into_iter()
         .find_map(|scope| read_hooks_path_scope(repo_root, scope))
 }
+
+#[cfg(test)]
+mod reference_transaction_tests;
 
 #[cfg(test)]
 mod tests {

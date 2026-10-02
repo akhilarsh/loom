@@ -5,7 +5,6 @@ use crate::commands::repair::workspace::{repair_workspace, AppliedRepair};
 use crate::fs::permissions::{ensure_loom_permissions, migrate_legacy_trust};
 use crate::fs::work_dir::WorkDir;
 use crate::fs::work_integrity::validate_work_dir_state;
-use crate::git::install_pre_commit_hook;
 use anyhow::{bail, Result};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
@@ -15,6 +14,7 @@ use super::cleanup::{
     cleanup_orphaned_sessions, cleanup_work_directory, cleanup_worktrees_directory,
     prune_stale_worktrees, remove_work_directory_on_failure, SessionReapMode,
 };
+use super::git_hooks;
 use super::plan_setup::{initialize_with_plan, preflight_plan, PreflightedPlan};
 use super::work_state::holds_orchestration_state;
 
@@ -135,27 +135,7 @@ pub fn execute(
     let mut guard = InitGuard::new(repo_root.clone());
     create_or_adopt_work_dir(&work_dir, adopting_empty_work_dir, &mut guard)?;
 
-    // Install git pre-commit hook to prevent state directory commits
-    match install_pre_commit_hook(&repo_root) {
-        Ok(true) => {
-            println!("  {} Git pre-commit hook installed", "✓".green().bold());
-        }
-        Ok(false) => {
-            println!(
-                "  {} Git pre-commit hook {} up to date",
-                "✓".green().bold(),
-                "already".dimmed()
-            );
-        }
-        Err(e) => {
-            println!(
-                "  {} Git pre-commit hook installation failed: {}",
-                "!".yellow().bold(),
-                e.to_string().dimmed()
-            );
-            // Non-fatal - continue with init
-        }
-    }
+    git_hooks::install_git_hooks(&repo_root);
 
     ensure_loom_permissions(&repo_root)?;
     println!("  {} Permissions configured", "✓".green().bold());
@@ -227,7 +207,7 @@ fn install_codex_hooks_advisory() {
 /// creates or writes anything.
 ///
 /// The ordering matters: `InitGuard` only ever removes the state directory, so
-/// a plan that fails any later leaves the pre-commit hook and the
+/// a plan that fails any later leaves the git hooks and the
 /// `.claude/settings.local.json` edits behind, and makes the operator answer
 /// the backend prompt a second time.
 fn preflight_plan_if_given(plan_path: Option<&Path>) -> Result<Option<PreflightedPlan>> {

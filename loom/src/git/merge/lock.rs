@@ -41,6 +41,12 @@ impl MergeLock {
         }
     }
 
+    /// Take the lock in `work_dir` without waiting; `None` while another
+    /// owner holds it.
+    pub(crate) fn try_acquire_in(work_dir: &Path) -> Result<Option<Self>> {
+        Self::try_acquire(&work_dir.join("merge.lock"))
+    }
+
     fn try_acquire(lock_path: &Path) -> Result<Option<Self>> {
         let mut file = OpenOptions::new()
             .create(true)

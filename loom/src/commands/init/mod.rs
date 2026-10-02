@@ -7,6 +7,7 @@ mod backend;
 mod base_branch;
 mod cleanup;
 mod execute;
+mod git_hooks;
 mod plan_setup;
 mod work_state;
 

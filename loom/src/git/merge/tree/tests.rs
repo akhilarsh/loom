@@ -210,6 +210,27 @@ fn the_new_blocks_serialize_and_explain_themselves() {
 }
 
 #[test]
+fn target_held_serializes_and_names_both_tips() {
+    let block = MergeBlock::TargetHeld {
+        target: "main".to_string(),
+        accepted: "a".repeat(40),
+        observed: "b".repeat(40),
+    };
+    let json = serde_json::to_string(&block).unwrap();
+    assert!(
+        json.starts_with(r#"{"kind":"target_held","target":"main""#),
+        "{json}"
+    );
+    assert_eq!(serde_json::from_str::<MergeBlock>(&json).unwrap(), block);
+    let text = block.to_string();
+    assert!(
+        text.contains(&"a".repeat(12)) && !text.contains(&"a".repeat(13)),
+        "{text}"
+    );
+    assert!(text.contains(&"b".repeat(12)) && text.contains("loom target status"));
+}
+
+#[test]
 fn stash_reapply_notice_says_whether_the_merge_landed_without_the_changes() {
     let restored = StashReapply {
         backup_ref: "refs/loom/autostash/s1-1".to_string(),
