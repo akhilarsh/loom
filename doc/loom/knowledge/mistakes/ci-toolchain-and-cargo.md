@@ -200,3 +200,13 @@ committing, not after.
 **Prevention:** cache dependencies only, with a key that includes the rustc version and the lockfile, saved from the default branch only (`Swatinem/rust-cache` with `save-if: github.ref == 'refs/heads/main'`). Group checks that share a compile mode into one job (fmt + clippy + doc share check-mode dependencies; test + smoke share the dev build) instead of building once and fanning out through `target/` caches. Never save a cache from a tag-triggered run.
 
 **Fix:** `.github/workflows/ci.yml` now runs `lint`, `test` (which also runs the smoke scripts and, through `--all-targets`, the maintainability target), `flake-check` and `macos` (clippy) in parallel, each with `Swatinem/rust-cache`; the Build and Maintainability jobs are gone. `.github/workflows/release.yml` has no cache steps and no flake re-run.
+
+## Tests That Read the Test Binary's Own Checkout Failed Only in the Tag Build (2026-10-03)
+
+**What happened:** `commands::init::tests::test_initialize_with_plan_creates_config` and `..._creates_stage_files` passed locally, in the pre-push hook and in CI on `main`, then failed in `.github/workflows/release.yml`'s test job for `v1.1.0` with a bare `assertion failed: result.is_ok()`.
+
+**Why:** `initialize_with_plan` read the base branch through `checked_out_branch(std::env::current_dir())`, and the tests ran it from the test binary's cwd: the loom checkout itself. Commit `adcd85ee` made a detached HEAD an error there (it used to be recorded as the branch `HEAD`). A branch push checks out a branch, and so do the local run and the pre-push hook; `actions/checkout` of a tag ref checks out a detached HEAD, so only the release job saw it, the first tag after `adcd85ee`. Cargo then stopped at the failing `--lib` binary, so no integration target ran against the detached checkout either. Same tag-only class as the dev-build entry above.
+
+**Prevention:** code that reads git state takes the repository as a parameter, and its tests hand in a scratch repository (`git::target_guard::test_support::repo()`), never the cwd of `cargo test`. Reproduce a tag-only failure with `git checkout --detach` then `cargo test --all-targets --no-fail-fast`, which also shows every target the first failure hid. Assert on `Result` with `.unwrap()` or a message, never a bare `is_ok()`, so CI prints the error.
+
+**Fix:** `initialize_with_plan` takes `repo_root: &Path` (`execute` passes its own); `init_from_stages` in `commands/init/tests.rs` runs it against a scratch repository on `main`.
