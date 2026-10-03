@@ -134,3 +134,13 @@ before the parent's import can go.
 **Prevention:** prefer the Edit tool for source changes; after any scripted edit, compare the file's `#[test]` count and tail against `git show HEAD:<path>` before moving on.
 
 **Fix:** tests restored in the same change; the count went from 2 at HEAD to 5 (three new).
+
+## A Removed Feature's Doc Comment Steered a Design Question
+
+**What happened:** While extending `DetectedLanguage` with seven languages, the agent asked the operator how each new language should appear in container image tags, because the doc comment of `DetectedLanguage::canonical_name` (`loom/src/language.rs`) said it fed image tags and fingerprint prefixes. The container backend that read it had been deleted in `3aa78105`; nothing outside the method's own test called it. The operator had to ask three times what the question meant.
+
+**Why:** The doc comment was trusted as a description of a live consumer without checking callers. Removal stages delete callers and leave the callee's doc comment describing them.
+
+**Prevention:** Before raising a design question, or extending a method, on the strength of a doc comment that names a consumer, confirm the consumer exists: `loom map --impact <symbol>`, then `rg -n '<symbol>\(' loom/src` when the graph reports no resolved edge. When the operator asks what a question means, answer that first and in full before reporting other progress.
+
+**Fix:** `canonical_name`, its test and its doc comment were deleted. A future backend that needs a short language id can use the source graph's dialect ids (`context/extract/dialect.rs::DIALECTS`).

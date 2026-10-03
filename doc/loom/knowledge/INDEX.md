@@ -49,8 +49,8 @@
 | [remote-control](architecture/remote-control.md) | Capability detection, preflight, naming | 82 |
 | [security-and-isolation](architecture/security-and-isolation.md) | 4-layer worktree defense | 199 |
 | [signal-generation](architecture/signal-generation.md) | Signal assembly, cache, prefixes | 202 |
-| [skill-catalog](architecture/skill-catalog.md) | Two skill roots; 63 catalogued skills | 148 |
-| [source-graph](architecture/source-graph.md) | Source graph contract, extractor, limits | 367 |
+| [skill-catalog](architecture/skill-catalog.md) | Two skill roots; 65 catalogued skills | 153 |
+| [source-graph](architecture/source-graph.md) | Source graph contract, extractor, limits | 368 |
 | [source-graph-build](architecture/source-graph-build.md) | Layer builder, freshness, reconcile lease | 124 |
 | [source-graph-evaluation](architecture/source-graph-evaluation.md) | Census, source windows, edge evaluator | 68 |
 | [source-graph-resolution](architecture/source-graph-resolution.md) | Binding rules 1-7, path conventions | 123 |
@@ -133,7 +133,7 @@
 | [phantom-merges](mistakes/phantom-merges.md) | Merge lessons: merged=true unverified | 241 |
 | [pinned-literals-ledgers-and-wiring](mistakes/pinned-literals-ledgers-and-wiring.md) | Ledger exact-match, wiring pins | 303 |
 | [pre-commit-hardening](mistakes/pre-commit-hardening.md) | Partial-staging guard decisions, edges | 53 |
-| [refactor-stragglers](mistakes/refactor-stragglers.md) | What a rename leaves behind | 136 |
+| [refactor-stragglers](mistakes/refactor-stragglers.md) | What a rename leaves behind | 146 |
 | [sandbox-and-settings](mistakes/sandbox-and-settings.md) | Sandbox path rules, permission sync | 293 |
 | [sandbox-protected-hooks-dir](mistakes/sandbox-protected-hooks-dir.md) | hooks/ dir is sandbox-protected | 37 |
 | [sandbox-state-channels](mistakes/sandbox-state-channels.md) | Sandboxed callers vs work state | 298 |
@@ -168,7 +168,7 @@
 | --- | --- | --- |
 | [agent-rule-bending-hardening](concerns/agent-rule-bending-hardening.md) | Bendable checks, hardening backlog | 256 |
 | [automatic-knowledge-source-graph-followups](concerns/automatic-knowledge-source-graph-followups.md) | Knowledge-plan followups | 51 |
-| [code-quality-and-hook-debt](concerns/code-quality-and-hook-debt.md) | Oversized units, duplicated tables, hook debt | 191 |
+| [code-quality-and-hook-debt](concerns/code-quality-and-hook-debt.md) | Oversized units, duplicated tables, hook debt | 195 |
 | [codex-heartbeat-starvation](concerns/codex-heartbeat-starvation.md) | Heartbeat starvation from long codex runs | 73 |
 | [iterm2-window-teardown](concerns/iterm2-window-teardown.md) | iTerm2 window never named | 48 |
 | [knowledge-cli-gaps](concerns/knowledge-cli-gaps.md) | Knowledge CLI gaps and housekeeping | 105 |

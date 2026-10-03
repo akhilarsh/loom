@@ -79,24 +79,28 @@ assertion in `loom/src/fs/permissions/tests/hooks_tests.rs`. Miss any one and th
 **silently dead** rather than broken — it simply never runs, and nothing reports it. That is why
 this is a deliberate, separate change and not a drive-by trim.
 
-## Duplicated Extension-to-Language Table (2026-08-17)
+## Duplicated Manifest-to-Language Tables
 
-The same real-world fact is encoded in two places and nothing pins the copies together:
-`language.rs:117-128` maps a `str` to `Option<DetectedLanguage>` and covers only `rs`, `ts`, `tsx`, `mts`,
-`cts`, `py`, `pyi` and `go`. The source graph's table is `context/extract/dialect.rs::DIALECTS`, twelve
-dialects over `js/jsx/mjs/cjs`, `java`, `cs`, `rb/rake/gemspec`, `php`, `c`, `cc/cpp/cxx/hh/hpp/hxx/h` and
-the rows above. `context/extract/lexical.rs::language_for_path` already derives its tag from
-`dialect_for_path`, so the lexical copy is gone and `DIALECTS` is the second table.
+File extensions have one table: `context/extract/dialect.rs::DIALECTS`. `language.rs::language_for_path`
+and `context/extract/lexical.rs::language_for_path` both derive from `dialect_for_path`, and
+`language/tests.rs` asserts every `DIALECTS` extension maps to a `DetectedLanguage`.
 
-**Failure mode is a silently narrowing capability, not a crash.** The gap is wider than before: a `.jsx`,
-`.java`, `.cs`, `.rb`, `.php`, `.c` or `.cpp` file is a source-graph dialect with symbol-level nodes, but
-`DetectedLanguage` has no variant for it, so the stage skill recommender classifies it as no language at all.
-`crate::language::DetectedLanguage` is deliberately untouched by the source-graph plan because stage and skill
-behaviour is keyed to it.
+Manifest files still have two tables that nothing pins together:
 
-**Fix:** a shared fixture list asserting the two tables agree on the four core languages, plus a decision on
-which `DetectedLanguage` variants the eight extra dialects need. `dialect.rs` already pins that every
-extension appears in exactly one `DIALECTS` row.
+- `language.rs::detect_project_languages` feeds `DetectedLanguage` (the orchestrator's fallback skill
+  recommendations and the `loom init` sandbox-domain suggestions).
+- `skills/project/markers.rs::FILE_MARKERS` plus its probes decide project kinds for `loom project detect`,
+  runner selection and package skills.
+
+They disagree today: markers counts a `package.json` with a `typescript` dependency as TypeScript while
+`language.rs` needs `tsconfig.json`; markers maps `build.gradle.kts` to `kotlin` while `language.rs` maps it to
+Java; `language.rs` takes `meson.build`, `conanfile.*` and `vcpkg.json` as C++ while markers takes only
+`CMakeLists.txt`; markers has kinds (`kotlin`, `scala`, `swift`, `elixir`, `dart`) with no `DetectedLanguage`
+variant.
+
+**Failure mode:** a project gets one language from `loom project detect` and another from the stage signal's
+fallback recommendations. **Fix:** derive `detect_project_languages` from the markers probe, or move both onto
+one manifest table.
 
 ## Low-Severity Cleanups Deferred From the Verification Gate (2026-08-17)
 

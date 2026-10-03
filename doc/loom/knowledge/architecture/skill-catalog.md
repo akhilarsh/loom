@@ -3,14 +3,14 @@ verified: 5546d3c47ddc1f8890b40157134f057393b8b90e
 ---
 # Skill Catalog
 
-> Two skill roots; 63 catalogued skills
+> Two skill roots; 65 catalogued skills
 
 ## Skill Catalog: Two Roots, and Why the Split
 
 Skills load from TWO roots, not one: `~/.claude/skills/` (10 CORE skills, named in
 `skills/core-skills.txt`, one bare name per line, no trailing comments — Rust and bash readers
 must agree byte-for-byte on the parsing rule: trim, skip blank/`#` lines) and
-`~/.claude/loom-skill-catalog/` (the other 63 skills; ten language skills joined in verification v2). `loom/src/skills/index_catalog.rs` holds
+`~/.claude/loom-skill-catalog/` (the other 65 skills). `loom/src/skills/index_catalog.rs` holds
 the compiled-in core manifest (`include_str!` of `skills/core-skills.txt`), the two-root loader
 `load_with_catalog`, and `skill_invocation()`, which renders the CORRECT form per root: a bare
 `/loom-<name>` slash-form for a core skill (resolves directly), or
@@ -28,7 +28,7 @@ ledger row at all — decide this BEFORE writing the implementation brief, not a
 maintainability test fails. `index.rs` itself only widened two visibility keywords
 (`add_skill`/`parse_skill_file` -> `pub(super)`), which is net-zero on lines.
 
-### Why 53 Skills Live Outside `~/.claude/skills`
+### Why Most Skills Live Outside `~/.claude/skills`
 
 Keeping the primary directory small is necessary but not sufficient — the split also exists
 because of a hook interaction that would otherwise make most of the catalog unusable:
@@ -128,13 +128,18 @@ rust+terraform returned `/loom-skills` as the third suggestion, DISPLACING a rea
 dead-code-warned, so `cargo clippy` misses an unused re-export entirely — this class of debt needs
 a deliberate sweep (`rg` each re-exported name for callers outside its own module), not a linter.
 
-## Ten Language Skills for the Adapter Set (verification v2)
+## Language Skills for the Adapter Set and `DetectedLanguage`
 
-The `language-skills` stage added `loom-java`, `loom-kotlin`, `loom-scala`, `loom-csharp`, `loom-ruby`, `loom-php`,
-`loom-swift`, `loom-elixir`, `loom-cpp` and `loom-dart`, one per language profile with no skill. All ten are
-catalogued, none core: the catalog table in `skills/loom-skills/SKILL.md` now has 63 rows, and
-`codex/skills/loom-skills/SKILL.md` keeps the same 63 verbatim (the codex loader copies the table, so a row added
-to one file only leaves codex agents unable to find the skill). The core manifest stays at 10 and needs no count edit.
+`loom-java`, `loom-kotlin`, `loom-scala`, `loom-csharp`, `loom-ruby`, `loom-php`, `loom-swift`, `loom-elixir`,
+`loom-cpp` and `loom-dart` cover the test-runner language profiles; `loom-javascript` and `loom-c` complete the
+set so every `DetectedLanguage` variant resolves to `skills/loom-<skill_name()>/` (pinned by
+`language/tests.rs`). All are catalogued, none core: the catalog table in `skills/loom-skills/SKILL.md` has 65
+rows, and `codex/skills/loom-skills/SKILL.md` keeps the same 65 verbatim (the codex loader copies the table, so a
+row added to one file only leaves codex agents unable to find the skill). The core manifest stays at 10.
+
+A project kind resolves to `loom-<kind>` directly (`skills/project.rs`), so a plain-JavaScript package gets
+`loom-javascript`. `loom-c` has no adapter of its own: a C project with `CMakeLists.txt` is kind `cpp` and gets
+`ctest`, and `.c` test files match no test-runner profile.
 
 Each new `SKILL.md` ends with a `## Loom Test Runner Adapter` section naming the adapter `loom project detect` picks,
 the single-test command (the D5 template line, verbatim) and how a contract author avoids the parser gaps listed in

@@ -140,7 +140,8 @@ grammar accepts nearly every C header while the C grammar rejects C++ headers ou
 standard `#ifdef __cplusplus / extern "C" {` guard still makes a header a whole-file `ParseError`
 ([Source Graph Known Gaps](../concerns/source-graph-known-gaps.md)). `NodeLanguage` has a unit
 variant per dialect with an explicit `#[serde(rename = "<id>")]`, plus `Other(String)`.
-`crate::language::DetectedLanguage` is not touched: stage and skill behaviour stays keyed to it.
+`crate::language::DetectedLanguage` (the stage and skill language, 11 variants) takes its extension mapping
+from `dialect_for_path`: TSX folds into TypeScript and `Other(_)` maps to no language.
 
 **Gap vs Unknown.** `Lookup::Gap` is a dialect loom knows whose extractor is absent: the file
 still gets a file-level node with `FileCoverage::LexicalOnly` and a named detail
