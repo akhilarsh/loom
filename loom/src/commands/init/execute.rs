@@ -158,8 +158,8 @@ pub fn execute(
     }
 
     if let Some(preflighted) = preflighted {
-        let terminal_backend = resolve_backend_choice(backend)?;
-        let stage_count = initialize_with_plan(&work_dir, &preflighted, terminal_backend)?;
+        let backend = resolve_backend_choice(backend)?;
+        let stage_count = initialize_with_plan(&work_dir, &preflighted, &repo_root, backend)?;
         print_summary(plan_path.as_deref(), stage_count);
     } else {
         print_summary(None, 0);

@@ -108,9 +108,16 @@ fn refuse_unconfined_sandbox(plan_sandbox: &SandboxConfig, stages: &[Stage]) -> 
 /// Initialize the state directory from an already-preflighted plan (see
 /// `preflight_plan`). Everything here PRINTS or WRITES, so it stays in the
 /// same place in `execute()`'s flow as before the preflight split.
+///
+/// `repo_root` is the repository `loom init` runs in: the base branch is read
+/// from it and `source_path` is stored relative to it. It is a parameter
+/// (rather than read from the process cwd here) so tests can hand in a
+/// scratch repository on a branch instead of whatever the test binary's cwd
+/// has checked out, which is a detached HEAD in a tag build.
 pub fn initialize_with_plan(
     work_dir: &WorkDir,
     plan: &PreflightedPlan,
+    repo_root: &Path,
     terminal_backend: Option<SessionBackendKind>,
 ) -> Result<usize> {
     let canonical_path = &plan.canonical_path;
@@ -143,8 +150,7 @@ pub fn initialize_with_plan(
         .allowed_domains
         .is_empty()
     {
-        let current_dir = std::env::current_dir()?;
-        let detected = crate::language::detect_project_languages(&current_dir);
+        let detected = crate::language::detect_project_languages(repo_root);
         if !detected.is_empty() {
             let mut domains = vec!["github.com".to_string(), "api.github.com".to_string()];
             for lang in &detected {
@@ -168,20 +174,18 @@ pub fn initialize_with_plan(
     let stages = parsed_plan.stages.clone();
 
     // Run structural preflight validation (non-fatal warnings)
-    let repo_root = std::env::current_dir().ok();
-    let preflight_warnings = validate_structural_preflight(&stages, repo_root.as_deref());
+    let preflight_warnings = validate_structural_preflight(&stages, Some(repo_root));
     for warning in &preflight_warnings {
         println!("  {} {}", "⚠".yellow().bold(), warning.yellow());
     }
 
-    let base_branch = checked_out_branch(&std::env::current_dir()?)?;
+    let base_branch = checked_out_branch(repo_root)?;
 
     // Store source_path as relative to the project root so it works from
     // both the main repo and worktrees (where the state directory is a symlink).
     // Falls back to canonical (absolute) if the plan is outside the repo.
-    let project_root = std::env::current_dir()?;
     let relative_source_path = canonical_path
-        .strip_prefix(&project_root)
+        .strip_prefix(repo_root)
         .unwrap_or(canonical_path);
 
     // Build config using the centralized fs::work_dir API. We start from an

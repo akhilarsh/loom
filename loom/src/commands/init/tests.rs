@@ -3,6 +3,7 @@
 use super::cleanup::{cleanup_work_directory, prune_stale_worktrees};
 use super::plan_setup::{create_stage_from_definition, initialize_with_plan, preflight_plan};
 use crate::fs::work_dir::WorkDir;
+use crate::git::target_guard::test_support::repo;
 use crate::models::session::SessionBackendKind;
 use crate::models::stage::{Implementer, Implementers, PlanIdentity, Stage, StageStatus};
 use crate::plan::schema::{AcceptanceCriterion, LoomConfig, LoomMetadata, StageDefinition};
@@ -42,6 +43,20 @@ fn minimal_stage_definition(id: &str, name: &str) -> StageDefinition {
         working_dir: ".".to_string(),
         ..Default::default()
     }
+}
+
+/// Initialize a state directory from a plan holding `stages`, against a
+/// scratch repository on `main`: the checkout the tests run in is a detached
+/// HEAD in a tag build, which `loom init` refuses.
+fn init_from_stages(stages: Vec<StageDefinition>) -> (TempDir, WorkDir) {
+    let temp_dir = TempDir::new().unwrap();
+    let work_dir = WorkDir::new(temp_dir.path()).unwrap();
+    work_dir.initialize().unwrap();
+    let plan_path = create_test_plan(temp_dir.path(), stages);
+    let preflighted = preflight_plan(&plan_path).unwrap();
+    let backend = Some(SessionBackendKind::Native);
+    initialize_with_plan(&work_dir, &preflighted, &repo().root, backend).unwrap();
+    (temp_dir, work_dir)
 }
 
 /// Identity of a v1 plan with no ratchet files
@@ -195,17 +210,11 @@ fn test_initialize_with_plan_nonexistent_file() {
 #[test]
 #[serial]
 fn test_initialize_with_plan_creates_config() {
-    let temp_dir = TempDir::new().unwrap();
-    let work_dir = WorkDir::new(temp_dir.path()).unwrap();
-    work_dir.initialize().unwrap();
     let stage_def = StageDefinition {
         acceptance: vec![AcceptanceCriterion::Simple("echo ok".to_string())],
         ..minimal_stage_definition("test-stage", "Test Stage")
     };
-    let plan_path = create_test_plan(temp_dir.path(), vec![stage_def]);
-    let preflighted = preflight_plan(&plan_path).unwrap();
-    let result = initialize_with_plan(&work_dir, &preflighted, Some(SessionBackendKind::Native));
-    assert!(result.is_ok());
+    let (_temp_dir, work_dir) = init_from_stages(vec![stage_def]);
     let config_path = work_dir.root().join("config.toml");
     assert!(config_path.exists());
     let config_content = fs::read_to_string(config_path).unwrap();
@@ -221,10 +230,6 @@ fn test_initialize_with_plan_creates_config() {
 #[test]
 #[serial]
 fn test_initialize_with_plan_creates_stage_files() {
-    let temp_dir = TempDir::new().unwrap();
-    let work_dir = WorkDir::new(temp_dir.path()).unwrap();
-    work_dir.initialize().unwrap();
-
     let stages = vec![
         StageDefinition {
             description: Some("First stage".to_string()),
@@ -237,13 +242,7 @@ fn test_initialize_with_plan_creates_stage_files() {
             ..minimal_stage_definition("stage-2", "Stage Two")
         },
     ];
-
-    let plan_path = create_test_plan(temp_dir.path(), stages);
-
-    let preflighted = preflight_plan(&plan_path).unwrap();
-    let result = initialize_with_plan(&work_dir, &preflighted, Some(SessionBackendKind::Native));
-
-    assert!(result.is_ok());
+    let (_temp_dir, work_dir) = init_from_stages(stages);
 
     let stages_dir = work_dir.root().join("stages");
     assert!(stages_dir.exists());
