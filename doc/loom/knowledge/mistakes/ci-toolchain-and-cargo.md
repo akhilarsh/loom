@@ -180,3 +180,13 @@ committing, not after.
 **Why:** Same toolchain drift as above, this time in rustc's own `unused_imports` lint. The file also had `use super::*`, and the parent's named `use paths::{..}` / `use spawn::{..}` imports already supplied every name the tests used. 1.98 counts a glob that contributes no name as unused.
 **Prevention:** In a `tests.rs` child module, use `use super::*` alone, and name a submodule item explicitly only when the parent does not import it. To reproduce CI without moving the default toolchain: `rustup toolchain install <ver> --profile minimal -c clippy -c rustfmt`, then `cargo +<ver> build/clippy/test`. Keep `CARGO_TARGET_DIR` out of `/tmp`. `tmux::tests_spawn::a_failed_spawn_aborts_and_leaves_no_pid_file_for_the_native_retry_to_adopt` rejects a `LOOM_BIN` under `/tmp` as session-writable and fails with a false positive.
 **Fix:** Dropped the two redundant globs. Build, clippy, fmt, doc, and the full test suite (5842 tests) all passed on 1.98.1.
+
+## Fixtures That Set Git Identity Only in Env Failed in CI, Passed Locally (2026-10-03)
+
+**What happened:** after the target-guard push, eight tests failed on CI's Linux runner and passed on the workstation and in the pre-push hook: six in `fs::plan_lifecycle::commit` panicked with `Author identity unknown ... empty ident name`, and two in `orchestrator::core::inbox_drain::tests_merge` got `Refused` where they expected `Applied`, because the daemon's merge commit failed the same way.
+
+**Why:** the fixtures (`git::target_guard::test_support::repo` and `tests_merge::repository`) gave git an identity only through `GIT_AUTHOR_*`/`GIT_COMMITTER_*` on their own git calls. The production code under test runs git without that environment and falls back to the global config, which the workstation has and the runner does not. Fixtures that only commit through their own helper are unaffected.
+
+**Prevention:** a fixture whose repository receives commits from production code sets `user.name` and `user.email` in the repository's own config right after `git init`, as `git::merge::test_support::init_repo` does. Reproduce CI's missing identity locally with `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.useConfigOnly GIT_CONFIG_VALUE_0=true cargo test --all-targets --no-fail-fast`; `useConfigOnly` stops git guessing a name from the passwd entry, which the workstation would otherwise supply.
+
+**Fix:** both fixtures set the identity with `git config` after `init`.

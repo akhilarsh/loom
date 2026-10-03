@@ -362,7 +362,7 @@ TMPDIR placement is only one of two leaks into a live session: even with TMPDIR 
 
 **What happened:** stopping a background Vite dev server with `pkill -f 'vite --port 5199' && echo stopped; rm ...; git status ...` exited 144 with no output, and every command after the `pkill` was lost. The background task that ran Vite reported the same exit 144, which reads like a server crash.
 
-**Repeated (2026-10-03), as a wait loop:** after `git push` moved to the background, a second command waited on it with `while kill -0 $(pgrep -f 'git push origin main' | head -1); do sleep 10; done`. The `pgrep` matched the waiting shell's own argv, so the loop could never exit, and it outlived the push it was waiting for. The loop was redundant anyway: a backgrounded Bash task reports its own completion.
+**Repeated (2026-10-03), as a wait loop:** after `git push` moved to the background, a second command waited on it with `while kill -0 $(pgrep -f 'git push origin main' | head -1); do sleep 10; done`. The `pgrep` matched the waiting shell's own argv, so the loop could never exit, and it outlived the push it was waiting for. The loop was redundant anyway: a backgrounded Bash task reports its own completion. Within the hour, and after this entry was written, a second loop (`until rg -q <pattern> $LOG && ! pgrep -x cargo; do sleep 15; done`) waited on another background test run and hung past its 600 s timeout after the run had finished.
 
 **Why:** the Bash tool runs each command through a shell wrapper whose own argv carries the full command text, so `pkill -f`/`pgrep -f` matches the wrapper as well as the target: the first kills the shell mid-chain, the second always finds a live process.
 
