@@ -56,7 +56,7 @@
 | [source-graph-resolution](architecture/source-graph-resolution.md) | Binding rules 1-7, path conventions | 123 |
 | [source-graph-view](architecture/source-graph-view.md) | Resolved view, relink equals cold | 76 |
 | [status-data-model](architecture/status-data-model.md) | Where each loom status field comes from | 207 |
-| [target-guard](architecture/target-guard.md) | Accepted-tip record, hook, holds, operator commands | 126 |
+| [target-guard](architecture/target-guard.md) | Accepted-tip record, hook, holds, operator commands | 127 |
 | [terminal-backends](architecture/terminal-backends.md) | Native and tmux session backends | 285 |
 | [test-runner-adapters](architecture/test-runner-adapters.md) | 23 adapters, profiles, quoting, detect | 49 |
 | [token-accounting-and-receipts](architecture/token-accounting-and-receipts.md) | Usage ledger, --compare, criterion cache | 260 |
@@ -156,7 +156,7 @@
 | [tmux-backend](mistakes/tmux-backend.md) | tmux spawn-failure exits, cleanup-on-error | 136 |
 | [typed-config-values-process](mistakes/typed-config-values-process.md) | Brief, dev-server, plan-prose gotchas | 43 |
 | [untrusted-value-boundaries](mistakes/untrusted-value-boundaries.md) | Producers of a rendered field | 188 |
-| [verification-harness](mistakes/verification-harness.md) | Simultaneous check failures: suspect harness | 369 |
+| [verification-harness](mistakes/verification-harness.md) | Simultaneous check failures: suspect harness | 371 |
 | [verification-v2-delivery](mistakes/verification-v2-delivery.md) | Wave, gate, proof misses in v2 | 257 |
 | [visibility-and-reachability](mistakes/visibility-and-reachability.md) | pub(crate) visibility is capped by path | 123 |
 | [web-dashboard-server](mistakes/web-dashboard-server.md) | Dashboard server: concurrency, security | 316 |

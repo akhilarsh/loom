@@ -362,8 +362,10 @@ TMPDIR placement is only one of two leaks into a live session: even with TMPDIR 
 
 **What happened:** stopping a background Vite dev server with `pkill -f 'vite --port 5199' && echo stopped; rm ...; git status ...` exited 144 with no output, and every command after the `pkill` was lost. The background task that ran Vite reported the same exit 144, which reads like a server crash.
 
-**Why:** the Bash tool runs each command through a shell wrapper whose own argv carries the full command text, so `pkill -f` matched the wrapper as well as Vite and killed the shell mid-chain.
+**Repeated (2026-10-03), as a wait loop:** after `git push` moved to the background, a second command waited on it with `while kill -0 $(pgrep -f 'git push origin main' | head -1); do sleep 10; done`. The `pgrep` matched the waiting shell's own argv, so the loop could never exit, and it outlived the push it was waiting for. The loop was redundant anyway: a backgrounded Bash task reports its own completion.
 
-**Prevention:** never `pkill -f` or `pgrep -f` a pattern typed literally on the same command line. Stop a background task by its task id (TaskStop) or its PID, or use the bracket form `pkill -f '[v]ite --port 5199'`, whose literal text no longer matches its own regex.
+**Why:** the Bash tool runs each command through a shell wrapper whose own argv carries the full command text, so `pkill -f`/`pgrep -f` matches the wrapper as well as the target: the first kills the shell mid-chain, the second always finds a live process.
 
-**Fix:** re-run the lost commands on their own; `pgrep -af '[v]ite --port 5199'` confirms the target is gone.
+**Prevention:** never `pkill -f` or `pgrep -f` a pattern typed literally on the same command line. Stop a background task by its task id (TaskStop) or its PID, or use the bracket form `pkill -f '[v]ite --port 5199'`, whose literal text no longer matches its own regex. Never write a wait loop for a background Bash task: its completion notification is the wait.
+
+**Fix:** re-run the lost commands on their own; `pgrep -af '[v]ite --port 5199'` confirms the target is gone. A stuck wait loop is stopped with TaskStop.
