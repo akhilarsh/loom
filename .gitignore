@@ -48,34 +48,21 @@ __pycache__/
 *$py.class
 
 # loom workspace state (created by `loom init`)
-# The current layout nests shared state under .loom/work - a real directory
-# in the main repo, a symlink in worktrees - alongside the two per-worktree
-# spool files and the derived context cache below. A workspace created
-# before this migration keeps the legacy .work forever (see doc/plans,
-# "Back-compat"), so both layouts stay ignored. CRITICAL: both the directory
-# and symlink forms of each are needed - git ignores a symlink by its own
-# name, not by resolving where it points.
+# Every .loom directory holds local state - shared state under .loom/work (a
+# real directory in the main repo, a symlink in worktrees), the per-worktree
+# spool files, and the derived context cache - and is never committed. The
+# pattern has no slash, so it matches at any depth: loom run from a
+# subdirectory creates a .loom there. A workspace created before this
+# migration keeps the legacy .work forever (see doc/plans, "Back-compat").
+# CRITICAL: both the directory and symlink forms of .work are needed - git
+# ignores a symlink by its own name, not by resolving where it points.
 .work/
 .work
-.loom/work/
-.loom/work
-.loom/memory/
+.loom
 
 # Rust build artifacts
 target/
 !loom/src/commands/target/
-
-# loom derived context cache (rebuildable from doc/loom/knowledge/)
-.loom/cache/
-
-# per-worktree memory spool (drained into .loom/work/memory/<stage>.md by the daemon)
-.loom/memory-spool.jsonl
-
-# per-worktree telemetry spool (drained into .loom/work/telemetry/events.jsonl)
-.loom/telemetry-spool.jsonl
-
-# per-worktree stage-control spool (block/dispute requests the daemon applies)
-.loom/stage-request-spool.jsonl
 
 # loom plan artifacts (completed and review copies)
 doc/plans/DONE-*
