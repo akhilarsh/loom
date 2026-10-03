@@ -3,13 +3,23 @@
 use std::fmt;
 use std::path::Path;
 
+use crate::context::extract::dialect::dialect_for_path;
+use crate::context::source_graph::NodeLanguage;
+
 /// Detected programming language in a project
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DetectedLanguage {
     Rust,
     TypeScript,
+    JavaScript,
     Python,
     Go,
+    Java,
+    CSharp,
+    Ruby,
+    Php,
+    C,
+    Cpp,
 }
 
 impl fmt::Display for DetectedLanguage {
@@ -17,8 +27,15 @@ impl fmt::Display for DetectedLanguage {
         match self {
             DetectedLanguage::Rust => write!(f, "Rust"),
             DetectedLanguage::TypeScript => write!(f, "TypeScript"),
+            DetectedLanguage::JavaScript => write!(f, "JavaScript"),
             DetectedLanguage::Python => write!(f, "Python"),
             DetectedLanguage::Go => write!(f, "Go"),
+            DetectedLanguage::Java => write!(f, "Java"),
+            DetectedLanguage::CSharp => write!(f, "C#"),
+            DetectedLanguage::Ruby => write!(f, "Ruby"),
+            DetectedLanguage::Php => write!(f, "PHP"),
+            DetectedLanguage::C => write!(f, "C"),
+            DetectedLanguage::Cpp => write!(f, "C++"),
         }
     }
 }
@@ -33,22 +50,36 @@ impl DetectedLanguage {
         match self {
             DetectedLanguage::Rust => "rust",
             DetectedLanguage::TypeScript => "typescript",
+            DetectedLanguage::JavaScript => "javascript",
             DetectedLanguage::Python => "python",
             DetectedLanguage::Go => "golang",
+            DetectedLanguage::Java => "java",
+            DetectedLanguage::CSharp => "csharp",
+            DetectedLanguage::Ruby => "ruby",
+            DetectedLanguage::Php => "php",
+            DetectedLanguage::C => "c",
+            DetectedLanguage::Cpp => "cpp",
         }
     }
 
-    /// Return the canonical identifier for this language used in image tags
-    /// and fingerprint prefixes.
+    /// Package-registry hosts suggested for the sandbox network allowlist.
     ///
-    /// Distinct from `skill_name()`: Go returns `"go"` here (not `"golang"`)
-    /// so image tags stay compact and match Docker convention.
-    pub fn canonical_name(&self) -> &'static str {
+    /// Empty for C and C++, which have no single canonical registry.
+    pub fn registry_domains(&self) -> &'static [&'static str] {
         match self {
-            DetectedLanguage::Rust => "rust",
-            DetectedLanguage::TypeScript => "typescript",
-            DetectedLanguage::Python => "python",
-            DetectedLanguage::Go => "go",
+            DetectedLanguage::Rust => &["crates.io", "static.crates.io"],
+            DetectedLanguage::TypeScript | DetectedLanguage::JavaScript => &["registry.npmjs.org"],
+            DetectedLanguage::Python => &["pypi.org"],
+            DetectedLanguage::Go => &["proxy.golang.org"],
+            DetectedLanguage::Java => &[
+                "repo.maven.apache.org",
+                "plugins.gradle.org",
+                "services.gradle.org",
+            ],
+            DetectedLanguage::CSharp => &["api.nuget.org"],
+            DetectedLanguage::Ruby => &["rubygems.org"],
+            DetectedLanguage::Php => &["repo.packagist.org"],
+            DetectedLanguage::C | DetectedLanguage::Cpp => &[],
         }
     }
 }
@@ -57,41 +88,91 @@ impl DetectedLanguage {
 ///
 /// Returns a Vec of detected languages based on manifest files:
 /// - Rust: Cargo.toml
-/// - TypeScript: tsconfig.json or package.json
+/// - TypeScript: tsconfig.json
+/// - JavaScript: package.json without tsconfig.json
 /// - Python: pyproject.toml or requirements.txt
 /// - Go: go.mod
+/// - Java: pom.xml, build.gradle or build.gradle.kts
+/// - C#: a root `*.csproj`, `*.sln` or `*.slnx`
+/// - Ruby: Gemfile or a root `*.gemspec`
+/// - PHP: composer.json
+/// - C++: CMakeLists.txt, meson.build, conanfile.txt, conanfile.py or vcpkg.json
+///
+/// C has no manifest: nothing distinguishes a C build from a C++ build, so C
+/// is detected only from file extensions (see [`detect_languages_from_files`]).
 ///
 /// Returns empty Vec if no languages detected.
 pub fn detect_project_languages(root: &Path) -> Vec<DetectedLanguage> {
-    let mut languages = Vec::new();
+    let has = |name: &str| root.join(name).exists();
+    let has_any = |names: &[&str]| names.iter().any(|name| has(name));
+    let root_extensions = root_entry_extensions(root);
+    let has_ext = |exts: &[&str]| root_extensions.iter().any(|e| exts.contains(&e.as_str()));
 
-    // Check for Rust
-    if root.join("Cargo.toml").exists() {
-        languages.push(DetectedLanguage::Rust);
-    }
+    let checks = [
+        (DetectedLanguage::Rust, has("Cargo.toml")),
+        (DetectedLanguage::TypeScript, has("tsconfig.json")),
+        (
+            DetectedLanguage::JavaScript,
+            has("package.json") && !has("tsconfig.json"),
+        ),
+        (
+            DetectedLanguage::Python,
+            has_any(&["pyproject.toml", "requirements.txt"]),
+        ),
+        (DetectedLanguage::Go, has("go.mod")),
+        (
+            DetectedLanguage::Java,
+            has_any(&["pom.xml", "build.gradle", "build.gradle.kts"]),
+        ),
+        (
+            DetectedLanguage::CSharp,
+            has_ext(&["csproj", "sln", "slnx"]),
+        ),
+        (
+            DetectedLanguage::Ruby,
+            has("Gemfile") || has_ext(&["gemspec"]),
+        ),
+        (DetectedLanguage::Php, has("composer.json")),
+        (
+            DetectedLanguage::Cpp,
+            has_any(&[
+                "CMakeLists.txt",
+                "meson.build",
+                "conanfile.txt",
+                "conanfile.py",
+                "vcpkg.json",
+            ]),
+        ),
+    ];
+    checks
+        .into_iter()
+        .filter_map(|(language, found)| found.then_some(language))
+        .collect()
+}
 
-    // Check for TypeScript (via tsconfig.json or package.json)
-    if root.join("tsconfig.json").exists() || root.join("package.json").exists() {
-        languages.push(DetectedLanguage::TypeScript);
-    }
-
-    // Check for Python
-    if root.join("pyproject.toml").exists() || root.join("requirements.txt").exists() {
-        languages.push(DetectedLanguage::Python);
-    }
-
-    // Check for Go
-    if root.join("go.mod").exists() {
-        languages.push(DetectedLanguage::Go);
-    }
-
-    languages
+/// Lowercase extensions of the entries directly under `root`.
+///
+/// One `read_dir` pass; an unreadable root yields no extensions.
+fn root_entry_extensions(root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let ext = path.extension()?;
+            Some(ext.to_string_lossy().to_ascii_lowercase())
+        })
+        .collect()
 }
 
 /// Detect programming languages from a list of file paths or glob patterns.
 ///
 /// Inspects each entry's file extension — handling globs like `src/**/*.rs`,
 /// `frontend/**/*.tsx`, or bare `*.py` by matching on the trailing extension.
+/// The extension-to-language mapping comes from the source graph's `DIALECTS`
+/// registry, so there is one extension table.
 /// Returns the distinct languages in first-seen order.
 ///
 /// Unlike [`detect_project_languages`] (which inspects manifest files at a single
@@ -112,202 +193,29 @@ pub fn detect_languages_from_files(files: &[String]) -> Vec<DetectedLanguage> {
 
 /// Map a single file path or glob to a language by its extension.
 ///
-/// Returns `None` for paths with no recognized extension (directories,
-/// `Makefile`, dotfiles like `.gitignore`, or unknown extensions).
+/// The mapping comes from `DIALECTS` via `dialect_for_path`. Returns `None`
+/// for paths with no recognized extension (directories, `Makefile`, dotfiles
+/// like `.gitignore`, or unknown extensions).
 fn language_for_path(path: &str) -> Option<DetectedLanguage> {
     // Isolate the filename component so a dot in a directory name
     // (e.g. `my.dir/Makefile`) is never mistaken for an extension.
     let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
-    let ext = file.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase())?;
-    match ext.as_str() {
-        "rs" => Some(DetectedLanguage::Rust),
-        "ts" | "tsx" | "mts" | "cts" => Some(DetectedLanguage::TypeScript),
-        "py" | "pyi" => Some(DetectedLanguage::Python),
-        "go" => Some(DetectedLanguage::Go),
-        _ => None,
+    let dialect = dialect_for_path(Path::new(file))?;
+    match &dialect.language {
+        NodeLanguage::Rust => Some(DetectedLanguage::Rust),
+        NodeLanguage::TypeScript | NodeLanguage::Tsx => Some(DetectedLanguage::TypeScript),
+        NodeLanguage::JavaScript => Some(DetectedLanguage::JavaScript),
+        NodeLanguage::Python => Some(DetectedLanguage::Python),
+        NodeLanguage::Go => Some(DetectedLanguage::Go),
+        NodeLanguage::Java => Some(DetectedLanguage::Java),
+        NodeLanguage::CSharp => Some(DetectedLanguage::CSharp),
+        NodeLanguage::Ruby => Some(DetectedLanguage::Ruby),
+        NodeLanguage::Php => Some(DetectedLanguage::Php),
+        NodeLanguage::C => Some(DetectedLanguage::C),
+        NodeLanguage::Cpp => Some(DetectedLanguage::Cpp),
+        NodeLanguage::Other(_) => None,
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_detect_rust() {
-        let temp = TempDir::new().unwrap();
-        fs::write(temp.path().join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
-
-        let languages = detect_project_languages(temp.path());
-
-        assert_eq!(languages.len(), 1);
-        assert!(languages.contains(&DetectedLanguage::Rust));
-    }
-
-    #[test]
-    fn test_detect_typescript() {
-        let temp = TempDir::new().unwrap();
-        fs::write(temp.path().join("tsconfig.json"), "{}").unwrap();
-
-        let languages = detect_project_languages(temp.path());
-
-        assert_eq!(languages.len(), 1);
-        assert!(languages.contains(&DetectedLanguage::TypeScript));
-    }
-
-    #[test]
-    fn test_detect_typescript_via_package_json() {
-        let temp = TempDir::new().unwrap();
-        fs::write(temp.path().join("package.json"), "{}").unwrap();
-
-        let languages = detect_project_languages(temp.path());
-
-        assert_eq!(languages.len(), 1);
-        assert!(languages.contains(&DetectedLanguage::TypeScript));
-    }
-
-    #[test]
-    fn test_detect_python_via_pyproject() {
-        let temp = TempDir::new().unwrap();
-        fs::write(temp.path().join("pyproject.toml"), "[tool.poetry]").unwrap();
-
-        let languages = detect_project_languages(temp.path());
-
-        assert_eq!(languages.len(), 1);
-        assert!(languages.contains(&DetectedLanguage::Python));
-    }
-
-    #[test]
-    fn test_detect_python_via_requirements() {
-        let temp = TempDir::new().unwrap();
-        fs::write(temp.path().join("requirements.txt"), "requests==2.28.0").unwrap();
-
-        let languages = detect_project_languages(temp.path());
-
-        assert_eq!(languages.len(), 1);
-        assert!(languages.contains(&DetectedLanguage::Python));
-    }
-
-    #[test]
-    fn test_detect_go() {
-        let temp = TempDir::new().unwrap();
-        fs::write(temp.path().join("go.mod"), "module example.com/myapp").unwrap();
-
-        let languages = detect_project_languages(temp.path());
-
-        assert_eq!(languages.len(), 1);
-        assert!(languages.contains(&DetectedLanguage::Go));
-    }
-
-    #[test]
-    fn test_detect_multiple() {
-        let temp = TempDir::new().unwrap();
-        fs::write(temp.path().join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
-        fs::write(temp.path().join("package.json"), "{}").unwrap();
-
-        let languages = detect_project_languages(temp.path());
-
-        assert_eq!(languages.len(), 2);
-        assert!(languages.contains(&DetectedLanguage::Rust));
-        assert!(languages.contains(&DetectedLanguage::TypeScript));
-    }
-
-    #[test]
-    fn test_detect_none() {
-        let temp = TempDir::new().unwrap();
-        // Empty directory
-
-        let languages = detect_project_languages(temp.path());
-
-        assert!(languages.is_empty());
-    }
-
-    #[test]
-    fn test_display_trait() {
-        assert_eq!(format!("{}", DetectedLanguage::Rust), "Rust");
-        assert_eq!(format!("{}", DetectedLanguage::TypeScript), "TypeScript");
-        assert_eq!(format!("{}", DetectedLanguage::Python), "Python");
-        assert_eq!(format!("{}", DetectedLanguage::Go), "Go");
-    }
-
-    #[test]
-    fn test_skill_name() {
-        assert_eq!(DetectedLanguage::Rust.skill_name(), "rust");
-        assert_eq!(DetectedLanguage::TypeScript.skill_name(), "typescript");
-        assert_eq!(DetectedLanguage::Python.skill_name(), "python");
-        assert_eq!(DetectedLanguage::Go.skill_name(), "golang");
-    }
-
-    #[test]
-    fn test_canonical_name() {
-        assert_eq!(DetectedLanguage::Rust.canonical_name(), "rust");
-        assert_eq!(DetectedLanguage::TypeScript.canonical_name(), "typescript");
-        assert_eq!(DetectedLanguage::Python.canonical_name(), "python");
-        // Critical: Go must return "go", NOT "golang" (finding #18).
-        assert_eq!(DetectedLanguage::Go.canonical_name(), "go");
-    }
-
-    #[test]
-    fn test_detect_from_files_globs() {
-        let files = vec![
-            "loom/src/**/*.rs".to_string(),
-            "frontend/**/*.tsx".to_string(),
-        ];
-        let langs = detect_languages_from_files(&files);
-        assert_eq!(
-            langs,
-            vec![DetectedLanguage::Rust, DetectedLanguage::TypeScript]
-        );
-    }
-
-    #[test]
-    fn test_detect_from_files_extensions() {
-        assert_eq!(
-            detect_languages_from_files(&["a.rs".to_string()]),
-            vec![DetectedLanguage::Rust]
-        );
-        // All TypeScript extension variants resolve.
-        for ext in ["ts", "tsx", "mts", "cts"] {
-            assert_eq!(
-                detect_languages_from_files(&[format!("a.{ext}")]),
-                vec![DetectedLanguage::TypeScript],
-                "extension .{ext} should map to TypeScript"
-            );
-        }
-        assert_eq!(
-            detect_languages_from_files(&["pkg/main.go".to_string()]),
-            vec![DetectedLanguage::Go]
-        );
-        assert_eq!(
-            detect_languages_from_files(&["app/models.py".to_string()]),
-            vec![DetectedLanguage::Python]
-        );
-    }
-
-    #[test]
-    fn test_detect_from_files_dedup_preserves_order() {
-        let files = vec![
-            "src/a.rs".to_string(),
-            "src/b.rs".to_string(),
-            "scripts/x.py".to_string(),
-        ];
-        let langs = detect_languages_from_files(&files);
-        assert_eq!(
-            langs,
-            vec![DetectedLanguage::Rust, DetectedLanguage::Python]
-        );
-    }
-
-    #[test]
-    fn test_detect_from_files_ignores_unknown_and_extensionless() {
-        let files = vec![
-            "Makefile".to_string(),
-            ".gitignore".to_string(),
-            "docs/readme.md".to_string(),
-            "my.dir/Makefile".to_string(),
-            "src/".to_string(),
-        ];
-        assert!(detect_languages_from_files(&files).is_empty());
-    }
-}
+mod tests;

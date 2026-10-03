@@ -146,22 +146,11 @@ pub fn initialize_with_plan(
         let current_dir = std::env::current_dir()?;
         let detected = crate::language::detect_project_languages(&current_dir);
         if !detected.is_empty() {
-            use crate::language::DetectedLanguage;
             let mut domains = vec!["github.com".to_string(), "api.github.com".to_string()];
             for lang in &detected {
-                match lang {
-                    DetectedLanguage::Rust => {
-                        domains.push("crates.io".to_string());
-                        domains.push("static.crates.io".to_string());
-                    }
-                    DetectedLanguage::TypeScript => {
-                        domains.push("registry.npmjs.org".to_string());
-                    }
-                    DetectedLanguage::Python => {
-                        domains.push("pypi.org".to_string());
-                    }
-                    DetectedLanguage::Go => {
-                        domains.push("proxy.golang.org".to_string());
+                for domain in lang.registry_domains() {
+                    if !domains.iter().any(|d| d == domain) {
+                        domains.push((*domain).to_string());
                     }
                 }
             }

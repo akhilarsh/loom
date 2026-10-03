@@ -60,7 +60,7 @@ function src/commands/graph/display.rs build_graph_display 52
 function src/commands/graph/tests.rs test_build_graph_display_shows_all_deps 70
 function src/commands/graph/tree.rs build_tree_display 57
 function src/commands/init/execute.rs execute 110
-function src/commands/init/plan_setup.rs initialize_with_plan 205
+function src/commands/init/plan_setup.rs initialize_with_plan 194
 function src/commands/init/tests.rs test_cleanup_orphaned_sessions_reaps_live_only_in_clean_mode 76
 function src/commands/init/tests.rs test_create_stage_from_definition_no_dependencies 62
 function src/commands/knowledge/tests.rs test_knowledge_update_in_worktree_writes_to_worktree 74

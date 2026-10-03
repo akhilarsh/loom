@@ -82,7 +82,11 @@ fn compatible(kind: &str, file: &str) -> bool {
     let languages = crate::language::detect_languages_from_files(&[file.to_string()]);
     languages.first().is_none_or(|language| {
         kind == language.skill_name()
-            || (*language == crate::language::DetectedLanguage::TypeScript && kind == "react")
+            || (matches!(
+                language,
+                crate::language::DetectedLanguage::TypeScript
+                    | crate::language::DetectedLanguage::JavaScript
+            ) && kind == "react")
     })
 }
 
