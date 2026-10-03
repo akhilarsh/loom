@@ -13,8 +13,8 @@ Update `CHANGELOG.md` in place:
 
 - Sections are grouped by minor version, headed `## [X.Y.x] - YYYY-MM-DD`. Derive the group from $1: `0.9.0` becomes `0.9.x`; `0.8.2` becomes `0.8.x`.
 - If that group's section already exists, merge the new bullets into its existing `### Added` / `### Changed` / `### Removed` subsections and bump the heading's date to today. Do not duplicate a capability already described there — extend the existing bullet instead.
-- If it does not exist yet, prepend a new section directly below `## [Unreleased]`.
-- Fold anything currently listed under `## [Unreleased]` into the version section being written, then leave `## [Unreleased]` in place with nothing under it.
+- If it does not exist yet, prepend a new section directly below the file's preamble, above every existing version section.
+- The file never has a `## [Unreleased]` section: the section being written is always the next version. Never add one; if one exists, fold its bullets into the version section being written and delete the heading.
 - Never reorder or reword sections for versions older than the one you are writing.
 - There is no `### Fixed` subsection in this file — do not add one.
 
