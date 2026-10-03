@@ -41,16 +41,6 @@ pub struct PackageDetail {
     pub skills: Vec<String>,
 }
 
-/// The skill name a detected kind resolves to, without the `loom-` prefix.
-/// Plain JavaScript shares the TypeScript skill.
-pub fn skill_base(kind: &str) -> &str {
-    if kind == "javascript" {
-        "typescript"
-    } else {
-        kind
-    }
-}
-
 impl ProjectProfile {
     pub fn discover(cwd: &Path) -> Self {
         let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
@@ -80,10 +70,8 @@ impl ProjectProfile {
                     .map(|kind| kind.kind.clone())
                     .collect();
                 let runner = runners::detect_runner(&self.root.join(path), &self.root, &kinds);
-                let skills: BTreeSet<String> = kinds
-                    .iter()
-                    .map(|kind| format!("loom-{}", skill_base(kind)))
-                    .collect();
+                let skills: BTreeSet<String> =
+                    kinds.iter().map(|kind| format!("loom-{kind}")).collect();
                 PackageDetail {
                     path: path.clone(),
                     kinds,

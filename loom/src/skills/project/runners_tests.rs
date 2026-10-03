@@ -177,7 +177,7 @@ fn detects_runner_for_each_ecosystem() {
 }
 
 #[test]
-fn javascript_package_maps_to_typescript_skill() {
+fn javascript_package_maps_to_javascript_skill() {
     let repo = checkout();
     write(repo.path(), "tools/package.json", r#"{"name":"plain-js"}"#);
     write(repo.path(), "web/package.json", "{}");
@@ -185,14 +185,14 @@ fn javascript_package_maps_to_typescript_skill() {
     let details = ProjectProfile::discover(repo.path()).package_details();
     let tools = detail(&details, "tools");
     assert_eq!(tools.kinds, ["javascript"]);
-    assert_eq!(tools.skills, ["loom-typescript"]);
+    assert_eq!(tools.skills, ["loom-javascript"]);
     assert_eq!(detail(&details, "web").kinds, ["typescript"]);
 
     let skills = TempDir::new().unwrap();
     write(
         skills.path(),
-        "loom-typescript/SKILL.md",
-        "---\nname: loom-typescript\ndescription: Test skill\ntriggers: []\n---\n",
+        "loom-javascript/SKILL.md",
+        "---\nname: loom-javascript\ndescription: Test skill\ntriggers: []\n---\n",
     );
     let index = SkillIndex::load_from_directory(skills.path()).unwrap();
     let matches = recommend::for_files(
@@ -203,7 +203,7 @@ fn javascript_package_maps_to_typescript_skill() {
         &[],
     );
     let names: Vec<&str> = matches.iter().map(|skill| skill.name.as_str()).collect();
-    assert_eq!(names, ["loom-typescript"]);
+    assert_eq!(names, ["loom-javascript"]);
 }
 
 /// D7 calls any `package.json` without a `tsconfig.json` JavaScript; a
