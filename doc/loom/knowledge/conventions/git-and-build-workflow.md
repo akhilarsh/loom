@@ -2,7 +2,7 @@
 ---
 # Git And Build Workflow
 
-> Git/worktree ops, cargo, size ledger
+> Git/worktree ops, cargo, CI paths, size ledger
 
 ## Git Operations
 
@@ -209,3 +209,9 @@ of the file's style.
 ## Install a New loom Binary Only After the Running Plan Completes
 
 The operator installs a freshly built `loom` (`dev-install.sh`) only once the plan being executed has completed, never between its stages: `dev-install.sh` stops the daemon, and a plan runs to completion on the binary it started with. Fixes committed to `main` mid-plan therefore take effect only for the next plan. Anything measured with the installed binary before then, such as `loom knowledge eval` scores, measures the older code. Re-measure after the install.
+
+## CI Jobs Run on Path Filters; the `rust` Filter Must Name Every Repo-Root Path the Crate Reads
+
+`.github/workflows/ci.yml` triggers on every push to main and every pull request; its `changes` job (`dorny/paths-filter`) decides which jobs run. `rust` gates lint, test, flake-check, macos, audit and deny; `web` gates the dashboard job; `shell` gates hook-syntax. The workflow has no `paths:` trigger, so the filter list is the only place CI names paths.
+
+The crate compiles in files outside `loom/`: the asset roots in `loom/build/assets.rs` (`agents/`, `commands/`, `skills/`, `codex/skills/`, `web/dist/`, both `*.md.template` files), `loom-hooks/`, `install.sh` and `dev-install.sh` through `include_str!`, and `web/src/api/` fixtures through tests. A new asset root, or a new `include_str!` or `CARGO_MANIFEST_DIR`-relative read of a repo-root path, needs an entry in the `rust` filter. Without it, a change to that path alone skips every Rust job. To audit, list `rg -o 'include_(str|bytes)!\("(\.\./)+[A-Za-z0-9._-]+' loom/src loom/tests` against the filter.

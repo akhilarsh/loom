@@ -97,7 +97,7 @@
 | [code-style-and-structure](conventions/code-style-and-structure.md) | Rust naming, errors, size limits, docstrings | 273 |
 | [commits](conventions/commits.md) | Grouped Conventional Commits, no trailers | 25 |
 | [dispute-and-adjudication](conventions/dispute-and-adjudication.md) | Dispute authority, budgets | 119 |
-| [git-and-build-workflow](conventions/git-and-build-workflow.md) | Git/worktree ops, cargo, size ledger | 211 |
+| [git-and-build-workflow](conventions/git-and-build-workflow.md) | Git/worktree ops, cargo, CI paths, size ledger | 217 |
 | [guidance-channels-and-plugin-scope](conventions/guidance-channels-and-plugin-scope.md) | Guidance channels, verification, plugin scope | 121 |
 | [model-and-effort-config](conventions/model-and-effort-config.md) | [pressure]/[models], precedence, value types | 103 |
 | [plan-yaml-and-hooks](conventions/plan-yaml-and-hooks.md) | Plan YAML schema, hook I/O, skill format | 168 |
@@ -110,7 +110,7 @@
 | [adjudication-autonomy-deadlock](mistakes/adjudication-autonomy-deadlock.md) | Accepted-verdict deadlock | 200 |
 | [ambient-filesystem-trust](mistakes/ambient-filesystem-trust.md) | A .git dir is not evidence of a repo | 146 |
 | [briefs-and-bug-reports](mistakes/briefs-and-bug-reports.md) | Stage bug reports; brief guard flags | 116 |
-| [ci-toolchain-and-cargo](mistakes/ci-toolchain-and-cargo.md) | CI clippy drift, cargo audit, install.sh | 192 |
+| [ci-toolchain-and-cargo](mistakes/ci-toolchain-and-cargo.md) | CI drift and caching, cargo audit, install.sh | 202 |
 | [codex-lane-rogue-wrapper](mistakes/codex-lane-rogue-wrapper.md) | Wrapper implemented, not forwarded | 157 |
 | [codex-navigation](mistakes/codex-navigation.md) | Slow reader fixed by forbidding reads | 52 |
 | [codex-worker-briefing](mistakes/codex-worker-briefing.md) | Codex brief pitfalls | 70 |

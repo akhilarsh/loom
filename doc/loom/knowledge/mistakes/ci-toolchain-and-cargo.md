@@ -1,6 +1,6 @@
 # Ci Toolchain And Cargo
 
-> CI clippy drift, cargo audit, install.sh
+> CI drift and caching, cargo audit, install.sh
 
 ## CI's Clippy Tracks Rustup `stable`, So a New Rust Release Breaks Main With No Code Change (2026-08-26)
 
@@ -190,3 +190,13 @@ committing, not after.
 **Prevention:** a fixture whose repository receives commits from production code sets `user.name` and `user.email` in the repository's own config right after `git init`, as `git::merge::test_support::init_repo` does. Reproduce CI's missing identity locally with `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.useConfigOnly GIT_CONFIG_VALUE_0=true cargo test --all-targets --no-fail-fast`; `useConfigOnly` stops git guessing a name from the passwd entry, which the workstation would otherwise supply.
 
 **Fix:** both fixtures set the identity with `git config` after `init`.
+
+## CI's Build-Once Job Never Fed the Jobs That Waited for It (2026-10-03)
+
+**What happened:** `.github/workflows/ci.yml` ran a `Build` job (`cargo build --all-targets`) that every Rust job waited on through `needs: build`, meant to warm one `actions/cache` entry of `~/.cargo` plus `loom/target/` for them. The `loom` crate still compiled eight times per run (Build, Test linux, Test macOS, Clippy, Maintainability, Flake, Docs, Smoke), and Build added 2-4 minutes before any of them started. The cache had grown to 3 GB, restored seven times per run at 20-97 s each. Release caches added 4.6 GB per tag and pushed total use to 11.3 GB, over the 10 GB repo quota.
+
+**Why:** four separate defects. (1) The key was the `Cargo.lock` hash alone and `actions/cache` never overwrites an existing key, so `target/` stayed frozen at the last lockfile change and Build's output was thrown away on every other run. (2) Even a fresh save cannot carry the workspace crate: checkout gives every source file a new mtime, so cargo rebuilds `loom` whatever `target/` holds (run 36877678619: the smoke job restored the cache Build had saved minutes earlier, then logged `Compiling loom ... 42.59s`). (3) The restore-keys fallback pulled the previous lockfile's `target/` and the save layered the new one on top, so the cache only grew; the key also left out the rustc version, so a new stable "hit" and recompiled every dependency. (4) Release caches were saved under the tag ref, which no later tag's run can read, and the release build first restored CI's debug cache, useless to `--release --target`.
+
+**Prevention:** cache dependencies only, with a key that includes the rustc version and the lockfile, saved from the default branch only (`Swatinem/rust-cache` with `save-if: github.ref == 'refs/heads/main'`). Group checks that share a compile mode into one job (fmt + clippy + doc share check-mode dependencies; test + smoke share the dev build) instead of building once and fanning out through `target/` caches. Never save a cache from a tag-triggered run.
+
+**Fix:** `.github/workflows/ci.yml` now runs `lint`, `test` (which also runs the smoke scripts and, through `--all-targets`, the maintainability target), `flake-check` and `macos` (clippy) in parallel, each with `Swatinem/rust-cache`; the Build and Maintainability jobs are gone. `.github/workflows/release.yml` has no cache steps and no flake re-run.
