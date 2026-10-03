@@ -57,6 +57,7 @@ the task.
 | `loom-argocd` | GitOps CD for Kubernetes with Argo CD |
 | `loom-auth` | OAuth2/JWT/RBAC auth patterns, sessions, MFA |
 | `loom-background-jobs` | Job queues, scheduled jobs, worker pools, retries |
+| `loom-c` | Idiomatic C11/C17: ownership, errno, UB, CMake, sanitizers, CTest |
 | `loom-caching` | Caching strategies: cache-aside, TTL, stampede prevention |
 | `loom-ci-cd` | CI/CD pipelines across GitHub Actions, GitLab, Jenkins |
 | `loom-code-migration` | Safe code migrations, framework upgrades, codemods |
@@ -84,6 +85,7 @@ the task.
 | `loom-i18n` | i18n/l10n: translations, locale formatting, RTL |
 | `loom-istio` | Istio service mesh: mTLS, routing, canary, Envoy |
 | `loom-java` | Idiomatic Java: JUnit 5, Gradle/Maven, Spring Boot, records |
+| `loom-javascript` | Modern JavaScript: ESM, Node.js, async/await, JSDoc types, bun, vitest |
 | `loom-karpenter` | Karpenter node autoscaling and cost optimization |
 | `loom-kotlin` | Idiomatic Kotlin: coroutines, null safety, Gradle KTS, Ktor |
 | `loom-kubernetes` | K8s manifests, Helm, RBAC, operators, troubleshooting |

@@ -230,7 +230,7 @@ Everything loom does, one line each, grouped by what you are doing at the time. 
 - Run each stage's main agent at its stage type's configured model and effort. ([Model Allocation](#model-allocation))
 - Override the model or effort for one stage explicitly, without touching the rest of the plan. ([Stage Fields](#stage-fields))
 - Keep each signal's prefix byte-identical across sessions, so the large doctrine block is a cache hit. ([Cost control by construction](#cost-control-by-construction))
-- Inject at most 5 matched skills per stage out of 73 installed; 10 core skills are always loaded and the other 63 load on demand. ([Cost control by construction](#cost-control-by-construction))
+- Inject at most 5 matched skills per stage out of 75 installed; 10 core skills are always loaded and the other 65 load on demand. ([Cost control by construction](#cost-control-by-construction))
 
 ## Contents
 
@@ -318,7 +318,7 @@ Loom's savings come from **delegation, not downgrade**:
 - **Signals are built for cache reuse.** Each signal is a four-section layout with a per-stage-type stable prefix that is byte-identical across sessions, so the large doctrine block is a cache hit rather than a re-read.
 - **The orchestrator's rulebook loads when it is needed.** Delegation, briefs, file ownership, waiting on subagents and commit timing live in the `loom-orchestration` core skill, which a session loads before it fans out; the installed `CLAUDE.md` keeps the hard stops and a pointer, under a 20 KB ceiling. `spawn-guard.sh` prepends the subagent preamble to every typed spawn, so an orchestrator no longer pastes it.
 - **Context budgets prevent compaction**, which is the expensive failure: an uncached re-read that costs more and produces worse work.
-- **Tiered knowledge and a skill index** keep the working set small — at most 5 matched skills are injected per stage, out of 73 installed.
+- **Tiered knowledge and a skill index** keep the working set small — at most 5 matched skills are injected per stage, out of 75 installed.
 - **Waits and repeat reads are settled by receipts, not by polling.** An orchestrator waits on a backgrounded Codex forward by its exact receipt (`loom subagents wait --receipt <id>`), and repeated `loom subagents list` polling is counted by the poll guard. A repeated file read is warned or denied only when a transcript receipt proves the earlier result was delivered.
 - **Consumption is measured, not assumed.** `loom usage` reports Claude and Codex separately from provider-native telemetry, and `loom usage --compare` judges a candidate policy offline against paired runs. A token-proxy gain alone never counts as a subscription saving, and any quality or latency regression rejects the candidate; see [the evaluation protocol](doc/token-optimization-evaluation.md).
 
@@ -423,7 +423,7 @@ bash ./dev-install.sh
 | -------------------------------------- | --------------------------------------------------------------------------------- |
 | `~/.claude/agents/loom-*.md`           | 5 specialized subagents (per-item, non-destructive)                               |
 | `~/.claude/skills/loom-*/`             | 10 core domain knowledge modules, always loaded (per-item, non-destructive)       |
-| `~/.claude/loom-skill-catalog/loom-*/` | 63 more domain knowledge modules, loaded on demand (`--skills core`, the default) |
+| `~/.claude/loom-skill-catalog/loom-*/` | 65 more domain knowledge modules, loaded on demand (`--skills core`, the default) |
 | `~/.claude/commands/*.md`              | Loom slash commands (`/pressure`, `/address`, `/distill`)                         |
 | `~/.claude/hooks/loom/`                | Embedded lifecycle and guardrail hooks + shared libraries                         |
 | `~/.claude/CLAUDE.md`                  | Orchestration rules                                                               |
