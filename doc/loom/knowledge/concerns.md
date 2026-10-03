@@ -226,11 +226,11 @@ own dependency list.
   together, so the printed line cannot be pasted into a shell. A shared quoting helper would fix
   both call sites.
 
-## Markdown Lint Silently Skipped in a No-Network Stage Sandbox (2026-09-22)
+## Markdown Lint Blocks Only at Push
 
-The pre-commit hook runs `bunx markdownlint-cli2 --fix 2>/dev/null || true` (`loom/.githooks/pre-commit:63`); with no
-network `bunx` cannot fetch transitive packages even for a cached tool, so `.md` files commit unlinted with exit 0
-(seen in three stages, 2026-09-24). It should fail loudly; see `mistakes/verification-v2-delivery.md`.
+`loom/.githooks/pre-commit:63` runs `markdownlint-cli2 --fix` and ignores its exit status (it warns only when `bunx`
+cannot run), so an error `--fix` cannot repair, such as a table row missing a cell (MD055/MD056), commits silently;
+`pre-push:48` blocks it. Lint new markdown with `bunx markdownlint-cli2 <files>` before committing.
 
 ## Verification v2 Follow-Ups (2026-09-25)
 
