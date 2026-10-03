@@ -181,21 +181,21 @@ UB lets the compiler assume the case never happens, so the damage is not confine
 | Signed integer overflow (`INT_MAX + 1`, `abs(INT_MIN)`) | the compiler may delete overflow checks written after the fact | check before: `if (a > INT_MAX - b)`; use unsigned for wraparound; C23 `ckd_add` |
 | Out-of-bounds read or write | memory corruption or disclosure | track and check lengths; ASan in tests |
 | Use after free, double free | allocator state is corrupt | one owner, null after free |
-| NULL dereference | | check at the boundary; `-fsanitize=null` |
+| NULL dereference | the compiler may delete later NULL checks on the same pointer | check at the boundary; `-fsanitize=null` |
 | Uninitialised read | indeterminate value | initialise at declaration (`= {0}`) |
-| Shift by negative or by `>= width`; left shift into the sign bit | | mask the count; shift unsigned values |
- | traps | check divisor |
-| Pointer arithmetic outside an array (one past the end is allowed) | | compare indices, not computed pointers |
+| Shift by negative or by `>= width`; left shift into the sign bit | result is undefined, and CPUs mask the count differently | mask the count; shift unsigned values |
+| Division by zero; `INT_MIN / -1` | traps | check divisor |
+| Pointer arithmetic outside an array (one past the end is allowed) | the pointer itself is invalid, even if never dereferenced | compare indices, not computed pointers |
 | Strict aliasing: reading a `float` through `int *` | the optimiser reorders accesses | `memcpy`, or a `union` for type punning (defined in C) |
- a cast pointer | traps on some CPUs, UB everywhere | `memcpy` |
- | literals are read-only | `char buf[] = "..."` for a writable copy |
-| Two unsequenced modifications (`i = i++ + 1`, `f(i++, i++)`) | | one side effect per statement |
- ranges | | `memmove` |
- pointer, even with length 0 | | guard the NULL case |
+| Misaligned access through a cast pointer | traps on some CPUs, UB everywhere | `memcpy` |
+| Writing to a string literal | literals are read-only | `char buf[] = "..."` for a writable copy |
+| Two unsequenced modifications (`i = i++ + 1`, `f(i++, i++)`) | evaluation order is unspecified | one side effect per statement |
+| `memcpy` with overlapping ranges | the copy direction is unspecified | `memmove` |
+| `memcpy`, `memset` or `strlen` on a NULL pointer, even with length 0 | the compiler may assume the pointer is non-NULL afterwards | guard the NULL case |
 | `char` value passed to `isalpha`, `toupper` (negative values) | argument must be `unsigned char` or `EOF` | `isalpha((unsigned char)c)` |
-| `printf` with a wrong format specifier or argument count | | `-Wformat=2`; `%zu` for `size_t`, `%td` for `ptrdiff_t`, `PRIu64` for `uint64_t` |
-| Data race on a non-atomic object | | `_Atomic`, mutex |
- function whose result is used | | return on every path (`-Wreturn-type`) |
+| `printf` with a wrong format specifier or argument count | reads arguments of the wrong size from the wrong place | `-Wformat=2`; `%zu` for `size_t`, `%td` for `ptrdiff_t`, `PRIu64` for `uint64_t` |
+| Data race on a non-atomic object | torn reads and writes; the compiler may cache the value | `_Atomic`, mutex |
+| Falling off the end of a non-`void` function whose result is used | the caller reads an indeterminate value | return on every path (`-Wreturn-type`) |
 
 ```c
 /* Wrong: the optimiser may remove the check because signed overflow cannot happen */
