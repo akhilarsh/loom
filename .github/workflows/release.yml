@@ -45,29 +45,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache Cargo dependencies
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            loom/target/
-          key: ${{ runner.os }}-cargo-v2-${{ matrix.target }}-${{ hashFiles('loom/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-v2-${{ matrix.target }}-
-            ${{ runner.os }}-cargo-v2-
-
+      # No cache: a cache saved under a tag ref is invisible to every later
+      # tag, and main never builds the release profile.
       - name: Build release binary
         working-directory: loom
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Strip binary (Linux)
-        if: runner.os == 'Linux'
-        run: strip loom/target/${{ matrix.target }}/release/loom
-
-      - name: Strip binary (macOS)
-        if: runner.os == 'macOS'
+      - name: Strip binary
         run: strip loom/target/${{ matrix.target }}/release/loom
 
       - name: Rename binary
@@ -92,27 +76,15 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo dependencies
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            loom/target/
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('loom/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-v2-
-
+      # The suite runs again here because the tag commit builds a release
+      # version, which some tests branch on. The flake check is left to CI on
+      # main: timing races do not depend on the version.
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
 
       - name: Run tests
         working-directory: loom
         run: cargo test --all-targets
-
-      - name: Re-run the timing-sensitive tests under load
-        run: ./scripts/flake-check.sh
 
   verify-version:
     name: Verify binary version matches tag
@@ -237,8 +209,8 @@ jobs:
             VERSION=${TAG_NAME#v}
             TAG=$TAG_NAME
           fi
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Version: $VERSION, Tag: $TAG"
 
       - name: Extract changelog section

@@ -5,27 +5,168 @@ on:
     branches:
       - main
       - master
-    paths:
-      - "loom/**"
-      - "web/**"
-      - "scripts/**"
-      - ".github/workflows/ci.yml"
   pull_request:
-    paths:
-      - "loom/**"
-      - "web/**"
-      - "scripts/**"
-      - ".github/workflows/ci.yml"
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
 
 jobs:
-  # Build once, save to cache for all subsequent jobs
-  build:
-    name: Build
+  # The filters below are the only list of paths CI reacts to; every job keys
+  # off one of them. The rust filter names each repo-root path the crate reads:
+  # the asset roots build/assets.rs embeds, the files src/ and tests/
+  # include_str!, and the scripts the Rust jobs run. A new one goes here too.
+  changes:
+    name: Detect changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      web: ${{ steps.filter.outputs.web }}
+      shell: ${{ steps.filter.outputs.shell }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Filter changed paths
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            rust:
+              - "loom/**"
+              - "agents/**"
+              - "commands/**"
+              - "skills/**"
+              - "codex/skills/**"
+              - "loom-hooks/**"
+              - "web/dist/**"
+              - "web/src/api/**"
+              - "*.md.template"
+              - "install.sh"
+              - "dev-install.sh"
+              - "scripts/flake-check.sh"
+              - "scripts/smoke-web-*.sh"
+              - ".github/workflows/ci.yml"
+            web:
+              - "web/**"
+              - ".github/workflows/ci.yml"
+            shell:
+              - "loom-hooks/**"
+              - "scripts/**"
+              - "loom/.githooks/**"
+              - ".github/workflows/ci.yml"
+
+  # Each Rust job compiles the loom crate once, in its own mode. The cache
+  # holds dependencies only: a fresh checkout gives every source file a new
+  # mtime, so cargo rebuilds the workspace crate whatever target/ holds.
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: loom
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check formatting
+        working-directory: loom
+        run: cargo fmt --check
+
+      - name: Run clippy
+        if: ${{ !cancelled() }}
+        working-directory: loom
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Check public documentation
+        if: ${{ !cancelled() }}
+        working-directory: loom
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --all-features --no-deps
+
+  # cargo test --all-targets also runs the maintainability limits target.
+  test:
+    name: Test (linux)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: loom
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install tmux and ripgrep
+        run: sudo apt-get update && sudo apt-get install -y tmux ripgrep
+
+      - name: Run tests
+        working-directory: loom
+        run: cargo test --all-targets
+        env:
+          LOOM_E2E_REQUIRE_TMUX: "1"
+
+      - name: Build the loom binary
+        if: ${{ !cancelled() }}
+        working-directory: loom
+        run: cargo build --bin loom
+
+      - name: Run the web dashboard smoke test
+        if: ${{ !cancelled() }}
+        run: ./scripts/smoke-web-dashboard.sh loom/target/debug/loom
+
+      - name: Run the web terminal smoke test
+        if: ${{ !cancelled() }}
+        run: ./scripts/smoke-web-terminal.sh loom/target/debug/loom
+
+  flake-check:
+    name: Flake check
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: loom
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Re-run the timing-sensitive tests under load
+        run: ./scripts/flake-check.sh
+
+  # Type-checks every target on macOS and runs the lints that only fire under
+  # macOS cfg, without the codegen and linking a test build would add.
+  macos:
+    name: Clippy (macos)
+    runs-on: macos-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -36,193 +177,20 @@ jobs:
           components: clippy
 
       - name: Cache Cargo dependencies
-        uses: actions/cache@v6
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            loom/target/
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('loom/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-v2-
-
-      - name: Build all targets
-        working-directory: loom
-        run: cargo build --all-targets
-
-  test:
-    name: Test (${{ matrix.name }})
-    runs-on: ${{ matrix.os }}
-    needs: build
-    strategy:
-      matrix:
-        include:
-          - name: linux
-            os: ubuntu-latest
-            test_cmd: cargo test --all-targets
-          - name: macos-build
-            os: macos-latest
-            test_cmd: cargo test --all-targets --no-run
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            loom/target/
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('loom/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-v2-
-
-      - name: Install tmux
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y tmux
-
-      - name: Run tests
-        working-directory: loom
-        run: ${{ matrix.test_cmd }}
-        env:
-          LOOM_E2E_REQUIRE_TMUX: ${{ matrix.name == 'linux' && '1' || '' }}
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            loom/target/
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('loom/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-v2-
+          workspaces: loom
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run clippy
         working-directory: loom
         run: cargo clippy --all-targets -- -D warnings
 
-  maintainability:
-    name: Maintainability limits
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            loom/target/
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('loom/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-v2-
-
-      - name: Enforce shrinking file and function limits
-        working-directory: loom
-        run: cargo test --test maintainability
-
-  flake-check:
-    name: Flake check
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            loom/target/
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('loom/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-v2-
-
-      - name: Re-run the timing-sensitive tests under load
-        run: ./scripts/flake-check.sh
-
-  docs:
-    name: Documentation
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            loom/target/
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('loom/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-v2-
-
-      - name: Check public documentation
-        working-directory: loom
-        env:
-          RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --workspace --all-features --no-deps
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Check formatting
-        working-directory: loom
-        run: cargo fmt --check
-
   hook-syntax:
     name: Hook syntax
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.shell == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -236,6 +204,8 @@ jobs:
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     permissions:
       contents: read
       checks: write
@@ -255,6 +225,8 @@ jobs:
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -267,6 +239,8 @@ jobs:
   web:
     name: Web dashboard
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -287,39 +261,3 @@ jobs:
         run: |
           bun run build
           test -z "$(git status --short --untracked-files=all dist)"
-
-  smoke-web-dashboard:
-    name: Web dashboard smoke test
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            loom/target/
-          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('loom/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-v2-
-
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
-
-      - name: Build the loom binary
-        working-directory: loom
-        run: cargo build --bin loom
-
-      - name: Run the web dashboard smoke test
-        run: ./scripts/smoke-web-dashboard.sh loom/target/debug/loom
-
-      - name: Run the web terminal smoke test
-        run: ./scripts/smoke-web-terminal.sh loom/target/debug/loom
