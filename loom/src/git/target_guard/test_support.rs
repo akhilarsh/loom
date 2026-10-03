@@ -59,11 +59,15 @@ pub(crate) fn commit_file(dir: &Path, path: &str, text: &str) -> String {
 }
 
 /// A repository on `main` with `README.md` committed, `.loom/` and
-/// `.worktrees/` excluded, and the state directory created.
+/// `.worktrees/` excluded, and the state directory created. The identity is
+/// set in the repository's own config, because the code under test runs git
+/// without this module's environment.
 pub(crate) fn repo() -> Repo {
     let dir = TempDir::new().unwrap();
     let root = dir.path().canonicalize().unwrap();
     git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["config", "user.name", "t"]);
+    git(&root, &["config", "user.email", "t@t.com"]);
     std::fs::write(root.join(".git/info/exclude"), ".loom/\n.worktrees/\n").unwrap();
     commit_file(&root, "README.md", "readme\n");
     let work = root.join(".loom/work");

@@ -43,10 +43,13 @@ fn git(root: &Path, args: &[&str]) -> String {
 }
 
 /// A repository on `main` with the stage worktree `.worktrees/s1` on `loom/s1`,
-/// one commit ahead.
+/// one commit ahead. The identity is set in the repository's own config,
+/// because the daemon's merge runs git without this module's environment.
 fn repository(fx: &Fixture) {
     let root = &fx.repo_root;
     git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["config", "user.name", "loom-test"]);
+    git(root, &["config", "user.email", "loom-test@example.com"]);
     std::fs::write(root.join(".gitignore"), ".loom/\n.worktrees/\n").unwrap();
     std::fs::write(root.join("a.txt"), "a\n").unwrap();
     git(root, &["add", "."]);
