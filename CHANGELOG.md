@@ -5,7 +5,7 @@ All notable changes to loom are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.x] - 2026-10-03
+## [1.1.x] - 2026-10-05
 
 ### Added
 
@@ -21,3 +21,4 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Merges stay off your checkout** — loom computes a stage merge with `git merge-tree` and lands it by fast-forwarding the target, so it no longer checks out the target or runs `git merge` in the main checkout; uncommitted work there blocks a merge only when it overlaps the paths the merge touches, overlapping edits that reapply cleanly are stashed around the fast-forward under a backup ref, and the conflict resolver works in the stage's own worktree. A merge held by an operation in progress, a target checked out in another worktree or overlapping local changes shows as `MERGE BLOCKED` with its reason in `loom status`, the TUI and the web dashboard and is retried automatically, `STASH NOT RESTORED` flags a backup the merge could not put back, and `loom run` now refuses git older than 2.40.
 - **Blocked stages retire their session** — `loom stage block`, from the agent or the operator, ends the stage's live session so its later exit is not filed as a crash, and the block reason appears in `loom status` and its attention list; a failed `loom stage complete` names the dispute and block routes in the stage's signal.
 - **Knowledge context routed by intent** — `loom knowledge context`, the prompt hook, worker briefs and the signal's Knowledge Brief route a query by its intent, explain why each neighbouring section was included, attach anchored source windows, and render caveats and text-search hints for each surface.
+- **Codex doctrine follows the stale-knowledge and block rules** — the `~/.codex/AGENTS.md` that `loom install-assets` writes tells codex sessions to correct a stale knowledge claim where they find it (a `stale-knowledge:` memory note inside a stage, a `loom knowledge replace-section` rewrite outside one) and to keep knowledge files other than the mistakes files to current truth; it and the preamble on every forwarded codex task forbid `loom stage complete`, `loom stage block` and `loom stage dispute-*` and send a blocker or a disputed check to the worker's report instead.
