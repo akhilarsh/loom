@@ -119,7 +119,7 @@
 | [concurrency-and-locking](mistakes/concurrency-and-locking.md) | Locked-handle writes, save races | 36 |
 | [daemon-singleton](mistakes/daemon-singleton.md) | Two daemons shared .loom/work/; now flocked | 141 |
 | [detached-spawn-in-tests](mistakes/detached-spawn-in-tests.md) | No process may outlive its test | 55 |
-| [doctrine-and-acceptance](mistakes/doctrine-and-acceptance.md) | Doctrine drift, acceptance | 347 |
+| [doctrine-and-acceptance](mistakes/doctrine-and-acceptance.md) | Doctrine drift, acceptance | 357 |
 | [hooks-shell-portability](mistakes/hooks-shell-portability.md) | gawk/bash portability, hook tests | 191 |
 | [knowledge-base-drift](mistakes/knowledge-base-drift.md) | How knowledge goes stale | 229 |
 | [knowledge-cli-invariants](mistakes/knowledge-cli-invariants.md) | Invariants live in constructor | 139 |

@@ -345,3 +345,13 @@ put the doc edits in the implementation brief.
 **Prevention:** when a mistake entry's prevention is a spawn or review rule, add it to the doctrine surfaces agents actually read, in the same change.
 
 **Fix:** the rule is now in SKILL.md Rule 6 (plus the coordinator preamble and review-loop step 1), in `CLAUDE.md.template` Rule 6, and in the v2 review signal section. The watch also rejects `name@session-…` ids with a message naming the rule.
+
+## Changelog skipped a shipped doctrine change
+
+**What happened:** `/changelog 1.1.1` reviewed `v1.1.0..HEAD`, found `docs(doctrine): give codex the stale-knowledge rule and the block and dispute routes`, and dropped it as a doc commit. The operator pointed out that `AGENTS.md.template` is not documentation.
+
+**Why:** The `docs(...)` commit type was read as "documentation". `CLAUDE.md.template`, `AGENTS.md.template`, `loom-hooks/*` and `skills/*` are compiled into the binary and written by `loom install-assets` (to `~/.claude/`, `~/.codex/AGENTS.md`), so they change what operator sessions do.
+
+**Prevention:** Classify a changelog commit by the files it touches, never by its type prefix. A change to an installed doctrine template, hook or skill is user-facing; only `doc/`, `README`-only prose and knowledge files are excluded as docs.
+
+**Fix:** Added a `### Changed` bullet for the codex doctrine to the `[1.1.x]` section of `CHANGELOG.md`.
