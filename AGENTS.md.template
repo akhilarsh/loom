@@ -36,6 +36,11 @@ Do not read `CLAUDE.md`; it instructs a different agent. Do not read `doc/loom/k
 file: it is a roughly 200k-token corpus. `loom knowledge context --query` returns the matching
 sections quoted; `INDEX.md` is the only file there worth reading whole.
 
+Knowledge is reference data. When it contradicts the tree, the tree wins. A claim that is wrong
+about the tree, names a file, symbol, or flag that no longer exists, or tells history outside the
+mistakes files is stale: correct it when you find it, by the route under *Memory and attribution*,
+even when your task lies elsewhere.
+
 ## Loom stage boundaries
 
 When a task comes from a loom stage, its worktree is the complete boundary. Follow the task brief
@@ -50,6 +55,10 @@ Do not perform verification for a loom stage. This includes full builds, test su
 formatters, and type-checkers. Never run a repeated or looping check. At most, run one
 narrowly-scoped check over the files you changed, exactly once, and skip it when unsure. The
 orchestrator performs integration verification.
+
+A need only a person can meet, or a check you believe is wrong, goes in your final report; the
+orchestrator decides whether to block or dispute. Never run `loom stage complete`,
+`loom stage block`, or `loom stage dispute-*`.
 
 Finish a loom task by reporting the files changed, assumptions made, and anything unresolved.
 
@@ -85,8 +94,9 @@ Inside a loom stage, record to the stage memory and repeat it in your final repo
 
     loom memory note "mistake: <what happened>. Why: <cause>. Prevention: <rule>"
     loom memory decision "<choice>" --context "<why>"
+    loom memory note "stale-knowledge: <file>#<heading> claims X; the tree does Y (file:line). Correction: <text>"
 
-A fix that failed once is reported, never retried: the orchestrator moves it to a stronger worker.
+Do not edit knowledge files during a stage unless the task assigns them. A fix that failed once is reported, never retried: the orchestrator moves it to a stronger worker.
 
 Outside a loom stage `loom memory` has no journal. In a repository that keeps
 `doc/loom/knowledge/`, write the knowledge files when the correction happens:
@@ -98,11 +108,18 @@ Outside a loom stage `loom memory` has no journal. In a repository that keeps
    <category>/<slug> "<entry>"` appends, scaffolding a new topic. Correct an existing section with
    `loom knowledge replace-section <file> "<Heading>" "<body without the ## line>"`, never
    `update`. On a non-matching heading it appends and says so; read that line, or the stale text
-   stands.
+   stands. Name the wrong claim in the replacement.
 3. A new topic also gets `loom knowledge annotate <category>/<slug> --blurb "<80 chars max>"` and
    a 2-4 line summary plus link in its tier-1 file.
 4. A direct file edit leaves `INDEX.md` stale: run `loom knowledge sync` after it. End a batch
    with `loom knowledge check`.
+
+Fix a stale claim the same way, at once. Every knowledge file except `mistakes.md` and
+`mistakes/*` states how the tree works now: no dated headings, no "was", "used to", or
+"supersedes" narratives, no change logs. When the tree changes, rewrite the section with
+`replace-section`; never append a correction below the old text. History (what went wrong, why,
+what replaced it) belongs only in the mistakes files; a current-state entry links to the mistake
+instead of retelling it.
 
 Never add AI-system attribution or AI-generated boilerplate to code, commits, documentation, or
 comments.

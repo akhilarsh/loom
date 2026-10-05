@@ -90,6 +90,8 @@ NEVER write anything under .work/ or .loom/ - .loom/work/ (or the legacy .work/)
 state shared with other running stages, and the rest of .loom/ is orchestrator-owned spool/cache
 data.
 NEVER run git: not add, not commit, not checkout, not stash, not restore.
+NEVER run loom stage complete, loom stage block, or loom stage dispute-*. A need only a person can
+meet, or a check you believe is wrong, goes in your report; the orchestrator decides what to do.
 DO NOT VERIFY. No full build, no test suite, no linter, no formatter, no type-checker, and never
 a repeated or looping check. At most ONE narrowly-scoped check over the files you changed, run
 once; skip it if you are unsure. The orchestrator compiles, tests, lints, and fixes.
