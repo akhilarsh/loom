@@ -204,9 +204,7 @@ fn run_check(stage_id: String, suggest: bool, no_cache: bool) -> Result<()> {
     if no_cache {
         // Single-threaded at this point in a one-shot CLI invocation — no
         // concurrent reader of the environment exists yet — so a plain
-        // process-wide set is safe, the same reasoning
-        // `daemon::server::environment::apply` relies on.
-        // `CriteriaConfig::default()` (built inside
+        // process-wide set is safe. `CriteriaConfig::default()` (built inside
         // `run_acceptance_with_display`) reads this once.
         std::env::set_var("LOOM_ACCEPTANCE_CACHE", "0");
     }
@@ -297,6 +295,7 @@ fn dispatch_run(command: Commands) -> Result<()> {
         watch,
         no_merge,
         backend,
+        daemon_child,
     } = command
     else {
         unreachable!("dispatch routes only Run here");
@@ -305,7 +304,7 @@ fn dispatch_run(command: Commands) -> Result<()> {
     if foreground {
         run::execute(manual, max_parallel, watch, auto_merge, backend)
     } else {
-        run::execute_background(manual, max_parallel, auto_merge, backend)
+        run::execute_background(manual, max_parallel, auto_merge, backend, daemon_child)
     }
 }
 

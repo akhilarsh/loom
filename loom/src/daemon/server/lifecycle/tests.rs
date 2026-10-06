@@ -1,5 +1,5 @@
 //! Boundary tests for the `sun_path` length check ahead of the daemon's
-//! socket bind (see `socket_limit.rs`). Exercised at 103/104/105 bytes
+//! socket bind (see `crate::daemon::socket`). Exercised at 103/104/105 bytes
 //! rather than a realistic path, since every realistic loom socket path
 //! passes and would prove nothing about the boundary itself.
 
