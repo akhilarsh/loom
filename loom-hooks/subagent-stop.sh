@@ -48,7 +48,8 @@ loom_subagent_stop_skip() {
 	[[ "$AGENT_TYPE" == "$REVIEWER_AGENT_TYPE" ]] || return 0
 	loom_lifecycle_plain_path "$dir" dir || return 0
 	file="$dir/stop-skips.jsonl"
-	[[ ! -L "$file" ]] || return 0
+	# A symlink, FIFO, or device would follow the append somewhere else or block it.
+	[[ ! -L "$file" && (-f "$file" || ! -e "$file") ]] || return 0
 	ts=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z" 2>/dev/null) || return 0
 	row=$(jq -nc --arg ts "$ts" --arg agent_id "$AGENT_ID" --arg agent_type "$AGENT_TYPE" \
 		--arg reason "$reason" \

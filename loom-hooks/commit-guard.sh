@@ -345,21 +345,6 @@ remind_knowledge_capture() {
 		return
 	fi
 
-	# Check if any knowledge file has content beyond template
-	local has_content=false
-	for file in entry-points.md patterns.md conventions.md; do
-		local filepath="$knowledge_dir/$file"
-		if [[ -f "$filepath" ]]; then
-			# Check if file has more than just template content (>10 lines)
-			local lines
-			lines=$(wc -l <"$filepath")
-			if [[ "$lines" -gt 15 ]]; then
-				has_content=true
-				break
-			fi
-		fi
-	done
-
 	# Always show reminder (soft prompt, not blocking)
 	printf '\n' >&2
 	printf '%s\n' "------------------------------------------------------------" >&2
@@ -390,7 +375,7 @@ remind_memory_usage() {
 	for file in "$memory_dir"/*.md; do
 		if [[ -f "$file" ]]; then
 			local lines
-			lines=$(wc -l <"$file")
+			lines=$(wc -l <"$file" | tr -d '[:space:]')
 			if [[ "$lines" -gt 10 ]]; then
 				has_entries=true
 				break
