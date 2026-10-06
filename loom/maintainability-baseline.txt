@@ -20,7 +20,7 @@ file src/fs/work_dir/tests.rs 873
 file src/git/worktree/base.rs 469
 file src/git/worktree/settings.rs 462
 file src/models/stage/methods.rs 639
-file src/models/stage/types.rs 700
+file src/models/stage/types.rs 696
 file src/orchestrator/core/merge_handler.rs 616
 file src/orchestrator/core/recovery.rs 1455
 file src/orchestrator/core/stage_executor.rs 596
@@ -38,7 +38,6 @@ file src/plan/schema/tests/validation_tests.rs 826
 file src/plan/schema/types.rs 416
 file src/plan/schema/validation.rs 1222
 file src/plan/tests/amendment.rs 605
-file src/remote_control.rs 598
 file src/sandbox/config.rs 822
 file src/sandbox/settings.rs 438
 file src/sandbox/settings/tests.rs 1565
@@ -113,7 +112,7 @@ function src/git/worktree/discovery.rs find_worktree_by_prefix 55
 function src/git/worktree/settings.rs create_worktree_settings 115
 function src/git/worktree/tests_settings_env.rs test_worktree_gitignore_actually_hides_loom_runtime_paths 57
 function src/handoff/generator/formatter.rs format_handoff_markdown 112
-function src/models/stage/defaults.rs default 77
+function src/models/stage/defaults.rs default 76
 function src/models/stage/methods.rs from_definition_copies_all_runtime_policy_fields 118
 function src/models/stage/transitions.rs can_transition_to 73
 function src/models/stage/transitions.rs valid_transitions 57
