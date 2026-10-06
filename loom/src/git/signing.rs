@@ -277,13 +277,15 @@ fn stderr_tail(stderr: &[u8]) -> String {
     tail[start..].to_string()
 }
 
-/// Sign an empty-tree commit with `env`'s variables, so a setup that cannot
-/// sign unattended is found before a stage needs it.
-pub fn probe(repo: &Path, env: &SigningEnv) -> Result<()> {
+/// [`probe_in`] over the process environment plus `env`'s variables; only
+/// the tests call it.
+#[cfg(test)]
+pub(crate) fn probe(repo: &Path, env: &SigningEnv) -> Result<()> {
     probe_with(repo, GitEnv::Process(env))
 }
 
-/// [`probe`] under exactly the variables `env`.
+/// Sign an empty-tree commit under exactly the variables `env`, so a setup
+/// that cannot sign unattended is found before a stage needs it.
 pub(crate) fn probe_in(repo: &Path, env: &[(OsString, OsString)]) -> Result<()> {
     probe_with(repo, GitEnv::Exact(env))
 }
