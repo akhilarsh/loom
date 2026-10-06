@@ -120,7 +120,7 @@ impl Committer<'_> {
             if let CommitScope::Knowledge { prefix, .. } = scope {
                 if !Path::new(&change.path).starts_with(prefix) {
                     return Err(refused(format!(
-                        "{} is outside {}; a knowledge commit carries only knowledge files",
+                        "{:?} is outside {}; a knowledge commit carries only knowledge files",
                         change.path,
                         prefix.display()
                     )));
@@ -203,17 +203,19 @@ impl Committer<'_> {
     }
 }
 
-/// Why `change` may not be committed by a session, if it may not.
+/// Why `change` may not be committed by a session, if it may not. The path is
+/// quoted (`{:?}`): the daemon logs the reason, and a session picks the path,
+/// so a newline in it must not start a log line.
 fn protected(change: &Change) -> Option<String> {
     if is_state_path(&change.path) {
         return Some(format!(
-            "{} is loom state, which a session never commits; unstage it",
+            "{:?} is loom state, which a session never commits; unstage it",
             change.path
         ));
     }
     if change.new_mode == GITLINK_MODE {
         return Some(format!(
-            "{} is a gitlink (submodule); a stage commit never adds or moves one",
+            "{:?} is a gitlink (submodule); a stage commit never adds or moves one",
             change.path
         ));
     }
@@ -256,6 +258,22 @@ mod tests {
             assert!(validate_commit_message(bad).is_err(), "{bad:?}");
         }
         assert_eq!(validate_commit_message("feat(s1): a\n\nbody"), Ok(()));
+    }
+
+    #[test]
+    fn a_gitlink_path_is_quoted_in_the_refusal() {
+        let change = Change {
+            new_mode: GITLINK_MODE.to_string(),
+            path: "sub\nforged: line".to_string(),
+        };
+
+        let reason = protected(&change).unwrap();
+
+        assert_eq!(reason.lines().count(), 1, "{reason:?}");
+        assert!(
+            reason.starts_with(r#""sub\nforged: line" is a gitlink"#),
+            "{reason:?}"
+        );
     }
 
     #[test]
