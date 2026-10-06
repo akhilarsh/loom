@@ -161,7 +161,9 @@ fn dispatch_hook(command: HookCommands) -> Result<()> {
 /// `loom request <subcommand>` dispatch.
 fn dispatch_request(command: RequestCommands) -> Result<()> {
     match command {
-        RequestCommands::Status { id, session } => request::status::execute(id, session),
+        RequestCommands::Status { id, session, wait } => {
+            request::status::execute(id, session, wait)
+        }
     }
 }
 

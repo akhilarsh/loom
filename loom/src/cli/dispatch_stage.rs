@@ -13,6 +13,7 @@ use super::dispatch::{print_minted_proof, resolve_completion_proof};
 use super::types::{OutputCommands, StageCommands};
 use super::types_stage::{ContractsCommands, ReviewCommands};
 use crate::commands::stage;
+use crate::commands::stage::commit;
 
 /// `loom stage {block,reset,waiting,resume,hold,release,skip}` dispatch.
 ///
@@ -144,6 +145,7 @@ pub(super) fn dispatch_stage(command: StageCommands) -> Result<()> {
             context,
         } => stage::retry(stage_id, force, context),
         StageCommands::Merge { stage_id, resolved } => stage::merge(stage_id, resolved),
+        StageCommands::Commit { stage_id, message } => commit::execute(stage_id, message),
         StageCommands::HumanReview {
             stage_id,
             approve,
