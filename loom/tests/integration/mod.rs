@@ -7,6 +7,7 @@ pub mod binary_spawn_guard;
 pub mod capsule;
 pub mod confinement_status;
 pub mod context_catalog;
+pub mod daemon_child_readiness;
 pub mod dependency_cleanup;
 pub mod dependency_conflict;
 pub mod dependency_multi;
