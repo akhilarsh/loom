@@ -13,13 +13,14 @@ mod graph_loader;
 mod guidance;
 mod plan_inputs;
 mod sandbox_preflight;
+mod signing_preflight;
 
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_checks;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use std::path::PathBuf;
 
@@ -133,9 +134,11 @@ fn require_socket_path_fits(work_dir: &WorkDir) -> Result<()> {
 /// git-version check (merges need `git merge-tree --write-tree`); the hard
 /// sandbox-prerequisite check, because like `require_jq` a missing
 /// `bwrap`/`socat` or WSL1 makes every session exit at startup, and failing
-/// here beats burning the retry budget on a deterministic refusal; then the
-/// advisory codex lane. One function, so a refusal added here reaches
-/// `loom run` and `loom run --foreground` alike.
+/// here beats burning the retry budget on a deterministic refusal; the hard
+/// signing check (`signing_preflight`: with `commit.gpgsign` true, the daemon
+/// must sign unattended in its own environment); then the advisory codex
+/// lane. One function, so a refusal added here reaches `loom run` and
+/// `loom run --foreground` alike.
 fn run_startup_preflights(work_dir: &WorkDir) -> Result<()> {
     confinement::require_confinement(work_dir)?;
     if let Ok(claude_path) = crate::claude::find_claude_path() {
@@ -144,6 +147,11 @@ fn run_startup_preflights(work_dir: &WorkDir) -> Result<()> {
     }
     git_preflight::require_min_git_version(work_dir.root())?;
     sandbox_preflight::require_sandbox_prerequisites(work_dir.root())?;
+    signing_preflight::require_signing(
+        work_dir
+            .repo_root()
+            .context("cannot resolve the repository root")?,
+    )?;
     checks::advisory_codex_lane_preflight(work_dir.root());
     Ok(())
 }
