@@ -70,7 +70,7 @@ pub fn request_completion(
 }
 
 pub(crate) fn send_request(request: &Request, work_dir: &Path) -> Result<Response> {
-    let socket_path = work_dir.join("orchestrator.sock");
+    let socket_path = crate::daemon::socket_path(work_dir);
     let mut stream = UnixStream::connect(&socket_path)
         .with_context(|| format!("failed to connect to daemon at {}", socket_path.display()))?;
     stream

@@ -61,8 +61,17 @@ pub fn current_session_id() -> String {
     std::env::var(SESSION_ID_ENV).unwrap_or_default()
 }
 
-fn socket_path(work_dir: &Path) -> PathBuf {
-    work_dir.join("orchestrator.sock")
+/// The daemon's socket for `work_dir`.
+///
+/// In a stage worktree `.loom/work` is a symlink to the state root, and the
+/// daemon bound its socket under the resolved, shorter path. The unresolved
+/// worktree path can pass the `sun_path` limit (103 bytes on macOS) and make
+/// `connect` fail with `AF_UNIX path too long`, so resolve it first.
+pub(crate) fn socket_path(work_dir: &Path) -> PathBuf {
+    work_dir
+        .canonicalize()
+        .unwrap_or_else(|_| work_dir.to_path_buf())
+        .join("orchestrator.sock")
 }
 
 /// What came back from trying to reach the daemon.
@@ -140,6 +149,9 @@ pub enum DaemonReach {
 ///   outright, failing at `socket()` or at `connect()` (see
 ///   `daemon/server/core.rs`). That maps to `Unreachable`, which callers must
 ///   treat as "no answer", not as "no daemon".
+/// - `ErrorKind::InvalidInput` (a socket path longer than `sun_path`) also maps
+///   to `Unreachable`: the daemon may well be running, this process just cannot
+///   address it.
 /// - Any other connect error is NOT evidence the daemon is absent either. It
 ///   stays an `Err`: silently falling back on it would turn a
 ///   misconfiguration into a state write nobody authorized.
@@ -158,6 +170,11 @@ pub fn try_send_request(work_dir: &Path, request: &Request) -> Result<DaemonReac
             return Ok(DaemonReach::NotListening);
         }
         Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+            return Ok(DaemonReach::Unreachable);
+        }
+        // A path past the `sun_path` limit cannot be connected to even once
+        // resolved; callers must defer (spool) rather than fail.
+        Err(e) if e.kind() == ErrorKind::InvalidInput => {
             return Ok(DaemonReach::Unreachable);
         }
         Err(e) => {
@@ -363,5 +380,52 @@ mod tests {
         }
 
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn a_work_dir_symlink_past_the_socket_path_limit_still_reaches_the_daemon() {
+        let temp = TempDir::new().unwrap();
+        if crate::process::sandbox_probe::skip_unless(
+            crate::process::sandbox_probe::unix_socket_bindable(temp.path()),
+            "daemon::rpc::tests::a_work_dir_symlink_past_the_socket_path_limit_still_reaches_the_daemon",
+            "this sandbox denies binding an AF_UNIX listener",
+        ) {
+            return;
+        }
+        let real = temp.path().join("w");
+        std::fs::create_dir(&real).unwrap();
+        let link = temp.path().join("a".repeat(100));
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(link.join("orchestrator.sock").as_os_str().len() > 104);
+        let listener = std::os::unix::net::UnixListener::bind(socket_path(&real)).unwrap();
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _request: Request = read_message(&mut stream).unwrap();
+            write_message(&mut stream, &Response::Pong).unwrap();
+        });
+
+        match try_send_request(&link, &ping()).unwrap() {
+            DaemonReach::Answered(Response::Pong) => {}
+            DaemonReach::Answered(other) => panic!("expected Pong, got {other:?}"),
+            DaemonReach::NotListening => panic!("expected Answered, got NotListening"),
+            DaemonReach::Unreachable => panic!("expected Answered, got Unreachable"),
+        }
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn a_socket_path_too_long_even_resolved_is_unreachable() {
+        let temp = TempDir::new().unwrap();
+        let long = temp.path().join("b".repeat(120));
+        std::fs::create_dir(&long).unwrap();
+        std::fs::write(long.join("orchestrator.sock"), b"").unwrap();
+
+        match try_send_request(&long, &ping()).unwrap() {
+            DaemonReach::Unreachable => {}
+            DaemonReach::NotListening => panic!("expected Unreachable, got NotListening"),
+            DaemonReach::Answered(response) => panic!("expected Unreachable, got {response:?}"),
+        }
     }
 }

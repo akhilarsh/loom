@@ -7,6 +7,7 @@ pub use protocol::{
     read_message, write_message, Capability, CompletionSummary, ContractRunReport, DaemonConfig,
     Request, Response, StageCompletionInfo, WireMessage,
 };
+pub(crate) use rpc::socket_path;
 pub use rpc::{current_session_id, send_request, try_send_request, user_credential, DaemonReach};
 pub use server::{
     admin_token_path, collect_completion_summary, handle_dispute_criteria, read_auth_token,
