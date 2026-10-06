@@ -185,17 +185,10 @@ validate_wrapper_output() {
 event_id() {
 	local state="$1" kind="$2" turn="$3" terminal="$4" outcome="$5" execution digest
 	execution="direct:$THREAD_ID:$TOOL_USE_ID"
-	if command -v sha256sum >/dev/null 2>&1; then
-		digest=$(printf 'loom.lifecycle.codex.v1\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' \
-			codex_direct "$STAGE" "$SESSION" "$PARENT_ID" "$FORWARDER_ID" "$UNIT" "$INVOCATION" \
-			"$WORKSPACE" "$execution" "$state" "$MODEL" "$EFFORT" "$kind" "$turn" "$terminal" "$outcome" |
-			sha256sum 2>/dev/null) || return 1
-	else
-		digest=$(printf 'loom.lifecycle.codex.v1\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' \
-			codex_direct "$STAGE" "$SESSION" "$PARENT_ID" "$FORWARDER_ID" "$UNIT" "$INVOCATION" \
-			"$WORKSPACE" "$execution" "$state" "$MODEL" "$EFFORT" "$kind" "$turn" "$terminal" "$outcome" |
-			shasum -a 256 2>/dev/null) || return 1
-	fi
+	digest=$(printf 'loom.lifecycle.codex.v1\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s\0%s' \
+		codex_direct "$STAGE" "$SESSION" "$PARENT_ID" "$FORWARDER_ID" "$UNIT" "$INVOCATION" \
+		"$WORKSPACE" "$execution" "$state" "$MODEL" "$EFFORT" "$kind" "$turn" "$terminal" "$outcome" |
+		loom_lifecycle_sha256 2>/dev/null) || return 1
 	digest=${digest%% *}
 	[[ "$digest" =~ ^[0-9a-f]{64}$ ]] && printf 'sha256:%s\n' "$digest"
 }
