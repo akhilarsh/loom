@@ -18,7 +18,7 @@ use crate::orchestrator::{context_health, ContextHealth};
 use crate::plan::graph::levels;
 use crate::utils::format_elapsed;
 
-use super::attention_model::{failure_label, is_contract_phase, stall_takeover};
+use super::attention_model::{failure_label, is_contract_phase};
 use super::render_orphaned_warning;
 
 /// All `StageStatus` variants in display order for legend generation.
@@ -259,24 +259,8 @@ fn write_row_hints<W: Write>(
     connector: &str,
 ) -> std::io::Result<()> {
     write_orphaned_hint(w, stage, connector)?;
-    write_stall_hint(w, stage, connector)?;
     write_merge_hint(w, stage, connector)?;
     write_cleanup_hint(w, stage, connector)
-}
-
-/// For a stage loom stopped recovering from stalls, why and how to take it
-/// over. No-op for any other stage.
-fn write_stall_hint<W: Write>(
-    w: &mut W,
-    stage: &StageSummary,
-    connector: &str,
-) -> std::io::Result<()> {
-    let Some((reason, command)) = stall_takeover(stage) else {
-        return Ok(());
-    };
-    let hint_indent = " ".repeat(connector.chars().count() + 4);
-    let hint = format!("↳ {reason}: {}", command.cyan());
-    writeln!(w, "{ROW_INDENT}{hint_indent}{}", hint.red())
 }
 
 /// For a stage whose activity status is `Orphaned` — it claims to be

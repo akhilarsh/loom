@@ -27,7 +27,6 @@ mod stalled_judge;
 use handoff_state::mark_needs_handoff;
 use human_review::announce_needs_human_review;
 use recover_hung::HungReport;
-pub(crate) use recover_hung::{stall_reason, stall_takeover_command};
 
 /// The console line for a blocked stage. `reason` is the free text a stage agent
 /// wrote with `loom stage block` (up to 64 KiB), so it is flattened to one bounded
@@ -228,8 +227,8 @@ impl Orchestrator {
                 last_activity,
                 finished_without_completing,
             } => {
-                // Advisory first; a silence deep enough to prove death is
-                // recovered by `recover_hung`.
+                // Advisory first; `recover_hung` acts on a silence deep
+                // enough to prove death, or on a session that never worked.
                 self.on_session_hung(HungReport {
                     session_id: &session_id,
                     stage_id: stage_id.as_deref(),
@@ -372,6 +371,8 @@ impl Orchestrator {
 mod governor_retry_tests;
 #[cfg(test)]
 mod governor_tests;
+#[cfg(test)]
+mod recover_hung_park_tests;
 #[cfg(test)]
 mod recover_hung_tests;
 #[cfg(test)]

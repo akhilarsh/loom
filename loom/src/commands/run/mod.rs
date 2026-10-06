@@ -3,12 +3,14 @@
 //! This module provides commands for running loom plans either in foreground
 //! (debugging) or background (daemon) mode.
 
+mod auth_preflight;
 pub(crate) mod checks;
 mod confinement;
 mod daemon_child;
 mod foreground;
 mod git_preflight;
 mod graph_loader;
+mod guidance;
 mod plan_inputs;
 mod sandbox_preflight;
 
@@ -56,7 +58,7 @@ pub fn execute_background(
     if DaemonServer::is_running(work_dir.root()) {
         println!("{} Daemon is already running", "─".dimmed());
         println!();
-        println!("  {}  Check status", "loom status".cyan());
+        guidance::write_follow_guidance(&mut std::io::stdout(), work_dir.root())?;
         print_stop_guidance();
         return Ok(());
     }
@@ -69,9 +71,8 @@ pub fn execute_background(
     if !auto_merge {
         println!("  {} Auto-merge disabled", "→".dimmed());
     }
-    print_log_location(&work_dir);
     println!();
-    println!("  {}  Monitor progress", "loom status".cyan());
+    guidance::write_follow_guidance(&mut std::io::stdout(), work_dir.root())?;
     print_stop_guidance();
 
     Ok(())
@@ -126,7 +127,9 @@ fn require_socket_path_fits(work_dir: &WorkDir) -> Result<()> {
 
 /// The startup preflights both entry points run before the plan is marked in
 /// progress, in order: the confinement refusals (`confinement`, plan section
-/// 12); advisory Remote Control, which never aborts startup; the hard
+/// 12); the hard login refusal (`auth_preflight`: claude logged out under the
+/// environment stage sessions receive makes every session exit at startup);
+/// advisory Remote Control, which never aborts startup; the hard
 /// git-version check (merges need `git merge-tree --write-tree`); the hard
 /// sandbox-prerequisite check, because like `require_jq` a missing
 /// `bwrap`/`socat` or WSL1 makes every session exit at startup, and failing
@@ -136,23 +139,13 @@ fn require_socket_path_fits(work_dir: &WorkDir) -> Result<()> {
 fn run_startup_preflights(work_dir: &WorkDir) -> Result<()> {
     confinement::require_confinement(work_dir)?;
     if let Ok(claude_path) = crate::claude::find_claude_path() {
+        auth_preflight::require_stage_login(&claude_path)?;
         crate::remote_control::run_startup_preflight(&claude_path, work_dir.root());
     }
     git_preflight::require_min_git_version(work_dir.root())?;
     sandbox_preflight::require_sandbox_prerequisites(work_dir.root())?;
     checks::advisory_codex_lane_preflight(work_dir.root());
     Ok(())
-}
-
-/// The daemon runs detached, so everything it reports, failures and stalls
-/// included, ends up in its log rather than this terminal.
-fn print_log_location(work_dir: &WorkDir) {
-    let log = work_dir.root().join("orchestrator.log");
-    println!(
-        "  {} Failures and stalls are logged to {}",
-        "→".dimmed(),
-        log.display()
-    );
 }
 
 fn print_stop_guidance() {

@@ -6,9 +6,7 @@
 //! at least one lane.
 
 use super::governor_tests::assign_stage_session;
-use super::recover_hung::{
-    checkpoint_has_current_blocker, stall_reason, stall_takeover_command, HungReport,
-};
+use super::recover_hung::{checkpoint_has_current_blocker, HungReport};
 use super::tests::{
     executing_stage, handoff_work_dir, orchestrator_for, recorded_session, spawn_orphan_process,
 };
@@ -19,17 +17,17 @@ use crate::handoff::{
     HandoffOrigin, HandoffV2, VerificationCheckpoint, COMPLETION_EVIDENCE_VERSION,
 };
 use crate::models::session::{Session, SessionExitReason, SessionStatus};
-use crate::models::stage::{StageType, StallExhaustion};
+use crate::models::stage::StageType;
 use crate::orchestrator::terminal::native::write_test_pid_identity;
 use crate::verify::transitions::{load_stage, update_stage};
 use std::path::Path;
 
 /// The stage's response budget in these tests, and the silence that clears
 /// three of them.
-const BUDGET_SECS: u64 = 300;
-const ESCALATING_SILENCE_SECS: u64 = BUDGET_SECS * 3;
+pub(super) const BUDGET_SECS: u64 = 300;
+pub(super) const ESCALATING_SILENCE_SECS: u64 = BUDGET_SECS * 3;
 
-fn report(session_id: &str, stale_duration_secs: u64) -> HungReport<'_> {
+pub(super) fn report(session_id: &str, stale_duration_secs: u64) -> HungReport<'_> {
     HungReport {
         session_id,
         stage_id: Some("test-stage"),
@@ -41,7 +39,7 @@ fn report(session_id: &str, stale_duration_secs: u64) -> HungReport<'_> {
 }
 
 /// A stage executing behind a live agent, exactly as the executor leaves it.
-fn stalled_stage(work: &Path) -> (Session, u32) {
+pub(super) fn stalled_stage(work: &Path) -> (Session, u32) {
     executing_stage(work);
     let session = recorded_session(work);
     let agent_pid = spawn_orphan_process();
@@ -234,62 +232,6 @@ fn forged_checkpoint_does_not_own_stall_recovery() {
     assert_eq!(
         (stage.status, stage.stall_recoveries),
         (StageStatus::Queued, 1)
-    );
-}
-
-/// The bound. A stage that has already been recovered twice is left exactly
-/// where it stands: a third automatic re-queue is a loop, and the stage's
-/// worktree is the evidence an operator needs.
-#[test]
-fn the_third_stall_leaves_the_stage_for_an_operator() {
-    let temp = handoff_work_dir();
-    let work = temp.path().join(".loom").join("work");
-    let (session, agent_pid) = stalled_stage(&work);
-    update_stage("test-stage", &work, |stage| {
-        stage.stall_recoveries = 2;
-        Ok(())
-    })
-    .unwrap();
-
-    let mut orchestrator = orchestrator_for(&work, temp.path());
-    orchestrator.graph.mark_executing("test-stage").unwrap();
-    orchestrator
-        .active_sessions
-        .insert("test-stage".to_string(), session.clone());
-
-    orchestrator
-        .on_session_hung(report(&session.id, ESCALATING_SILENCE_SECS))
-        .unwrap();
-
-    assert!(
-        crate::process::is_process_alive(agent_pid),
-        "an exhausted stage must be handed to an operator, not taken down again"
-    );
-    let stage = load_stage("test-stage", &work).unwrap();
-    assert_eq!(stage.status, StageStatus::Executing);
-    assert_eq!(stage.stall_recoveries, 2, "a refusal must not be charged");
-    assert_eq!(
-        stage.stall_exhausted,
-        Some(StallExhaustion {
-            session_id: session.id.clone(),
-            silent_secs: ESCALATING_SILENCE_SECS,
-        }),
-        "`loom status` reads the exhaustion from the stage record, not the daemon log"
-    );
-    assert!(orchestrator.active_sessions.contains_key("test-stage"));
-
-    let _ = crate::process::terminate(agent_pid);
-}
-
-#[test]
-fn the_takeover_line_names_the_stage_its_recoveries_and_its_silence() {
-    assert_eq!(
-        stall_takeover_command("s1"),
-        "loom stage reset s1 --kill-session"
-    );
-    assert_eq!(
-        stall_reason(2, 903),
-        "stalled (recovered 2 times, silent 903s)"
     );
 }
 

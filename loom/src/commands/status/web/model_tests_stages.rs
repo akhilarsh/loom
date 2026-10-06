@@ -56,7 +56,6 @@ macro_rules! stage {
             merge_resolver_session: None,
             merge_resolver_attempts: None,
             close_reason: None,
-            stalled_after_recoveries: None,
         }
     };
 }
@@ -243,9 +242,8 @@ fn stage_docs() -> StageSummary {
     );
     stage.merge_resolver_session = Some("session-3f9a2c1e-1788720000".to_owned());
     stage.merge_resolver_attempts = Some(1);
-    // The fixture stays free of these keys only because the snapshot builder drops them.
+    // The fixture stays free of this key only because the snapshot builder drops it.
     stage.close_reason = Some("the agent's reason".to_owned());
-    stage.stalled_after_recoveries = Some(2);
     stage
 }
 

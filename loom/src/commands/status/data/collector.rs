@@ -263,7 +263,6 @@ fn build_stage_summary(stage: &Stage, sessions: &[Session], work_dir: &WorkDir) 
         merge_resolver_session: facts.merge_resolver_session,
         merge_resolver_attempts: facts.merge_resolver_attempts,
         close_reason: stage.close_reason.clone(),
-        stalled_after_recoveries: heartbeat.stalled_after_recoveries,
     }
 }
 

@@ -55,7 +55,6 @@ fn blocked_summary(id: &str, info: Option<FailureInfo>, reason: Option<String>) 
         merge_resolver_session: None,
         merge_resolver_attempts: None,
         close_reason: reason,
-        stalled_after_recoveries: None,
     }
 }
 
