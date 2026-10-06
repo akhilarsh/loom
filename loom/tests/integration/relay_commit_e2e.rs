@@ -121,21 +121,23 @@ fn write_session_and_stage(work_dir: &Path, worktree: &Path, session_id: &str, s
     save_stage(&stage, work_dir).expect("save stage record");
 }
 
-/// A repository with signing, format and hooks pinned repo-locally (the
-/// in-process drain inherits the host's global config) and a registered
-/// worktree on `loom/<stage>`.
+/// Isolated-git repo, config pinned repo-locally (drain reads host config), and a stage worktree.
 fn init_repo_with_worktree(home: &Path, stage_id: &str) -> (TempDir, PathBuf) {
-    let repo = helpers::init_test_repo();
+    let repo = TempDir::new().expect("create repo dir");
     let root = repo.path().to_path_buf();
+    git(home, &root, &["init", "-b", "main"]);
     let hooks = root.join(".git").join("hooks");
     fs::create_dir_all(&hooks).expect("create hooks dir");
     for (key, value) in [
+        ("user.email", "test@test.com"),
+        ("user.name", "Test User"),
         ("commit.gpgsign", "false"),
         ("gpg.format", "openpgp"),
         ("core.hooksPath", hooks.to_str().unwrap()),
     ] {
         git(home, &root, &["config", key, value]);
     }
+    git(home, &root, &["commit", "--allow-empty", "-m", "initial"]);
     let worktree = root.join(".worktrees").join(stage_id);
     let branch = format!("loom/{stage_id}");
     let path = worktree.to_str().unwrap();
