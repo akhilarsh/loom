@@ -34,7 +34,7 @@
 | [context-retrieval-state](architecture/context-retrieval-state.md) | Base/overlay layers, delivery records | 192 |
 | [contract-phase](architecture/contract-phase.md) | Contract session, freeze, handover | 144 |
 | [core-abstractions](architecture/core-abstractions.md) | ExecutionGraph, Stage, Session | 136 |
-| [daemon-launch](architecture/daemon-launch.md) | Re-exec launch, readiness, socket path | 60 |
+| [daemon-launch](architecture/daemon-launch.md) | Re-exec launch, readiness, socket path | 65 |
 | [daemon-owned-commits](architecture/daemon-owned-commits.md) | Relayed signed commits | 143 |
 | [directory-structure](architecture/directory-structure.md) | Module tree, state layout, root assets | 49 |
 | [execution-containment](architecture/execution-containment.md) | Sandboxed command containment, limits | 397 |
@@ -119,7 +119,7 @@
 | [completion-broker-credential](mistakes/completion-broker-credential.md) | Broker fallback, dup naming, exit-0 | 195 |
 | [computed-values-and-hidden-couplings](mistakes/computed-values-and-hidden-couplings.md) | Computed values unread downstream | 235 |
 | [concurrency-and-locking](mistakes/concurrency-and-locking.md) | Locked-handle writes, save races | 46 |
-| [daemon-fork-after-threads](mistakes/daemon-fork-after-threads.md) | Fork after threads, early ready byte | 28 |
+| [daemon-fork-after-threads](mistakes/daemon-fork-after-threads.md) | Fork after threads, early ready byte | 38 |
 | [daemon-singleton](mistakes/daemon-singleton.md) | Two daemons shared .loom/work | 141 |
 | [detached-spawn-in-tests](mistakes/detached-spawn-in-tests.md) | No process may outlive its test | 55 |
 | [doctrine-and-acceptance](mistakes/doctrine-and-acceptance.md) | Doctrine drift, acceptance | 357 |
@@ -150,7 +150,7 @@
 | [spurious-waiting-for-input](mistakes/spurious-waiting-for-input.md) | Stages flipped to waiting-for-input | 35 |
 | [status-broadcast-hardening](mistakes/status-broadcast-hardening.md) | Frame overflow, read desync | 74 |
 | [store-without-consumer](mistakes/store-without-consumer.md) | Store written, never read | 94 |
-| [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, ownership | 312 |
+| [subagent-briefing](mistakes/subagent-briefing.md) | Briefs, wave sizing, ownership | 322 |
 | [subagent-liveness-and-watch](mistakes/subagent-liveness-and-watch.md) | Subagent liveness; watch traps | 352 |
 | [subagent-orchestration](mistakes/subagent-orchestration.md) | Delegation, defect reports | 130 |
 | [test-concurrency-and-fixtures](mistakes/test-concurrency-and-fixtures.md) | Racy tests: fds, ETXTBSY, stdin | 217 |

@@ -26,3 +26,13 @@ reproduced the fix end to end.
 **Fix:** the fork path and the `objc_fork_safety` module are deleted; `daemon/server/launch.rs` re-executes
 `loom run --daemon-child <root>` and `await_ready` waits for `0x01` plus a grace
 ([Launching the Daemon](../architecture/daemon-launch.md)).
+
+## The Ready Grace Ignored Core-Dump Latency
+
+**What happened:** `tests/platform_portability_contracts.rs::ready_then_abort_is_a_launch_failure` failed on every run on Ubuntu, blocking `git push`: a child that sent `0x01` and then SIGABRT was reported as a ready daemon.
+
+**Why:** `core_pattern` pipes to apport, and the kernel ignores `RLIMIT_CORE` (`ulimit -c 0`) for a piped handler and keeps the dying process unreapable until the handler exits, about 1.08 s here. `try_wait` saw a live child through the whole 0.5 s test grace and the 1 s production grace. The contract was frozen on macOS, where the abort is reaped at once.
+
+**Prevention:** a check that a child is still alive must also ask whether it is dying: Linux reports `CoreDumping: 1` in `/proc/<pid>/status` for the whole dump. Its process closes its fds before it becomes reapable, so pipe EOF can wake the parent while `try_wait` still returns `None` and `CoreDumping` already reads 0; once a dump is seen, wait for the exit instead of polling again.
+
+**Fix:** `launch.rs::ready_unless_dumping` waits for a dumping child when the grace ends ([Launching the Daemon](../architecture/daemon-launch.md#readiness-handshake-and-failure-reports)).

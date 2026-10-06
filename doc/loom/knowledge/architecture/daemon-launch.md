@@ -29,13 +29,18 @@ The argv `loom run --daemon-child <root>` keeps the `pgrep -af 'loom run'` singl
 
 `await_ready` reads the pipe in 50 ms slices. `0x02` means output now goes to the log, `0x01` means
 ready, and any other bytes are diagnostic text (a startup error before the log redirect), of which it
-keeps the last 64 KiB. Success needs `0x01` and the child still alive after a 1 s grace. Failures
+keeps the last 64 KiB. Success needs `0x01` and the child still alive after a 1 s grace, and not
+dumping core: when the grace ends, `ready_unless_dumping` reads `CoreDumping:` from
+`/proc/<pid>/status` (`launch/child.rs::core_dumping`, always false without `/proc`). A piped core
+handler (apport, systemd-coredump) holds an aborted child unreapable for about a second, past the
+grace, so a dumping child is waited for up to the 10 s deadline and reported as an exit. Failures
 exit 1 and name what happened plus the captured text and, once `0x02` was seen, the last 20 lines of
 `orchestrator.log` (passed through `terminal_safe`):
 
 | Outcome | Report |
 | --- | --- |
 | child exits before `0x01` or within the grace | its exit status or signal; the pipe is drained up to EOF or 1 s (`DRAIN_LIMIT`), because a process the child started could still hold a write end |
+| child still dumping core when the grace ends | its signal once the core handler releases it, or "still dumping core" after the deadline |
 | pipe closes with the child alive | the child is SIGTERMed (then SIGKILL after 2 s) and reaped |
 | no `0x01` by the 10 s deadline | SIGTERM, reap, then the text and log tail |
 | read or `try_wait` error | `await_ready` terminates a still-running child on every `Err` |
