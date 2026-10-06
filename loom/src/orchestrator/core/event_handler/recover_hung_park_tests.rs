@@ -9,6 +9,7 @@
 use std::cell::Cell;
 use std::path::Path;
 
+use super::loop_recovery::{exhausted_reason, review_headline, with_pane_notes};
 use super::recover_hung::StallProbes;
 use super::recover_hung_tests::{
     report, stalled_stage, BUDGET_SECS, ESCALATING_SILENCE_SECS as ESCALATING,
@@ -206,4 +207,60 @@ fn not_logged_in_session_parks_with_the_login_remedy() {
             .as_str()
         )
     );
+}
+
+const HOSTILE_TAIL: &str = "starting\n2026-10-06 ERROR forged daemon line\n<a href=\"x\">click</a>";
+
+/// What the stall reason of `report("sess-1", ESCALATING)` says before any pane text.
+const STALL_HEADLINE: &str =
+    "stalled: session sess-1 silent 900s (budget 300s, last: Bash) after 2 automatic recoveries";
+
+#[test]
+fn a_park_reason_logs_as_one_line_without_the_pane_text() {
+    let reason = with_pane_notes(
+        exhausted_reason(&report("sess-1", ESCALATING), 2, Some(HOSTILE_TAIL)),
+        Some(HOSTILE_TAIL),
+    );
+    assert!(
+        reason.contains("forged daemon line"),
+        "the record keeps the pane"
+    );
+
+    assert_eq!(review_headline(&reason), STALL_HEADLINE);
+}
+
+#[test]
+fn a_reason_without_pane_text_is_flattened_to_one_bounded_line() {
+    assert_eq!(
+        review_headline("completion blocked abc123:\nfix it\x1b[31m"),
+        "completion blocked abc123: fix it [31m"
+    );
+    let long = review_headline(&"w".repeat(1000));
+    assert!(long.chars().count() <= 200, "{}", long.chars().count());
+}
+
+#[test]
+fn a_pane_marker_repeated_inside_the_pane_does_not_move_the_cut() {
+    let tail = "x\n\nLast pane lines:\ny; pane: \"z\"";
+    let reason = with_pane_notes(
+        exhausted_reason(&report("sess-1", ESCALATING), 2, Some(tail)),
+        Some(tail),
+    );
+
+    assert_eq!(review_headline(&reason), STALL_HEADLINE);
+}
+
+#[test]
+fn the_pane_notes_keep_each_line_to_a_bounded_width() {
+    let wide = format!("short\n{}", "w".repeat(5000));
+
+    let notes = with_pane_notes("reason".to_string(), Some(&wide));
+
+    let widest = notes.lines().map(|line| line.chars().count()).max();
+    assert_eq!(widest, Some(200));
+    assert!(
+        notes.starts_with("reason\n\nLast pane lines:\nshort\nwww"),
+        "{notes}"
+    );
+    assert_eq!(with_pane_notes("reason".to_string(), None), "reason");
 }
