@@ -164,15 +164,30 @@ pub(crate) fn cached_stage_auth(claude_path: &Path) -> &'static AuthProbe {
     CACHE.get_or_init(|| stage_auth_status(claude_path))
 }
 
+/// Longest auth method name a reason repeats.
+const MAX_METHOD_CHARS: usize = 32;
+
+/// `method` reduced to `[A-Za-z0-9._-]`, at most [`MAX_METHOD_CHARS`] characters.
+/// It is the CLI's `authMethod` string, printed to stderr in a reason: a newline
+/// or an escape sequence in it must not reach the log.
+fn method_label(method: &str) -> String {
+    method
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .take(MAX_METHOD_CHARS)
+        .collect()
+}
+
 /// Whether a login verdict is eligible for Remote Control, which requires a
-/// claude.ai login. Reasons name only the auth method or a fixed probe reason,
-/// never identity.
+/// claude.ai login. Reasons name only the auth method (see [`method_label`]) or
+/// a fixed probe reason, never identity.
 fn eligibility_from(probe: &AuthProbe) -> Result<()> {
     match probe {
         AuthProbe::LoggedIn { method } if method == "claude.ai" => Ok(()),
-        AuthProbe::LoggedIn { method } => {
-            bail!("claude is logged in with {method}, but Remote Control requires claude.ai login")
-        }
+        AuthProbe::LoggedIn { method } => bail!(
+            "claude is logged in with {}, but Remote Control requires claude.ai login",
+            method_label(method)
+        ),
         AuthProbe::NotLoggedIn => bail!("claude is not logged in under the stage environment"),
         AuthProbe::Unknown(reason) => bail!("could not determine the claude login ({reason})"),
     }
