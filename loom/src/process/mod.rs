@@ -2,6 +2,7 @@
 //!
 //! This module provides common process management functions used across the codebase.
 
+pub mod boot_id;
 mod environment;
 mod identity;
 #[doc(hidden)]
