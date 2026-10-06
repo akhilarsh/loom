@@ -73,9 +73,9 @@ fn determine_activity_status(
 }
 
 /// Heartbeat-derived facts for a stage's [`StageSummary`]: staleness, current
-/// activity, the last recorded tool/activity strings, the judge heartbeat's
-/// age. Extracted from
-/// `build_stage_summary` to keep that function within the line limit.
+/// activity, the last recorded tool and activity strings, and the judge
+/// heartbeat's age. Extracted from `build_stage_summary` to keep that function
+/// within the line limit.
 pub(super) struct HeartbeatFacts {
     pub(super) staleness_secs: Option<u64>,
     pub(super) activity_status: ActivityStatus,
