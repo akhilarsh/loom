@@ -138,14 +138,21 @@ fn outcome_line(id: &str, waited: Waited, secs: u64, note: Option<String>) -> Re
         Waited::Settled(ReportedStatus::Inbox(RequestStatus::NotFound)) => {
             anyhow::bail!("request {id} not found")
         }
+        // `resolve_status` reports PendingRelay only while the ticket file is
+        // still in the scratch directory, so the ticket still applies: the
+        // hook relays it after the Bash call that created it ends.
         Waited::Settled(ReportedStatus::PendingRelay) => anyhow::bail!(
-            "request {id} was never relayed: the relay hook did not receive its ticket; run the command that created it again as its own Bash call"
+            "request {id} is not relayed yet: the relay hook relays its ticket only after the Bash call that created it ends, so a wait chained into that call cannot see it; run `loom request status {id} --wait 90` again as its own Bash call and do not run the command that created the request again, which would create a second ticket the daemon refuses"
         ),
         Waited::Settled(ReportedStatus::Inbox(RequestStatus::UnknownAfterRestart)) => anyhow::bail!(
             "request {id} is unknown after a daemon restart: check the repository state, then run the command again if the change is missing"
         ),
         Waited::TimedOut(_) => anyhow::bail!("request {id} still pending after {secs}s"),
-        Waited::Settled(_) => anyhow::bail!("request {id} is still pending"),
+        // `wait_for` keeps polling these two, so they settle only if its
+        // loop condition changes; naming them keeps the match exhaustive.
+        Waited::Settled(ReportedStatus::Inbox(
+            RequestStatus::RelayedAwaitingDaemon | RequestStatus::Applying,
+        )) => anyhow::bail!("request {id} is still pending"),
     }
 }
 

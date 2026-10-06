@@ -118,6 +118,22 @@ fn wait_ends_at_once_on_not_found_and_on_a_ticket_the_relay_never_took() {
 }
 
 #[test]
+fn a_chained_wait_on_an_unrelayed_ticket_says_to_wait_again_not_to_recreate_it() {
+    let waited = wait_once(ReportedStatus::PendingRelay);
+
+    let message = outcome_line("request-1", waited, 90, None)
+        .unwrap_err()
+        .to_string();
+
+    assert!(message.starts_with("request request-1 is not relayed yet"));
+    assert!(
+        message.contains("`loom request status request-1 --wait 90` again as its own Bash call")
+    );
+    assert!(message.contains("do not run the command that created the request again"));
+    assert!(!message.contains("never relayed"));
+}
+
+#[test]
 fn wait_treats_unknown_after_restart_as_an_error() {
     let waited = wait_once(ReportedStatus::Inbox(RequestStatus::UnknownAfterRestart));
 
