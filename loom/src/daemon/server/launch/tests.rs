@@ -2,7 +2,9 @@
 //! on the readiness pipe, plus the spawn guard and the daemon's command line.
 
 use super::*;
+use nix::sys::signal::Signal;
 use std::ffi::OsStr;
+use std::os::unix::process::ExitStatusExt;
 use tempfile::TempDir;
 
 /// Kills and reaps the child when the test ends, pass or fail.

@@ -18,16 +18,16 @@ use crate::orchestrator::terminal::native::detect_terminal;
 use anyhow::{anyhow, Context, Result};
 use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-use nix::sys::signal::{kill, Signal};
-use nix::unistd::Pid;
 use std::io::{PipeReader, Read};
 use std::os::fd::AsFd;
-use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
+
+mod child;
+use child::{core_dumping, describe_exit, terminate, wait_for_exit};
 
 /// Written by the daemon child once its socket is bound.
 pub(super) const READY_BYTE: u8 = 0x01;
@@ -43,8 +43,6 @@ const POLL_SLICE_MS: u16 = 50;
 const POLL_SLICE: Duration = Duration::from_millis(POLL_SLICE_MS as u64);
 /// How long a child whose pipe closed before the ready byte gets to exit.
 const EOF_EXIT_WAIT: Duration = Duration::from_secs(1);
-/// How long a terminated child gets between SIGTERM and SIGKILL.
-const TERMINATE_WAIT: Duration = Duration::from_secs(2);
 /// How long an exited child's pipe is read for the text it left behind. A
 /// process the child started could still hold a write end, so EOF is not
 /// guaranteed.
@@ -153,8 +151,9 @@ fn daemon_command(
 /// Every failure is an error naming what happened, followed by the text the
 /// child wrote to the pipe and, once it wrote `0x02` (its output now goes to
 /// the log), the last lines of `log_path`. The failures: an exit before the
-/// ready byte or within the grace after it (its exit status or signal), a pipe
-/// closed before the ready byte, or no ready byte by `timing.deadline`. A
+/// ready byte or within the grace after it (its exit status or signal; a child
+/// still dumping core when the grace ends is waited for), a pipe closed before
+/// the ready byte, or no ready byte by `timing.deadline`. A
 /// failure to read the pipe or check the child is an error too. On every
 /// error a child still running is terminated, and the child is reaped, so a
 /// failed launch leaves no daemon behind.
@@ -200,7 +199,9 @@ fn watch_until_ready(
             return Err(pipe.exit_failure(status, log_path));
         }
         match ready_at {
-            Some(at) if at.elapsed() >= timing.grace => return Ok(()),
+            Some(at) if at.elapsed() >= timing.grace => {
+                return ready_unless_dumping(child, &mut pipe, &mut reader, log_path, timing);
+            }
             Some(_) => {}
             None if pipe.eof => return closed_before_ready(child, &pipe, log_path),
             None if started.elapsed() >= timing.deadline => {
@@ -229,53 +230,28 @@ fn closed_before_ready(child: &mut Child, pipe: &PipeState, log_path: &Path) -> 
     Err(pipe.failure(headline, log_path))
 }
 
-/// Poll `child` until it exits or `limit` passes.
-fn wait_for_exit(child: &mut Child, limit: Duration) -> Result<Option<ExitStatus>> {
-    let started = Instant::now();
-    loop {
-        if let Some(status) = child
-            .try_wait()
-            .context("Failed to check the daemon child")?
-        {
-            return Ok(Some(status));
-        }
-        if started.elapsed() >= limit {
-            return Ok(None);
-        }
-        thread::sleep(POLL_SLICE);
+/// The grace after the ready byte has passed: the launch succeeded unless the
+/// child is dumping core. A dumping child is dying, so it is waited for up to
+/// `timing.deadline` and reported like any other exit.
+fn ready_unless_dumping(
+    child: &mut Child,
+    pipe: &mut PipeState,
+    reader: &mut PipeReader,
+    log_path: &Path,
+    timing: ReadyTiming,
+) -> Result<()> {
+    if !core_dumping(child) {
+        return Ok(());
     }
-}
-
-/// SIGTERM, then SIGKILL after [`TERMINATE_WAIT`]; the child is reaped either
-/// way. Best effort: the launch has already failed, and that failure is what
-/// the caller reports. A child already reaped, or one whose state cannot be
-/// read, gets no signal: its pid may name another process by now.
-fn terminate(child: &mut Child) {
-    if !matches!(child.try_wait(), Ok(None)) {
-        return;
+    if let Some(status) = wait_for_exit(child, timing.deadline)? {
+        pipe.drain(reader)?;
+        return Err(pipe.exit_failure(status, log_path));
     }
-    if let Ok(pid) = i32::try_from(child.id()) {
-        let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
-    }
-    if matches!(wait_for_exit(child, TERMINATE_WAIT), Ok(Some(_))) {
-        return;
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-/// `exit status N`, `signal SIGABRT`, or `signal N` for an unknown signal.
-fn describe_exit(status: ExitStatus) -> String {
-    if let Some(code) = status.code() {
-        return format!("exit status {code}");
-    }
-    match status.signal() {
-        Some(number) => match Signal::try_from(number) {
-            Ok(signal) => format!("signal {}", signal.as_str()),
-            Err(_) => format!("signal {number}"),
-        },
-        None => status.to_string(),
-    }
+    let headline = format!(
+        "the daemon was still dumping core {:?} after its grace",
+        timing.deadline
+    );
+    Err(pipe.failure(headline, log_path))
 }
 
 /// What the daemon child has written to the readiness pipe so far.
