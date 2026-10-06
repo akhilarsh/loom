@@ -8,8 +8,9 @@ Stage `daemon-owned-commits`, wave 1, tier opus. Read `../common.md` first (Deci
 Issue #22: sessions cannot sign, so the daemon commits for them. You add the `commit` relay kind and
 payload, the matrix rows, the daemon's own subagent refusal, the handler that maps a session to a
 `CommitScope` and calls C1's core, and the CLI surface: `StageCommands::Commit`, the `--wait` flag, the
-completions. U1 writes `commands/stage/commit.rs`, U2 writes `commands/request/status.rs`; C1 writes the
-git side.
+completions, the `Landing::Conflict` text of a resolved merge, and a completion guard that refuses while
+staged changes are uncommitted. U1 writes `commands/stage/commit.rs`, U2 writes `commands/request/status.rs`;
+C1 writes the git side; C4 handles signing failures in the merge landing and the plan-completion commit.
 
 ## Files owned and files to read
 
@@ -21,7 +22,9 @@ Own exactly (repository-relative): `loom/src/relay/kind.rs`, `loom/src/relay/pay
 `loom/src/cli/types_stage.rs`, `loom/src/cli/dispatch_stage.rs`, `loom/src/cli/types_ops.rs`,
 `loom/src/cli/dispatch.rs`, `loom/src/commands/stage/mod.rs`, `loom/src/completions/dynamic/mod.rs`,
 `loom/src/relay/mod.rs`, `loom/src/orchestrator/core/inbox_drain/test_support.rs`,
-`loom/src/completions/dynamic/tests/tests_commands.rs`.
+`loom/src/completions/dynamic/tests/tests_commands.rs`,
+`loom/src/orchestrator/core/inbox_drain/merge_resolved.rs`, `loom/src/daemon/server/completion_evidence.rs`,
+`loom/src/daemon/server/control_complete_tests.rs`.
 
 Read: `relay/kind.rs:10-90,93-149`; `relay/payload.rs:25-70`; `relay/matrix.rs:35-45,296-312`;
 `inbox_drain/apply.rs:30-87,172-185` (`admit`, `apply`, `require_owner`);
@@ -32,7 +35,9 @@ is not the stage's `session`; it resolves in the stage worktree); `inbox_drain/t
 (`knowledge_prefix`, `guarded_refs`) and `attestation.rs:101` (`append_attestation`); `git/merge/lock.rs:25`;
 `fs/mod.rs:60` (`parse_base_branch_from_config`); `git/branch/operations.rs:106` (`resolve_target_branch`);
 `cli/dispatch_stage.rs:113-158`; `cli/dispatch.rs:162-166`; `cli/types_ops.rs:170-185`;
-`completions/dynamic/mod.rs:259-285`; `commands/hook/relay.rs:332-349` (`admit`). The retired design is in
+`completions/dynamic/mod.rs:259-285`; `commands/hook/relay.rs:332-349` (`admit`); `daemon/server/control_block.rs:26-55` (`handle_block_stage`:
+a refused transition is `Ok(Response::Error { .. })`, not an `Err`); `daemon/server/completion_evidence.rs:121-149`
+(`verify_evidence_bindings`) and `:196-260` (the test fixtures). The retired design is in
 `doc/plans/briefs/sandbox-escape-hardening/commit-relay/w1-relay-commit-apply.md` sections 1-3, 6.
 
 ## Pinned interfaces
@@ -99,15 +104,33 @@ CommitRefusal>`; test helpers `crate::git::signing::tests::{fake_signer, git_in}
      `append_attestation(work_dir, &reference, &payload.expected_head, &id)` (a failure is `tracing::warn!`,
      the commit stands, the guard then holds the move for the operator as for any unattested move); settle
      `Applied(Some(format!("committed {id}")))`.
-   - `Err(CommitRefusal::Signing { detail })`: block the stage exactly as the Block arm does
-     (`apply.rs:113`: `handle_block_stage(work_dir, stage_id, &reason)`), with reason
-     `commit signing failed: {detail}; fix the signing setup (gpg-agent passphrase cache, GUI
-     pinentry or ssh-agent key), then run loom stage retry {stage_id}`, then settle
-     `Refused(format!("signing failed: {detail}; the stage is blocked for the operator"))`. A
-     block retires the session, which is the intent: only the operator can fix signing.
+   - `Err(CommitRefusal::Signing { detail })` depends on the scope:
+     - `Merge` scope: NEVER call `handle_block_stage`, for three reasons:
+       - `MergeBlocked -> Blocked` is not a legal edge (`models/stage/transitions.rs`);
+       - a blocked `MergeConflict` stage keeps its resolver alive (`verdict_retirement_tests.rs`);
+       - `loom stage retry` would re-run the whole stage rather than the merge.
+
+       Call the new `InboxHost` method `fn hold_merge_for_signing(&mut self, stage_id: &str, detail:
+       &str) -> String`, declared in `inbox_drain.rs`. The `Orchestrator` impl there forwards to C4's
+       `Orchestrator::hold_merge_for_signing` (`merge_handler/landing.rs`). That function stops the
+       resolver through `stop_gated_resolvers` and routes the stage to `NeedsHumanReview` with the
+       remedy. `FakeHost` in `test_support.rs` records each call and returns `"held for the
+       operator"`. Settle `Refused(format!("signing failed: {detail}; {outcome}"))`, where `outcome`
+       is the returned text.
+     - `StageBranch` and `Knowledge` scope: block the stage exactly as the Block arm does
+       (`apply.rs:113`: `handle_block_stage(work_dir, stage_id, &reason)`), with reason `commit signing
+       failed: {detail}; fix the signing setup (gpg-agent passphrase cache, GUI pinentry or ssh-agent
+       key), then run loom stage retry {stage_id}`. `handle_block_stage` reports a refused transition as
+       `Ok(Response::Error { .. })` as well as `Err`, so BOTH mean the block failed. Settle
+       `Refused(format!("signing failed: {detail}; the stage is blocked for the operator"))` only when the
+       block applied (`Ok(Response::Ok)`); otherwise settle `Refused(format!("signing failed: {detail};
+       the stage could not be blocked: {why}"))` with `why` the error text or the response message, and
+       `tracing::warn!` it. A block retires the session, which is the intent: only the operator can fix
+       signing. Keep the decision in a small function that takes the block call as a closure
+       (`FnOnce(&str) -> Result<Response>`) so a test injects `Ok(Response::Error { .. })` without
+       building a stage that cannot be blocked.
    - `Err(CommitRefusal::Refused { reason })`: settle `Refused(reason)`.
-   A block failure is `tracing::warn!` and the refusal still settles. Do not use
-   `refusal::park_refused_relay`: it returns without parking when a contract freeze exists (every v2
+   Do not use `refusal::park_refused_relay`: it returns without parking when a contract freeze exists (every v2
    contract stage) and words the reason as a contract freeze refusal (`verify/contracts/refusal.rs:100-180`).
 5. **CLI wiring.** `commands/stage/mod.rs`: `pub mod commit;` (U1 writes the file). `cli/types_stage.rs`:
    variant `Commit { #[arg(value_parser = clap_id_validator)] stage_id: String, #[arg(short = 'm', long =
@@ -118,14 +141,41 @@ CommitRefusal>`; test helpers `crate::git::signing::tests::{fake_signer, git_in}
    `wait: Option<u64>` on `RequestCommands::Status` with `#[arg(long, value_name = "SECS", value_parser =
    clap::value_parser!(u64).range(1..=600))]`. `cli/dispatch.rs`: only `dispatch_request` changes (`{ id,
    session, wait } => request::status::execute(id, session, wait)`); `dispatch` is ledgered and must not grow.
-   `completions/dynamic/mod.rs`: the arm `("stage", "complete")` becomes `("stage", "complete" | "commit")`.
+   `completions/dynamic/mod.rs`: the arm becomes `("stage", "complete" | "commit") =>
+   complete_stage_ids_filtered(cwd, prefix, &EXECUTING),` with a module-level `const EXECUTING: [&str; 1] =
+   ["executing"];` (the arm is 97 columns, under rustfmt's 100; inlining `&["executing"]` would wrap the
+   arm and grow `complete_after_subcommand`, ledgered at 56 lines, which must stay at 56 after `cargo fmt`).
 6. **`commands/hook/relay.rs`**: read `Request::admit` (`:332`); the control-kind list is built from
    `RequestKind::all()`, so no production change is needed. Edit nothing unless a kind table appears there.
+7. **`inbox_drain/merge_resolved.rs`**: the `Landing::Conflict` arm of `settle_for_landing` says
+   `merge it into this worktree again, resolve, commit, then rerun --resolved`. A resolver never commits
+   through git (`git merge --continue` and a bare `git merge <target>` commit inside the sandbox, where
+   signing cannot work, and `commit-filter.sh` does not see either). New text: merge the target again with
+   `git merge --no-commit --no-ff {target}`, resolve, stage the resolution, commit through `loom stage
+   commit`, then rerun `--resolved`; never `git merge --continue`. No existing assertion reads the old text
+   (`rg 'conflicts again' src` finds only the production strings). The `Landing::Held` arm says "the stage
+   branch touches a control path", but C4 makes a merge-commit signing failure return `Held` as well: it
+   now reads `routed to human review: <the stage's review_reason>` (load the stage; when that fails, name
+   both causes, a control path or a merge-commit signing failure). Check `rg 'touches a control path' src`
+   for a test that pins the old text before changing it, and add new assertions only on new lines.
+8. **Completion guard** in `daemon/server/completion_evidence.rs` (326 lines, stays under 400). The commit is
+   applied asynchronously, so a session that runs `loom stage complete` before its commit applied would bind
+   the old HEAD, and the handler above would then refuse the late commit (the stage is no longer `Executing`).
+   Add `fn refuse_uncommitted_index(stage: &Stage, repo_root: &Path) -> Result<()>`, called LAST in
+   `verify_evidence_bindings` (after the `expected_stage_commit` comparison). When
+   `crate::git::get_worktree_path(&stage.id, repo_root)` exists, run `diff --cached --quiet
+   --ignore-submodules=none HEAD` through `WorktreeGit::pinned(repo_root, &worktree)` (a session can rewrite
+   its worktree `.git` file). Exit 1 bails `staged changes are not committed: run loom stage commit and wait
+   for it with loom request status <id> --wait 90` (the literal text `<id>`); any other failure, a pinned-handle
+   error included, bails with git's stderr. A stage with no worktree at that path (a Knowledge stage commits in
+   the main checkout; the trusted-checkpoint fixtures create none) passes through unchanged.
 
 ## Tests to write
 
-`relay::tests` (`relay/tests_matrix.rs`): `commit_is_applied_for_stage_knowledge_and_merge_only` with its own
-six-row table and `verdict`. Leave `EXPECTED` and the existing test untouched.
+`relay::matrix::tests` (the file `relay/tests_matrix.rs`, declared inside `matrix.rs` with
+`#[path = "tests_matrix.rs"] mod tests;`; the module path is `relay::matrix::tests`, never `relay::tests`):
+`commit_is_applied_for_stage_knowledge_and_merge_only` with its own six-row table and `verdict`. Leave
+`EXPECTED` and the existing test untouched.
 `relay::kind::tests` (`relay/kind.rs`): `commit_is_kebab_case_on_the_wire`; in the existing
 `is_control_matches_the_seven_control_kinds` insert one line `RequestKind::Commit,` after
 `RequestKind::FileDispute,` and change nothing else (keep the name: renaming is a test-declaration event).
@@ -143,10 +193,25 @@ Some(STAGE)`): `a_stage_commit_is_applied_and_the_ledger_carries_the_commit_id`,
 contains `subagent`; entry built with `entry_for`, `agent` set to `AgentRole::Subagent`, written with
 `write_entry`), `a_signing_failure_blocks_the_stage_and_leaves_the_ref` (`fake_signer(&repo, true)`; the
 stage is `Blocked`, its block reason contains the signer text, the branch unmoved, the ledger outcome
-Refused), `a_knowledge_commit_lands_on_the_target_and_is_attested_when_guarded` (write `target-guard.refs`
+Refused), `a_merge_signing_failure_holds_for_the_operator` (exact path
+`orchestrator::core::inbox_drain::commit_tests::a_merge_signing_failure_holds_for_the_operator`, run
+`--exact` by acceptance; once from `MergeConflict` and once from `MergeBlocked`: a Merge session with
+MERGE_HEAD set, `fake_signer(&repo, true)`; the ledger outcome is Refused with the signer text, `FakeHost`
+recorded exactly one `hold_merge_for_signing` call for the stage, the stage is never `Blocked`, the branch
+unmoved), `a_refused_block_is_not_reported_as_a_block` (the signing-failure
+settle function with a block closure returning `Ok(Response::Error { message })`, and again `Err(..)`: both
+settle a reason containing `could not be blocked` and not `is blocked for the operator`), `a_knowledge_commit_lands_on_the_target_and_is_attested_when_guarded` (write `target-guard.refs`
 with `ref refs/heads/main` through `git::target_guard` test support, then read the ledger),
 `a_knowledge_commit_outside_the_prefix_is_refused`, `a_merge_session_commit_records_two_parents`,
 `a_replayed_commit_entry_is_applied_once`. Read results from `fx.ledger(sid)` taking the LAST row for the id.
+`daemon::server::control_complete::tests::completion_refuses_a_staged_but_uncommitted_change` (in
+`control_complete_tests.rs`; exact path, run `--exact` by acceptance): build the stage worktree at
+`crate::git::get_worktree_path(stage_id, repo_root)` (`git worktree add .worktrees/<stage> loom/<stage>`
+on the fixture's repository; the fixture makes the `loom/<stage>` branch and no worktree), stage a change in
+it, then complete through the existing `trusted_checkpoint_fixture` and assert the error contains
+`staged changes are not committed` and `--wait 90`. The fixture's repository is `fixture.work` two levels up
+(`.loom/work`), or add a small `pub(crate)` accessor to `TrustedCheckpointFixture` (the file is yours). The
+existing completion tests have no worktree at that path and pass through the guard unchanged.
 
 ## Patterns to copy and not copy
 
@@ -173,13 +238,18 @@ command in the worktree yourself: every git call goes through C1's `Committer`.
   "<40 hex>"})`; and `completions/dynamic/tests/tests_commands.rs`
   `test_complete_subcommands_stage_prefix`, which asserts exactly one stage subcommand starts with `com`,
   now that `commit` is a second: change that assertion to the two names (`commit`, `complete`). That
-  edit raises `TI-edit-src/completions/dynamic/tests/tests_commands.rs`, an expected event the
-  orchestrator disputes; touch no other assertion line there.
+  edit raises `TI-edit-loom/src/completions/dynamic/tests/tests_commands.rs`, an expected event the
+  orchestrator disputes (event ids are checkout-relative, built from `git ls-tree --full-tree`; the
+  orchestrator copies the id from `loom stage review integrity daemon-owned-commits`); touch no other
+  assertion line there.
+- Doctrine and remedy strings use `--wait 90` (90 s stays under the Bash tool's default 120 s timeout).
+- Unowned wording to report, never edit: `commands/stage/merge.rs:90`, `commands/stage/merge_verify.rs:62`
+  and `orchestrator/core/merge_handler/spawn_failure.rs:28` also say `resolve, commit` for a merge conflict.
 
 ## The one check
 
-`cargo test --lib orchestrator::core::inbox_drain::commit_tests` once, after the crate compiles. C1, C3, U1
-and U2 write in parallel; a compile error in a file you do not own is theirs: report it with file and line.
+`cargo test --lib orchestrator::core::inbox_drain::commit_tests` once, after the crate compiles. C1, C3, C4,
+U1 and U2 write in parallel; a compile error in a file you do not own is theirs: report it with file and line.
 
 ## Report format
 

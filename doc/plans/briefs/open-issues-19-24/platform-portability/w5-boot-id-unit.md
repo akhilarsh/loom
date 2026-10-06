@@ -53,9 +53,14 @@ Behaviour:
   - macOS: call a private `fn macos_boot_id() -> Result<String>` (body below).
   - Any other target: `bail!("boot identity is unsupported on this operating system")`.
 
-The macOS body, moved here from `SystemBootClock::boot_id` in
-`loom/src/commands/subagents/wait/lease.rs` (function `macos_boot_id`); copy it with these two edits
-only: the character-array trim becomes a closure, and the file gains a module doc comment.
+The macOS body is `macos_boot_session_uuid` in `loom/src/commands/subagents/wait/lease.rs` at your
+base (PR #25 split it out of `macos_boot_id`; W4 deletes that file region, so copy from the text
+below). Read `kern.bootsessionuuid` only: the PR also added a `kern.boottime` fallback
+(`macos_boot_time`) that you do not carry over, because macOS recomputes `kern.boottime` when the
+wall clock is stepped, so the value can change within one boot, and an identity written under one
+source and read under the other looks like a different boot. `LOOM_BOOT_ID` from the daemon removes
+the need for a fallback. No `kern.boottime` text may appear in the file. Copy the body with these
+two edits only: the character-array trim becomes a closure, and the file gains a module doc comment.
 
 ```rust
 #[cfg(target_os = "macos")]

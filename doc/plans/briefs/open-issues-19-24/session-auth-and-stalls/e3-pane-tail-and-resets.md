@@ -1,8 +1,9 @@
 # E3: pane tail and stall-counter resets
 
 Tier: sonnet. Read `doc/plans/briefs/open-issues-19-24/common.md` first; this brief adds only E3's part.
-Plan Decision 12 (#20): the tail E2 attaches to a parked stage, and `stall_recoveries` reset on approve, reset
-and retry. Line numbers read at `ff3fe947`; anchor on symbols.
+Plan Decision 12 (#20): the tail E2 attaches to a parked stage, `stall_recoveries` reset on approve, reset
+and retry, and removal of PR #25's stall marker (task 4). Line numbers read at `ff3fe947` and re-checked at
+`11859505` (PR #25, which this stage's worktree includes); anchor on symbols.
 
 ## Files owned (write only these; all under `loom/`)
 
@@ -10,7 +11,18 @@ and retry. Line numbers read at `ff3fe947`; anchor on symbols.
 `src/orchestrator/terminal/tmux/capture.rs` (new), `src/orchestrator/terminal/tmux/mod.rs`,
 `src/orchestrator/terminal/tmux/tests.rs`, `src/commands/stage/state.rs`, `src/commands/stage/state_tests.rs`,
 `src/commands/stage/human_review.rs`, `src/commands/stage/human_review_tests.rs` (new),
-`src/commands/stage/skip_retry.rs`.
+`src/commands/stage/skip_retry.rs`, plus the PR #25 stall-marker files of task 4 (all under `loom/`):
+
+- `src/models/stage/stall.rs` (delete), `src/models/stage/mod.rs`, `src/models/stage/types.rs`,
+  `src/models/stage/defaults.rs`;
+- `src/commands/status/data/mod.rs`, `.../data/heartbeat_facts.rs`, `.../data/heartbeat_facts_tests.rs`
+  (delete), `.../data/collector.rs`, `.../data/sanitize.rs`;
+- `src/commands/status/render/attention_model.rs`, `.../render/attention_model_tests.rs`,
+  `.../render/attention_tests.rs`, `.../render/graph.rs`, `.../render/graph_tests.rs`;
+- `src/commands/status/ui/tui/ledger/rows.rs`, `.../ui/tui/ledger/tests.rs`, `.../ui/tui/state_tests.rs`;
+- `src/commands/status/web/model.rs`, `.../web/model_tests_stages.rs`, `src/daemon/wire_tests.rs`,
+  `tests/stage_exits_contracts.rs`;
+- `src/orchestrator/core/mod.rs`, `src/orchestrator/notify.rs`.
 
 Read-only: `tmux/mod.rs:94` `TMUX_PROBE_TIMEOUT`, `:147` `run_tmux_control`, `:163` `socket_name`;
 `tmux/viewer.rs:185` `tmux_session_name`, `:288` `endpoint_ready` (the precedent);
@@ -31,11 +43,12 @@ E2 calls it as `crate::orchestrator::terminal::session_tail(&session, &work_dir,
 The frozen contract `tests/session_auth_and_stalls_contracts.rs` drives `loom stage human-review <id> --approve`
 and expects `stall_recoveries` back at 0.
 
-## Root cause (re-verified at ff3fe947)
+## Root cause (re-verified at 11859505, PR #25)
 
-`Stage::stall_recoveries` (`models/stage/types.rs:479`) has one writer, `charge_stall_recovery`
+`Stage::stall_recoveries` (`models/stage/types.rs`) has one writer, `charge_stall_recovery`
 (`recover_hung.rs:214`), and nothing ever resets it. So after two recoveries a stage a human has fixed and
-re-queued exhausts its budget on the first stall of the fresh session. The resets that exist today:
+re-queued exhausts its budget on the first stall of the fresh session. The resets that exist (PR #25 lists "`loom stage reset` does not reset `stall_recoveries`" as a follow-up; the
+reset below is that fix):
 `commands/stage/state.rs` `apply_reset` (`:335`, sets `status`, `retry_count`, `fix_attempts`, `session` and more,
 not `stall_recoveries`); `human_review.rs` `handle_approve` (`:95`, inside the `update_stage` closure, sets
 `fix_attempts = 0` only); `skip_retry.rs` `apply_retry_delta` (`:312`, reached from `retry` (`:43`) through
@@ -65,8 +78,11 @@ pub(crate) fn capture_pane_tail(session: &Session, lines: usize) -> Option<Strin
 
 - `pub fn session_tail(session, work_dir, lines) -> Option<String>`: `match session.backend` (`SessionBackendKind`
   `Tmux`/`Native`): tmux gives `tmux::capture_pane_tail(session, lines)`; native gives
-  `crate::orchestrator::spawner::read_log_tail(&native::stderr_log_path(work_dir, &session.id), lines)`.
-  Feed the raw text to `normalise_tail(&raw, lines)`.
+  `crate::orchestrator::spawner::read_log_tail(&native::stderr_log_path(work_dir, &session.id),
+  lines.saturating_mul(4).max(lines))`. `read_log_tail` cuts raw lines, blank ones included, so reading
+  exactly `lines` of them could return fewer than `lines` non-empty lines when the log ends in blanks;
+  the 4x read leaves room, and `normalise_tail` then keeps the last `lines` non-empty lines. Feed the raw
+  text to `normalise_tail(&raw, lines)`.
 - `fn normalise_tail(raw: &str, lines: usize) -> Option<String>` (private, tested inline): strip ANSI CSI
   sequences (`ESC [ ... final byte 0x40-0x7e`) and every other control character except `\n` (turn `\t` into one
   space; drop `\r`); `trim_end` each line; drop blank lines; keep the last `lines`; join with `\n`; `None` when
@@ -87,6 +103,51 @@ pub(crate) fn capture_pane_tail(session: &Session, lines: usize) -> Option<Strin
   and change its visibility from private to `pub(super)` (so `state_tests.rs` can call it; `reset_contract_budget`
   there is `pub(super)` the same way). The retry tests live in `skip_retry_tests.rs`, which is NOT yours: do not edit it.
 
+### 4. Retire PR #25's stall marker
+
+The operator parked #20 in needs-human-review (E2); the PR's STALLED marker on an `Executing` stage is
+removed. E2 removes the handler side (`recover_hung.rs`, `recover_hung_tests.rs`, `event_handler.rs`). You
+remove the rest; keep everything else in these files as the PR left it.
+
+- `models/stage/stall.rs`: delete the file. `models/stage/mod.rs`: delete `mod stall;` and
+  `pub use stall::StallExhaustion;`. `models/stage/types.rs`: delete the `stall_exhausted` field, its doc and
+  the `use super::stall::StallExhaustion;` import. `models/stage/defaults.rs`: delete `stall_exhausted: None,`.
+- `commands/status/data/mod.rs`: delete `StageSummary.stalled_after_recoveries` and its doc.
+  `data/heartbeat_facts.rs`: delete the `stalled_after_recoveries` fn and field, the
+  `#[cfg(test)] #[path = "heartbeat_facts_tests.rs"] mod tests;` declaration and the doc words about the
+  stall; KEEP the PR's move of `judge_heartbeat_secs` into `HeartbeatFacts`. Delete
+  `data/heartbeat_facts_tests.rs` (all four tests exercise the deleted fn). `data/collector.rs`: delete the
+  `stalled_after_recoveries:` field init; keep `execution_models_for_stage` and
+  `heartbeat.judge_heartbeat_secs`.
+- `commands/status/render/attention_model.rs`: delete the `StageStatus::Executing => ("STALLED",
+  stall_guidance(stage)?)` arm, `stall_takeover`, `stall_guidance`, and `stall_reason, stall_takeover_command`
+  from the `crate::orchestrator::core` import. `render/attention_model_tests.rs`: delete test
+  `an_executing_stage_left_stalled_asks_an_operator_to_take_it_over`. `render/graph.rs`: delete
+  `write_stall_hint`, its call in `write_row_hints` and `stall_takeover` in the import; KEEP
+  `write_row_hints` (it keeps `render_graph` at 64 lines). `render/graph_tests.rs`: delete tests
+  `test_executing_stage_left_stalled_says_why_and_how_to_take_it_over` and
+  `test_executing_stage_not_left_stalled_has_no_stall_hint`.
+- Delete the `stalled_after_recoveries: None,` struct-literal lines in `data/sanitize.rs`,
+  `render/attention_model_tests.rs`, `render/attention_tests.rs`, `render/graph_tests.rs`,
+  `ui/tui/ledger/rows.rs`, `ui/tui/ledger/tests.rs`, `ui/tui/state_tests.rs`,
+  `web/model_tests_stages.rs`, `src/daemon/wire_tests.rs`, `tests/stage_exits_contracts.rs` (leave the PR's
+  parameter renames in that last file alone). Field lines are not assertions.
+- `commands/status/web/model.rs`: delete `stage.stalled_after_recoveries = None;` in
+  `without_merge_resolver_facts` and the "spent stall recoveries" words in its doc.
+  `web/model_tests_stages.rs`: delete `stage.stalled_after_recoveries = Some(2);` in `stage_docs()` and put the
+  comment back to its singular "this key ... drops it" form.
+- `orchestrator/core/mod.rs`: delete `pub(crate) use event_handler::{stall_reason, stall_takeover_command};`.
+  `orchestrator/notify.rs`: delete `notify_stall_recovery_exhausted`; KEEP `notifier_for`, the `loom-notify`
+  thread, the `cfg!(test)` no-op and their tests.
+- Confirm with `rg -n 'stall_exhausted|StallExhaustion|stalled_after_recoveries|stall_takeover|stall_reason|notify_stall_recovery_exhausted|write_stall_hint' loom/src loom/tests`
+  that only E2's files (`recover_hung.rs`, `recover_hung_tests.rs`, `event_handler.rs`) still match when you
+  finish; the crate compiles only after E2 finishes too, so the one check below stays as it is.
+- Deleting the four tests above and `heartbeat_facts_tests.rs` removes assertion lines that exist at the
+  stage's base. Expected test-integrity events, disputed by the orchestrator (never by you), on
+  `loom/src/commands/status/render/attention_model_tests.rs`,
+  `loom/src/commands/status/render/graph_tests.rs` and
+  `loom/src/commands/status/data/heartbeat_facts_tests.rs`. List every deleted test in your report.
+
 ## Tests to write (exact paths)
 
 - `orchestrator::terminal::tmux::tests` (append to `tmux/tests.rs`, 277 lines): `capture_pane_argv_is_exact`
@@ -96,7 +157,8 @@ pub(crate) fn capture_pane_tail(session: &Session, lines: usize) -> Option<Strin
   `normalise_tail_keeps_the_last_n_lines`, `normalise_tail_is_none_for_blank_input_and_zero_lines`, and
   `a_native_session_reads_its_stderr_log_tail` (a `Session::new()` with `backend = SessionBackendKind::Native`,
   a `TempDir` work dir, create the parent of `stderr_log_path(work, &session.id)` with `create_dir_all`, write
-  five lines with ANSI colour and blank lines, assert the last three come back clean), and
+  five lines with ANSI colour and blank lines, assert the last three come back clean; a second log whose last
+  raw lines are blank still yields `lines` non-empty lines, which the 4x read provides), and
   `a_tmux_session_without_a_server_has_no_tail` (a fresh `Session::new()` with `backend = Tmux`: its socket does
   not exist, so the result is `None` and no tmux process is spawned).
 - `commands::stage::state::state_tests` (append to `state_tests.rs`, 227 lines):
@@ -140,5 +202,7 @@ compile because of another worker's symbol, say so and stop. No `cargo fmt`, no 
 
 Files changed; the one check and its result; confirmation that `human_review_tests.rs` holds the moved tests
 unedited (count of `#[test]` functions before and after, plus your one new test); that `loom stage retry`
-resets through `apply_retry_delta` in `skip_retry.rs` (or the contradiction if it does not); ledgered units shrunk;
+resets through `apply_retry_delta` in `skip_retry.rs` (or the contradiction if it does not); ledgered units shrunk (measure and report `file src/models/stage/types.rs`, expected about 696 lines, and
+`function src/models/stage/defaults.rs default`, expected 76; the orchestrator updates the ledger); the
+result of the task 4 `rg` confirmation; the deleted tests by name;
 deviations from the pinned interface; surprises.

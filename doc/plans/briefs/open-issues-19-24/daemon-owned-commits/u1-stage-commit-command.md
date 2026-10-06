@@ -1,6 +1,7 @@
 # U1: the `stage commit` subcommand module
 
-Codex unit (`loom-codex-forwarder`, gpt-5.6-terra, effort xhigh), one file, three numbered steps.
+Codex unit (`loom-codex-forwarder`, gpt-5.6-terra, effort xhigh), one module plus its test file, three
+numbered steps.
 Read `../common.md` first (its section "Pinned interfaces: daemon-owned-commits", bullet for the commit
 subcommand), then this brief.
 
@@ -9,7 +10,7 @@ subcommand), then this brief.
 Issue #22: a stage session cannot sign commits inside its sandbox, so it asks the daemon to commit. You
 write the session side of that request: the module behind the `stage commit` subcommand of the loom CLI.
 The clap variant, its dispatch and the `pub mod commit;` line are written by a different worker (C2); the
-git core and the daemon handler are written by C1 and C2. You write one file and its inline tests.
+git core and the daemon handler are written by C1 and C2. You write the module and its test file.
 
 HARD RULES for you, the codex agent:
 
@@ -21,8 +22,9 @@ HARD RULES for you, the codex agent:
 
 ## Files owned and files to read
 
-Own exactly one file: `loom/src/commands/stage/commit.rs` (new, with an inline `#[cfg(test)] mod tests`).
-Keep it at or under 400 lines and every function under 50 lines.
+Own exactly two files: `loom/src/commands/stage/commit.rs` (new) and `loom/src/commands/stage/commit/tests.rs`
+(new; declared at the end of `commit.rs` as `#[cfg(test)] mod tests;`, so the module path is
+`commands::stage::commit::tests`). Keep each file at or under 400 lines and every function under 50 lines.
 
 Read, in this order:
 
@@ -34,14 +36,17 @@ Read, in this order:
 - `loom/src/git/runner.rs` lines 134-200: `run_git_checked` (it forces hooks off, so it is for
   `rev-parse` and `write-tree` only, never for running a hook).
 - `loom/src/relay/payload.rs` lines 25-45: the payload types sit here; `CommitPayload` is added by C2.
+- `loom/src/git/stage_commit.rs`: C1 writes it in parallel; `validate_commit_message` lives there.
 
 ## Pinned interfaces it provides and consumes
 
 Provides: `pub fn execute(stage_id: String, message: String) -> anyhow::Result<()>`, called by C2 as
 `commit::execute(stage_id, message)`. It refuses a `stage_id` other than the environment variable
-`LOOM_STAGE_ID` when that variable is set; validates the message (non-empty, at most 16 KiB, no NUL byte, no
-AI attribution); runs the `pre-commit` and `commit-msg` hooks of the repository inside the sandbox through
-`git hook run`; reads `git rev-parse HEAD` and `git write-tree` AFTER the hooks; then relays a request of
+the session's stage id when one is set (read from `EnvSnapshot::from_process_env().stage_id`, never
+`std::env::var`); validates the message through `crate::git::stage_commit::validate_commit_message` (C1's
+function: non-empty, at most 16 KiB, no NUL byte, no AI attribution; you keep no copy of its rules); runs the `pre-commit` and `commit-msg` hooks of the repository inside the sandbox through
+`git hook run`; normalises the message with `git stripspace`; reads `git rev-parse HEAD` and
+`git write-tree` AFTER the hooks; then relays a request of
 kind `RequestKind::Commit` carrying a `CommitPayload` through `RelayContext::check` and
 `RelayContext::emit`, exactly as the merge relay module does. In operator and legacy mode it calls
 `crate::git::stage_commit::commit_staged` in-process instead. No `--amend`, `--author`, `--no-verify` or
@@ -52,6 +57,8 @@ Consumes (written by other workers in parallel; the crate does not compile until
 - `crate::relay::CommitPayload { pub message: String, pub expected_head: String, pub expected_tree: String }`
   (serde, deny unknown fields).
 - `crate::relay::RequestKind::Commit`.
+- `crate::git::stage_commit::validate_commit_message(message: &str) -> Result<(), String>` (the `Err` text
+  names the refusal).
 - `crate::git::stage_commit::{commit_staged, CommitRequest, CommitScope}`: `commit_staged(repo: &Path, scope:
   &CommitScope, request: &CommitRequest) -> Result<String, CommitRefusal>` returns the new commit id;
   `CommitRefusal` implements `Display`; `CommitScope::StageBranch { stage_id: String }`; `CommitRequest {
@@ -68,24 +75,31 @@ crate passes `-c core.hooksPath=/dev/null` on every call, so `git hook run` must
 ## Step-by-step tasks
 
 1. Validation, hooks and state readers (private functions, each under 50 lines).
-   - `fn validate_message(message: &str) -> Result<()>`: refuse empty after trim, more than 16 * 1024
-     bytes, any NUL byte (`message.contains(char::from(0))`), and attribution. `fn attribution(message: &str)
-     -> Option<String>` (the reason) lowercases per line and reports: a line starting with `co-authored-by:` or
-     `signed-off-by:` that contains `claude` or `anthropic`; any text containing `noreply@anthropic`; the words
-     `generated with` together with `claude code`, `claude.ai` or `claude.com`. Plain prose that merely says
-     claude, with no trailer, passes.
+   - Message validation is `crate::git::stage_commit::validate_commit_message`, mapped with
+     `.map_err(anyhow::Error::msg)`. Write no local validator and no local attribution check: C1 owns the
+     rules (refuse empty after trim, more than 16 * 1024 bytes, any NUL byte, and AI attribution: a
+     `co-authored-by:` or `signed-off-by:` line that names claude or anthropic, any `noreply@anthropic`,
+     `generated with` together with `claude code`, `claude.ai` or `claude.com`; plain prose that merely says
+     claude passes), and the daemon applies the same function again.
    - `fn run_hooks(cwd: &Path, message: &str) -> Result<String>`: run `git hook run --ignore-missing
      pre-commit` in `cwd`; then write the message to a `tempfile::NamedTempFile`, run `git hook run
-     --ignore-missing commit-msg -- <that path>`, read the file back (a hook may rewrite it), validate the
-     result again and return it. Both spawns use `std::process::Command::new("git")` with `current_dir(cwd)`
-     and `crate::process::run_bounded_output(&mut command, Duration::from_secs(600), "<label>")`. A non-zero
-     exit bails with the hook name and the last 20 lines of its stderr and stdout.
+     --ignore-missing commit-msg -- <that path>`, read the file back (a hook may rewrite it), then
+     normalise it: run `git stripspace` with the message file as the command's stdin
+     (`Stdio::from(File::open(path)?)`; this is `git commit -m`'s default whitespace cleanup: trailing
+     whitespace and surplus blank lines dropped, one final newline) and take its stdout. Validate that
+     result again through `validate_commit_message` (a rewrite or the cleanup can empty it) and return it;
+     it is the message the payload carries. All spawns use `std::process::Command::new("git")` with
+     `current_dir(cwd)` and `crate::process::run_bounded_output(&mut command, Duration::from_secs(600),
+     "<label>")`. A non-zero exit bails with the hook name (or `stripspace`) and the last 20 lines of its
+     stderr and stdout.
    - `fn staged_state(cwd: &Path) -> Result<(String, String)>`: `run_git_checked(&["rev-parse", "HEAD"],
      cwd)` and `run_git_checked(&["write-tree"], cwd)`, in that order, after the hooks.
 2. The command.
-   - `pub fn execute(stage_id: String, message: String) -> Result<()>`: `mode(&EnvSnapshot::from_process_env())`,
-     `std::env::current_dir()`, `std::env::var("LOOM_STAGE_ID").ok()`, `StdSink::default()`, then
-     `commit_with(...)`.
+   - `pub fn execute(stage_id: String, message: String) -> Result<()>`: `let env =
+     EnvSnapshot::from_process_env();` then `mode(&env)`, `std::env::current_dir()`, `env.stage_id.as_deref()`
+     as the session stage, `StdSink::default()`, then `commit_with(...)`. The stage id comes from the
+     snapshot, never `std::env::var`: the snapshot is empty under `cfg(test)`, so no test depends on the
+     process environment.
    - `fn commit_with(stage_id: &str, message: &str, session_stage: Option<&str>, relay_mode: RelayMode, cwd:
      &Path, sink: &mut dyn RelaySink) -> Result<()>`, in this order: validate the message; refuse a
      `session_stage` that differs from `stage_id`; for `RelayMode::Relay(context)` call
@@ -93,25 +107,27 @@ crate passes `-c core.hooksPath=/dev/null` on every call, so `git hook run` must
      `unsafe` block with a SAFETY comment, as `merge/relay.rs` does) so a refusal costs no hook run; run the
      hooks; read the state; build `CommitPayload`; `context.emit(RequestKind::Commit,
      serde_json::to_value(&payload)?, "stage commit", false, sink)?`; then write to `sink.stderr()` one line:
-     `Wait for it in your NEXT Bash call: loom request status <id> --wait 120` with the id from the returned
+     `Wait for it in your NEXT Bash call: loom request status <id> --wait 90` with the id from the returned
      `RelayLine`. Nothing else goes to stdout: the relay line must stay the last stdout line.
    - For `RelayMode::Operator` and `RelayMode::Legacy`: hooks, state, then the repository top level from
      `run_git_checked(&["rev-parse", "--show-toplevel"], cwd)`, then `commit_staged(Path::new(&top),
      &CommitScope::StageBranch { stage_id: stage_id.to_string() }, &CommitRequest { message, expected_head,
      expected_tree })`; map the refusal with `anyhow::anyhow!("{refusal}")`; print `committed <id>` through
      `sink.stdout()`.
-3. Tests, inline (see the next section for names). Build every fixture repository in a `tempfile::TempDir`.
+3. Tests, in `commit/tests.rs` (see the next section for names). Build every fixture repository in a
+   `tempfile::TempDir`.
 
 ## Tests to write
 
-Module `commands::stage::commit::tests`. Every fixture git call sets the three variables
+Module `commands::stage::commit::tests` (file `commit/tests.rs`, `use super::*;`). Every fixture git call sets the three variables
 `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` (pointing at files that do not exist) and
 `GIT_CONFIG_NOSYSTEM=1`, and the repository config sets `user.name`, `user.email`, `commit.gpgsign=false` and
 `core.hooksPath=.git/hooks` locally (pattern: `loom/src/verify/impact_tests_tests.rs`). Never mutate the
 process environment; `commit_with` takes its inputs as arguments. A `VecSink` implementing `RelaySink` with
 two `Vec<u8>` buffers is the sink (copy the one in `merge/relay.rs` tests).
 
-- `an_empty_message_is_refused`, `a_nul_byte_is_refused`, `an_oversized_message_is_refused`.
+- `an_empty_message_is_refused`, `a_nul_byte_is_refused`, `an_oversized_message_is_refused` (each through
+  `commit_with`, so they prove the call into `validate_commit_message`, not a second validator).
 - `ai_attribution_is_refused`: a `Co-Authored-By: Claude <noreply@anthropic.com>` trailer, a `Signed-off-by:
   Claude` line and a `Generated with Claude Code` line each refuse; `a_plain_message_naming_claude_passes`
   (`feat(auth): add the claude login probe`).
@@ -129,7 +145,9 @@ two `Vec<u8>` buffers is the sink (copy the one in `merge/relay.rs` tests).
 - `operator_mode_calls_commit_staged_in_process`: a repository whose checked-out branch is `loom/stage-a`,
   one staged file, `RelayMode::Operator`; afterwards `git log -1 --format=%s` shows the message and the printed
   stdout holds `committed` followed by the head id.
-- `the_confirmation_names_request_status_wait` (stderr contains `loom request status` and `--wait 120`).
+- `the_confirmation_names_request_status_wait` (stderr contains `loom request status` and `--wait 90`).
+- `the_message_is_stripspaced_after_the_hooks` (a `commit-msg` hook that appends trailing spaces and two
+  blank lines; the payload message has neither and ends in one newline).
 
 ## Patterns to copy, and the property not to copy
 
@@ -153,9 +171,9 @@ in-process call in operator and legacy mode). Do not copy `run_git_checked` for 
 ## The one check
 
 None for you (do not run cargo). The orchestrator runs `cargo test --lib commands::stage::commit` once after
-all five workers of this stage return.
+all six workers of this stage return.
 
 ## Report format
 
-Reply with: the file written and its line count; the public and private function list; the assumptions you
+Reply with: the files written and their line counts; the public and private function list; the assumptions you
 made about `CommitPayload`, `RelayLine` and `commit_staged`; anything in this brief that the code contradicts.

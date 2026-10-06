@@ -2,8 +2,11 @@
 
 Tier: sonnet. Read `doc/plans/briefs/open-issues-19-24/common.md` first (worker rules and pinned
 interfaces); this brief adds only E1's part. Plan Decisions 8 (#19) and 12's `loom run` bullet (#20 C).
-Line numbers below were read at `ff3fe947`; `platform-portability` has merged before you start and
-re-shaped `commands/run/mod.rs` (daemon re-exec, socket-path refusal in `run_startup_preflights`) and
+Line numbers below were read at `ff3fe947` and re-checked at `11859505` (PR #25, which this stage's
+worktree includes: five commits on `ff3fe947`). `platform-portability` has merged before you start and
+re-shaped `commands/run/mod.rs` (it deletes the PR's `objc_fork_safety` module and its call in
+`execute_background`, and adds the daemon re-exec; the socket-path refusal sits in
+`prepare_background_run`, right after `work_dir.load()?`, never in `run_startup_preflights`) and
 `daemon/server/environment.rs` (adds `SCCACHE_DIR`, `SCCACHE_CACHE_SIZE`, `RUST_LOG`). Anchor on the
 symbols named here, never on the numbers.
 
@@ -17,7 +20,10 @@ symbols named here, never on the numbers.
 `src/commands/run/mod.rs`, `src/commands/run/auth_preflight.rs` (new),
 `src/commands/run/guidance.rs` (new), `src/remote_control.rs`, `src/remote_control_tests.rs` (new),
 `src/quota/credentials.rs`, `src/daemon/server/environment.rs`.
-`src/orchestrator/terminal/native/mod.rs` is 397 lines: do not touch it. Read-only: `src/process/mod.rs`
+`src/orchestrator/terminal/native/mod.rs` is 397 lines: do not touch it. PR #25's test
+`env_allowlist_forwards_user_and_logname` (`wrapper/tests.rs`, not yours) renders `env_allowlist()` under
+`bash -c` and checks `USER`/`LOGNAME` are forwarded and `AWS_SECRET_ACCESS_KEY` is not: it keeps passing
+with the generated list; leave the file unchanged. Read-only: `src/process/mod.rs`
 `run_bounded` (:115) and `BoundedOutput` (:60); `src/claude/session.rs:87` `spawn_retrying_text_busy`.
 
 ## Pinned interfaces
@@ -36,20 +42,30 @@ You PROVIDE (quoted from common.md, "Pinned interfaces: session-auth-and-stalls"
   `env_clear()` plus `agent_session_environment_from(std::env::vars_os())`, bounded at 30 s through
   `crate::process` bounded-run helpers; never logs `email`, `orgId`, `orgName`)."
 
+`stage_auth_status` is a thin wrapper over a crate-private `stage_auth_status_from<I, K, V>(claude_path:
+&Path, source: I) -> AuthProbe` (same bounds as `agent_session_environment_from`) that takes the
+environment source; the wrapper passes `std::env::vars_os()`. Tests pass an explicit source and never
+mutate a process variable.
+
 E2 calls `stage_auth_status` from the daemon; the frozen contract file
 `tests/session_auth_and_stalls_contracts.rs` calls `agent_session_environment_from`,
 `apply_stage_environment_from`, `parse_auth_status`. You CONSUME nothing from E2 or E3.
 You also add one unpinned helper, `pub fn operator_auth_status(claude_path: &Path) -> AuthProbe`, in
 `claude/auth.rs` (same runner, inherited environment) for `auth_preflight`.
 
-## Root cause (re-verified at ff3fe947)
+## Root cause (re-verified at 11859505, PR #25)
 
-`USER`/`LOGNAME` are dropped twice, so the claude CLI cannot find its macOS Keychain login by `$USER`:
+`USER`/`LOGNAME` are dropped at the host layer, so the claude CLI cannot find its macOS Keychain login by
+`$USER`. PR #25 fixed only the wrapper's `env -i` list (item 2, now done in the literal); the host layer
+(item 1) is E1's:
 
 1. `STAGE_HOST_ENV_ALLOWLIST` (`process/environment.rs:14-77`) has neither name; `apply_stage_environment`
    (`:80`) `env_clear()`s and copies only that list. Callers: `native/spawner.rs:61`, `tmux/mod.rs:123,140`
    (every per-session tmux server, so `new-session` starts with a stripped environment), `verify/criteria/confine.rs:148`.
-2. The wrapper's `env -i` list: `script_text.rs` `env_allowlist()` (`:18-37`, the `for _loom_name in ...` loop) has neither.
+2. The wrapper's `env -i` list, `script_text.rs` `env_allowlist()` (the `for _loom_name in ...` loop), now
+   carries `USER LOGNAME` (PR #25, with a doc paragraph on the Keychain reason). It is still a literal that
+   can drift from the host list. On the spawner and tmux paths item 1 strips both names before the wrapper
+   runs, so the wrapper's loop finds them unset: the PR's wrapper change alone does not fix those paths.
 
 Loom's own Keychain probe (`remote_control.rs` `macos_keychain_has_credentials`, `:221`) runs in the daemon
 environment, which keeps `USER` (`daemon/server/environment.rs:8-9`), so it passes while sessions fail.
@@ -58,8 +74,9 @@ environment, which keeps `USER` (`daemon/server/environment.rs:8-9`), so it pass
 
 ### 1. `process/environment.rs`, `process/mod.rs`
 
-- Add `pub const AGENT_SESSION_ENV_NAMES: &[&str]` with exactly the names in the current wrapper loop, in
-  this order, then `"USER"`, `"LOGNAME"`: `LANG LC_ALL LC_CTYPE TERM TERMINFO TERMINFO_DIRS COLORTERM
+- Add `pub const AGENT_SESSION_ENV_NAMES: &[&str]` with the names in the wrapper loop at `ff3fe947`, in
+  this order, then `"USER"`, `"LOGNAME"` (the PR's literal places them after `SHELL`; the generated list
+  puts them last, which the PR's test does not care about): `LANG LC_ALL LC_CTYPE TERM TERMINFO TERMINFO_DIRS COLORTERM
   TERM_PROGRAM SHELL DISPLAY WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR TMUX_TMPDIR
   TMUX TMUX_PANE TMPDIR SCCACHE_DIR SCCACHE_CACHE_SIZE`. Doc comment: the wrapper's `env -i` list is
   generated from it; `HOME` and `PATH` are handled separately; locations only, never credentials.
@@ -82,8 +99,10 @@ where I: IntoIterator<Item = (K, V)>, K: Into<OsString>, V: Into<OsString> { /* 
 ### 2. Wrapper list generated from the constant
 
 `script_text.rs` `env_allowlist()` returns `String` (was `&'static str`): `format!` the same shell text with
-the loop's name list built from `AGENT_SESSION_ENV_NAMES.join(" ")`. Keep the `_loom_env=( "HOME=..." "PATH=..." )`
-head, the `${!_loom_name}` non-empty test and the doc comment (update its stale SCCACHE sentence). The one
+the loop's name list built from `AGENT_SESSION_ENV_NAMES.join(" ")`, replacing the PR's literal list
+(`USER LOGNAME` included). Keep the `_loom_env=( "HOME=..." "PATH=..." )` head, the `${!_loom_name}`
+non-empty test and the doc comment, including the PR's USER/LOGNAME paragraph; rewrite its "Fully static — no
+interpolation" sentence, which stops being true, and say the list is generated from the constant. The one
 caller is `wrapper.rs` `build_wrapper_script` (`let env_allowlist = env_allowlist();`, interpolated as
 `{env_allowlist}`): it compiles unchanged. The literal `AGENT_SESSION_ENV_NAMES` must appear in `script_text.rs` (wiring check).
 Register the new test file at the bottom of `wrapper.rs` beside `mod tests;`:
@@ -104,7 +123,11 @@ mod tests_exec_env;
   error gives `Unknown("could not run claude: <io error kind>")`.
 - `parse_auth_status`: parse `serde_json::Value`; read ONLY `loggedIn` (bool) and `authMethod` (string, default
   `"unknown"`). `loggedIn: false` gives `NotLoggedIn` whatever `exit_success` is; `true` gives
-  `LoggedIn { method }`; unparseable output or a missing `loggedIn` gives `Unknown`.
+  `LoggedIn { method }`; unparseable output or a missing `loggedIn` gives `Unknown` whatever `exit_success`
+  is (a non-zero exit with unparseable stdout is `Unknown`, never `NotLoggedIn`).
+- `stage_auth_status_from(claude_path, source)` holds the runner call for the stage probe:
+  `run_auth_status(claude_path, Some(agent_session_environment_from(source)))`.
+  `stage_auth_status(claude_path)` is `stage_auth_status_from(claude_path, std::env::vars_os())`.
 - Unknown reasons are fixed strings or `serde_json::Error` display (carries line and column only). Never
   interpolate stdout, stderr or any JSON value other than `authMethod`: `email`, `orgId`, `orgName` must not
   reach a `Debug`, log line or error.
@@ -114,6 +137,7 @@ mod tests_exec_env;
 
 ```rust
 pub(super) fn auth_problem(stage: &AuthProbe, operator: &AuthProbe) -> Option<String>;
+pub(super) fn require_login_with(stage: AuthProbe, operator: impl FnOnce() -> AuthProbe) -> anyhow::Result<()>;
 pub(super) fn require_stage_login(claude_path: &Path) -> anyhow::Result<()>;
 ```
 
@@ -122,9 +146,15 @@ pub(super) fn require_stage_login(claude_path: &Path) -> anyhow::Result<()>;
   sessions receive are `loom::process::AGENT_SESSION_ENV_NAMES` plus `HOME` and `PATH`), so stage sessions would
   start "Not logged in". Stage `NotLoggedIn` with operator `NotLoggedIn` or `Unknown`: `claude is not logged in;
   run claude /login, then loom run again`.
-- `require_stage_login`: `stage_auth_status`; `LoggedIn` is `Ok`; `Unknown(reason)` prints one
-  `eprintln!` warning (`could not verify the claude login for stage sessions: {reason}`) and is `Ok`;
-  `NotLoggedIn` calls `operator_auth_status` and `bail!`s with `auth_problem(...)`.
+- `require_login_with(stage, operator)` holds the decision, so a test drives it with explicit probes:
+  `LoggedIn` is `Ok`; `Unknown(reason)` prints one `eprintln!` warning (`could not verify the claude login
+  for stage sessions: {reason}`) and is `Ok`; `NotLoggedIn` calls the `operator` closure (only then) and
+  `bail!`s with `auth_problem(...)`.
+- `require_stage_login(claude_path)` is its production wrapper:
+  `require_login_with(crate::remote_control::cached_stage_auth(claude_path).clone(), ||
+  operator_auth_status(claude_path))`. It reads the probe through remote_control's memoized
+  `cached_stage_auth` (Task 5; make that fn `pub(crate)`), which seeds its `OnceLock` here, so
+  `loom run` runs the stage probe once and the Remote Control preflight after it reuses the result.
 - In `run_startup_preflights`, inside the existing `if let Ok(claude_path) = crate::claude::find_claude_path()`
   block, call `auth_preflight::require_stage_login(&claude_path)?;` BEFORE
   `crate::remote_control::run_startup_preflight(...)`. A missing claude binary skips it. Add `mod auth_preflight;`
@@ -134,8 +164,10 @@ pub(super) fn require_stage_login(claude_path: &Path) -> anyhow::Result<()>;
   (colored command, two spaces, description): `loom status --live`, `loom status --web`, and the absolute
   `work_dir.join("orchestrator.log")` as the daemon log. In `execute_background` replace the two
   `println!("  {}  Check status" / "Monitor progress", "loom status".cyan())` lines (already-running path and
-  fresh-start path) with `guidance::write_follow_guidance(&mut std::io::stdout(), work_dir.root())?;`. Keep
-  `print_stop_guidance()`. Both flags exist (`cli/types.rs` `Status { live, .. }`, `cli/types_status_web.rs`).
+  fresh-start path) with `guidance::write_follow_guidance(&mut std::io::stdout(), work_dir.root())?;`. Delete PR #25's
+  `fn print_log_location(work_dir: &WorkDir)` (it prints `Failures and stalls are logged to <abs log path>`)
+  and its call just before the fresh-start `Monitor progress` line: `write_follow_guidance` prints the same
+  absolute path. Keep `print_stop_guidance()`. Both flags exist (`cli/types.rs` `Status { live, .. }`, `cli/types_status_web.rs`).
 
 ### 5. `remote_control.rs` (598 lines) and `quota/credentials.rs`
 
@@ -148,7 +180,12 @@ pub(super) fn require_stage_login(claude_path: &Path) -> anyhow::Result<()>;
 - `remote_control_eligible(claude_path: &Path) -> Result<()>` gains the path parameter (its only caller is
   `preflight`, which has it) and returns `eligibility_from(cached_stage_auth(claude_path))`, where
   `cached_stage_auth` is a `static OnceLock<AuthProbe>` memoizing `crate::claude::auth::stage_auth_status`
-  (copy `cached_named_arg_supported`'s shape). The literal `stage_auth_status(` must appear in `remote_control.rs`.
+  (copy `cached_named_arg_supported`'s shape; `pub(crate)`, because `auth_preflight::require_stage_login`
+  reads the probe through it). The literal `stage_auth_status(` must appear in `remote_control.rs`.
+- Rewrite the module doc: its `preflight()` bullet says "a version probe with an auth-eligibility
+  heuristic" and the `preflight` fn doc says the same. After this change there is no heuristic: eligibility
+  is the verdict of `claude auth status --json` under the stage environment (`eligibility_from`). Say that,
+  and drop the claim that the setup is checked by anything else.
 - Move the inline `mod tests` (from `#[cfg(test)] mod tests {`, ~`:396` to the end) into `src/remote_control_tests.rs`,
   dedenting one level (module body becomes the file body, `use super::*;` and `use serial_test::serial;` stay)
   and replace it with `#[cfg(test)] #[path = "remote_control_tests.rs"] mod tests;`. Keep every assertion line
@@ -187,13 +224,18 @@ predicate `capture_from` filters with (`is_allowed(OsStr::new(name))` at `ff3fe9
   "claude.ai"`), `logged_out_status_is_not_logged_in_whatever_the_exit` (the captured JSON
   `{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty", "analyticsDisabled": false,
   "projectsDirectory": "/home/u/.claude/projects", "configDirectory": "/home/u/.claude"}` with `exit_success`
-  true and false), `unparseable_output_is_unknown`, and `#[serial] stage_probe_sees_user`: write a fake claude
-  script (`#!/bin/sh`, prints `{"loggedIn": true, "authMethod": "claude.ai"}` and exits 0 only when `$USER` is
-  non-empty, else prints the logged-out JSON and exits 1) into a `TempDir`, `chmod 0o755`, set `USER=alice` with
-  a restore-on-drop guard, assert `LoggedIn`, then remove `USER` and assert `NotLoggedIn`. Never run the real `claude`.
+  true and false), `unparseable_output_is_unknown` (exact name; asserts `Unknown` for the same unparseable stdout with
+  `exit_success` true AND with it false), and `stage_probe_sees_user` (no `#[serial]`, no process variable
+  touched): write a fake claude script (`#!/bin/sh`, prints `{"loggedIn": true, "authMethod": "claude.ai"}` and
+  exits 0 only when `$USER` is non-empty, else prints the logged-out JSON and exits 1) into a `TempDir`,
+  `chmod 0o755`, call `stage_auth_status_from(&script, [("HOME", <tempdir>), ("PATH", "/usr/bin:/bin"),
+  ("USER", "alice")])` and assert `LoggedIn`, then call it again with the same source minus `USER` and assert
+  `NotLoggedIn`. Never run the real `claude`.
 - `commands::run::auth_preflight::tests` (inline): `auth_problem` for every pair (stage `LoggedIn` and `Unknown`
   with any operator: `None`; stage `NotLoggedIn` with each of the three operator verdicts: `Some`, with the
   `LoggedIn` case naming the stage environment and the other two naming `claude /login`);
+  `not_logged_in_refuses_the_run` (exact name; acceptance runs it `--exact`: `require_login_with(
+  AuthProbe::NotLoggedIn, || AuthProbe::NotLoggedIn)` is an `Err` whose text names `claude /login`);
   `require_stage_login_warns_and_passes_when_claude_cannot_run` (path `/nonexistent/claude-xyz` gives `Ok`).
 - `commands::run::guidance::tests` (inline): `follow_guidance_names_status_live_status_web_and_the_log` (a
   `Vec<u8>` writer, a `TempDir` work dir; contains `loom status --live`, `loom status --web`, `<dir>/orchestrator.log`).
@@ -202,7 +244,6 @@ predicate `capture_from` filters with (`is_allowed(OsStr::new(name))` at `ff3fe9
 ## Patterns to copy
 
 - `process/environment.rs:109-135` tests (spawn `/usr/bin/env`, read stdout) for the env tests.
-- `orchestrator/terminal/native/tests_wrapper_env.rs:151-182` `EnvVarGuard` for restore-on-drop `USER`.
 - `remote_control.rs` `cached_named_arg_supported` (OnceLock memo) for `cached_stage_auth`.
 - `commands/run/git_preflight.rs` for a refusing preflight module with an inline `tests`.
 - DO NOT copy: the old `remote_control_eligible` reading `std::env::var_os`, `~/.claude/.credentials.json` or
@@ -221,7 +262,8 @@ predicate `capture_from` filters with (`is_allowed(OsStr::new(name))` at `ff3fe9
 - `STAGE_HOST_ENV_ALLOWLIST` also governs plan-authored confined criteria (`verify/criteria/confine.rs:148`);
   `USER`/`LOGNAME` are not secrets, so that is intended. Do NOT add `ANTHROPIC_API_KEY`, `CLAUDE_CONFIG_DIR` or proxy variables to `AGENT_SESSION_ENV_NAMES` (plan non-goal).
 - `commands/run/tests/confinement.rs` drives `run_startup_preflights` and expects the confinement refusal first;
-  keep `require_confinement` the first call.
+  keep `require_confinement` the first call. Do not move or touch the socket-path refusal
+  `prepare_background_run` carries (W1's); only `run_startup_preflights` and `execute_background` are yours.
 - Never print `email`, `orgId` or `orgName`; do not add a `Serialize` derive to `AuthProbe`.
 
 ## The one check you may run (once)
@@ -232,5 +274,6 @@ fails on another worker's symbol, say so and stop). No `cargo fmt`, no clippy.
 ## Report
 
 Files changed; the one check and its result; the two deleted tests (names) for the integrity dispute;
-ledgered units you shrank (`remote_control.rs` should leave the ledger); every deviation from the pinned
-interfaces (the extra `operator_auth_status`, the `remote_control_eligible(claude_path)` parameter); surprises.
+ledgered units you shrank (`remote_control.rs` should leave the ledger); that `print_log_location` is gone; every deviation from the pinned
+interfaces (the extra `operator_auth_status`, `stage_auth_status_from`, `require_login_with`, the
+`remote_control_eligible(claude_path)` parameter, `cached_stage_auth` made `pub(crate)`); surprises.

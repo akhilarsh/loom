@@ -14,7 +14,7 @@ classifies as `DaemonReach::Unreachable`.
 
 ## Files owned (the plan's W2 row, package-relative to `loom/`)
 
-`src/daemon/socket.rs` (new), `src/daemon/rpc.rs`, `src/daemon/rpc_tests.rs` (new),
+`src/daemon/socket.rs` (new), `src/daemon/rpc.rs`, `src/daemon/rpc_tests.rs` (exists at the base),
 `src/commands/stage/control_complete.rs`, `src/commands/stage/tests/control_complete.rs`,
 `src/daemon/server/core.rs`, `src/daemon/server/shutdown.rs`,
 `src/commands/status/ui/tui/daemon_client.rs`, `src/commands/status/web/broadcast.rs`,
@@ -35,16 +35,29 @@ classifies as `DaemonReach::Unreachable`.
   advice to move the repository to a path of at most 74 bytes)"
 - "The daemon's own bind keeps `work_dir.join(SOCKET_FILE)`; every client uses `socket_path`."
 - W1 declares `mod socket;` and the `pub use` in `src/daemon/mod.rs` and calls
-  `socket_path_problem` from `run_startup_preflights`. You never edit `daemon/mod.rs`.
+  `socket_path_problem` from `prepare_background_run` (`src/commands/run/mod.rs`), right after
+  `work_dir.load()?` and before `mark_plan_in_progress`. You never edit `daemon/mod.rs` or
+  `commands/run/mod.rs`; the run refusal is W1's, not yours. W1 also replaces PR #25's
+  `pub(crate) use rpc::socket_path;` in `daemon/mod.rs` with those lines, which is why the
+  `socket_path` you delete from `rpc.rs` stays reachable as `crate::daemon::socket_path`.
 
-## Root cause (re-verified at HEAD)
+## Root cause (re-verified at the base: PR #25 head `11859505`)
 
-- `src/daemon/rpc.rs:64-66` private `socket_path` is `work_dir.join("orchestrator.sock")` on the
-  caller's spelling; `:148-170` `try_send_request` maps `InvalidInput` through its catch-all
-  `Err(e)` arm (`:163`).
-- `src/commands/stage/control_complete.rs:72-81` has a private `send_request` that dials
-  `work_dir.join("orchestrator.sock")` with `UnixStream::connect` and no classification.
-- Other clients join the same spelling: `daemon/server/core.rs:116` (`check_status`),
+PR #25 patched part of this; the plan finishes it with one resolver in `daemon/socket.rs`.
+
+- `src/daemon/rpc.rs:70-75` is `pub(crate) fn socket_path(work_dir)`: the canonicalized `work_dir`
+  joined with `orchestrator.sock` (the pinned semantics), re-exported by `src/daemon/mod.rs:10`
+  (`pub(crate) use rpc::socket_path;`, W1's file). `try_send_request` (`:160`) maps every
+  `InvalidInput` from the connect to `Unreachable` through a blanket arm (`:177-179`, doc bullet
+  `:152-154`). That arm also swallows an `InvalidInput` that is a real error (a path with an
+  interior NUL fails the same way), so the plan replaces it with a length pre-check.
+- `src/commands/stage/control_complete.rs:72-81` keeps a private `send_request` that calls
+  `crate::daemon::socket_path(work_dir)` (PR #25) and then dials with `UnixStream::connect` and no
+  classification.
+- `src/daemon/rpc_tests.rs` already exists (the PR moved the inline tests there, assertion lines
+  verbatim) and holds two PR tests: `a_work_dir_symlink_past_the_socket_path_limit_still_reaches_the_daemon`
+  (`:168`, sandbox-guarded) and `a_socket_path_too_long_even_resolved_is_unreachable` (`:201`).
+- Other clients still join the raw spelling: `daemon/server/core.rs:116` (`check_status`),
   `daemon/server/shutdown.rs:24`, `status/ui/tui/daemon_client.rs:17` (via `tui/app.rs:118`),
   `status/web/broadcast.rs:229`, `repair/daemon_checks.rs:165`, `verify/review/observer.rs:70`
   (message text only).
@@ -56,25 +69,34 @@ classifies as `DaemonReach::Unreachable`.
 
 1. **`daemon/socket.rs`** (about 60 lines plus tests): the constants and three functions above.
    `socket_path`: `work_dir.canonicalize().unwrap_or_else(|_| work_dir.to_path_buf()).join(SOCKET_FILE)`
-   (precedent `control_complete.rs:46-48`). `socket_path_problem` message, exactly this shape:
+   (the body of the PR's `rpc.rs` `socket_path`, joined with `SOCKET_FILE`; second precedent
+   `control_complete.rs:46-48`). `socket_path_problem` message, exactly this shape:
    `daemon socket path '<p>' is <N> bytes; AF_UNIX paths must be under 104 bytes. Move the
    repository to a path of at most 74 bytes.` Derive 74 from a const
    (`SUN_PATH_MAX - 1 - ".loom/work/orchestrator.sock".len() - 1`).
-2. **`rpc.rs`**: delete the private `socket_path`; `use super::socket_path` and
-   `super::socket_path_fits`. In `try_send_request`, after the `lstat` match and before the
-   connect, return `Ok(DaemonReach::Unreachable)` when `!socket_path_fits(&socket_path)`. Order is
-   binding: lstat `NotFound` gives `NotListening`; any other lstat error gives `Unreachable`; a
-   path that does not fit gives `Unreachable`; then the connect mapping as today. Do not map every
-   `InvalidInput`. Rewrite the doc comment "lives here, and only here" (`:132`) so it is true after
-   your change (the daemon's own status/stop/TUI/web clients classify for themselves), add the
-   too-long case to the `Unreachable` variant doc and to the `send_request` `Unreachable` message
-   (`:181-186`).
-3. **Move the tests**: cut the `mod tests` block of `rpc.rs` (`:200-367`) into
-   `src/daemon/rpc_tests.rs` with every assertion line verbatim, and replace it in `rpc.rs` with
-   `#[cfg(test)] #[path = "rpc_tests.rs"] mod tests;` (the path resolves beside `rpc.rs`, as
-   `control_complete.rs` does with `tests/control_complete.rs`). The moved code uses
-   `use super::*;`, which still sees `socket_path`, `try_send_request`, `ping` and so on.
-4. **`control_complete.rs`**: delete `send_request`; `request_completion` calls
+2. **`rpc.rs`**: move the body of the PR's `pub(crate) fn socket_path` (`:70-75`, with its doc
+   comment) into `daemon/socket.rs` (Task 1) and delete it from `rpc.rs`, so `rpc.rs` keeps no
+   `fn socket_path` of its own (acceptance: `rg -q -F 'fn socket_path' src/daemon/rpc.rs` must find
+   nothing, so name no helper `socket_path` there). Import `use super::{socket_path,
+   socket_path_fits};` and call `socket_path_fits(` before connecting (the plan's wiring check greps
+   that literal). In `try_send_request`, after the `lstat` match and before the connect, return
+   `Ok(DaemonReach::Unreachable)` when `!socket_path_fits(&socket_path)`. Delete the PR's blanket
+   `Err(e) if e.kind() == ErrorKind::InvalidInput => return Ok(DaemonReach::Unreachable)` arm, its
+   comment, and the matching doc bullet (`:152-154`); any other `InvalidInput` falls to the final
+   `Err(e)` arm and stays an error. Order is binding: lstat `NotFound` gives `NotListening`; any
+   other lstat error gives `Unreachable`; a path that does not fit gives `Unreachable`; then the
+   connect mapping. Rewrite the doc comment "lives here, and only here" (`:141`) so it is true after
+   your change (the daemon's own status/stop/TUI/web clients classify for themselves), describe the
+   length pre-check in place of the `InvalidInput` bullet, add the too-long case to the
+   `Unreachable` variant doc and to the `send_request` `Unreachable` message (`:197-203`).
+3. **Tests file**: the PR already moved the inline tests to `src/daemon/rpc_tests.rs` and wired
+   `#[cfg(test)] #[path = "rpc_tests.rs"] mod tests;` at the end of `rpc.rs`; there is nothing to
+   move. Keep every existing line, the PR's two tests included (both pass under the pre-check: the
+   first resolves to a short real path, the second hits the pre-check). `rpc_tests.rs` does
+   `use super::*;`, so `socket_path` must stay in scope in `rpc.rs` (the import in Task 2) or the
+   file must import it itself.
+4. **`control_complete.rs`**: delete `send_request` (the PR's one-line change to it,
+   `crate::daemon::socket_path(work_dir)`, goes with it); `request_completion` calls
    `crate::daemon::send_request(work_dir, &request)` (note the argument order). Remove the now
    unused imports (`UnixStream`, `Duration`, `Context`, `read_message`, `write_message`); keep
    `Request`, `Response`, `read_user_token` (the tests file does `use super::*;`).
@@ -87,15 +109,19 @@ classifies as `DaemonReach::Unreachable`.
    `work_path.join("orchestrator.sock")` with `crate::daemon::socket_path(work_path)` (one line;
    the file is 391 lines, so change nothing else there). `daemon_checks.rs:165` uses
    `socket_path(work_dir)`. `observer.rs:70` prints `crate::daemon::socket_path(&self.work_dir)`.
-6. **`init/execute.rs`**: after `let work_dir_path = work_dir.root();` (around `:122`), call a small
-   helper `warn_on_long_socket_path(&repo_root, work_dir_path)` that prints
-   `println!("  {} {problem}", "!".yellow().bold())` when
-   `crate::daemon::socket_path_problem(&repo_root.join(work_dir_path))` is `Some`. Joining onto
-   `repo_root` covers the relative root `WorkDir::new(".")` can return, and keeps `execute` from
-   growing past one call line. The file is 350 lines; stay under 400. Add a test to
-   `execute/tests.rs` (new lines only) that `warn_on_long_socket_path` reports a problem for a
-   work root whose socket path is past the limit and nothing for a short one; make the helper
-   return the message it printed (`Option<String>`) so the test needs no stdout capture.
+6. **`init/execute.rs`**: add a small helper `warn_on_long_socket_path(work_dir_path: &Path) ->
+   Option<String>` that prints `println!("  {} {problem}", "!".yellow().bold())` and returns the
+   message when `crate::daemon::socket_path_problem(work_dir_path)` is `Some` (the return value
+   lets the test below skip stdout capture). Call it from `create_or_adopt_work_dir`, as one
+   line after the `if adopting { .. } else { .. }` block and before its `Ok(())`: by then the
+   directory exists (`adopt_existing` or `initialize` ran), so `socket_path` canonicalizes even
+   the relative root `WorkDir::new(".")` can return, against the cwd that `execute` already
+   treats as the repo root. Never touch `execute` itself: it is ledgered at 110 lines in
+   `loom/maintainability-baseline.txt` and must not grow by a single line. `create_or_adopt_work_dir`
+   is not ledgered. The file is 350
+   lines; stay under 400. Add a test to `execute/tests.rs` (new lines only) that
+   `warn_on_long_socket_path` reports a problem for a work root whose socket path is past the
+   limit and nothing for a short one.
 
 ## Tests to write (exact names)
 
@@ -105,11 +131,12 @@ classifies as `DaemonReach::Unreachable`.
   `socket_problem_names_bytes_limit_and_path`,
   `socket_problem_is_none_for_a_short_root`, `socket_problem_measures_the_resolved_path` (a long
   symlink spelling over a short real root gives `None`).
-- `src/daemon/rpc_tests.rs`, appended after the moved tests (all new lines):
-  `a_socket_path_past_sun_path_is_unreachable` (a directory of one 90-character component under a
-  TempDir holding a plain file `orchestrator.sock`: lstat succeeds, the path cannot fit, expect
-  `Unreachable`; no bind needed), and `a_worktree_spelling_past_sun_path_is_answered`: bind
-  `tmp/r/.loom/work/orchestrator.sock`, create `tmp/r/.worktrees/<80 x 'a'>/.loom/` and symlink
+- `src/daemon/rpc_tests.rs`, appended after the existing tests (all new lines). The PR's two tests
+  already cover the too-long path (`a_socket_path_too_long_even_resolved_is_unreachable`) and a
+  long symlink spelling over a short real root
+  (`a_work_dir_symlink_past_the_socket_path_limit_still_reaches_the_daemon`); write no test that
+  repeats them. Add the real worktree layout, which they do not cover:
+  `a_worktree_spelling_past_sun_path_is_answered`: bind `tmp/r/.loom/work/orchestrator.sock`, create `tmp/r/.worktrees/<80 x 'a'>/.loom/` and symlink
   `work` there to `../../../.loom/work`, assert the link spelling's socket path is at least 108
   bytes, serve one `Pong` from a thread exactly as `a_live_listener_is_answered` does, expect
   `Answered(Pong)`. Guard the bind with
@@ -124,7 +151,7 @@ classifies as `DaemonReach::Unreachable`.
 
 ## Patterns to copy
 
-`rpc.rs` tests `:284-366` (real listener, shut down before drop, sandbox guard);
+`rpc_tests.rs` `:140-166` (`a_live_listener_is_answered`: real listener, shut down before drop, sandbox guard);
 `control_complete.rs` tests `:43-63` (symlinked work dir). Do not copy `core.rs` `check_status`'s
 `UnixStream::connect(&socket_path)` shape into new code: classification belongs in
 `try_send_request`.
@@ -141,8 +168,11 @@ classifies as `DaemonReach::Unreachable`.
   `skip_unless`, or it passes for the wrong reason.
 - `daemon/server/tests.rs:18` expects the bind path unresolved; never canonicalize the daemon's own
   `socket_path` field.
+- `commands/init/execute.rs` `execute` is ledgered at 110 lines and must not change at all
+  (Task 6); the warning is called from `create_or_adopt_work_dir`.
 - Existing assertion lines are never edited. Moving them verbatim is allowed.
-- `rpc.rs` is 367 lines now; after the move it is about 200 and must stay under 400.
+- `rpc.rs` is 219 lines at the base and shrinks (the `socket_path` body leaves); `rpc_tests.rs` is
+  212 lines and grows by one test; both stay under 400.
 - Completion is never spooled (no `StageRequest` completion variant exists; spooling would be
   forgeable). Do not add one.
 

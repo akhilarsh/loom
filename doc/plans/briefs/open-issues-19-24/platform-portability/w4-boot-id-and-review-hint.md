@@ -20,8 +20,9 @@ say how many reviewer spawns were never harvested, fix the knowledge checker's r
 `src/verify/review/gate.rs`, `src/verify/review/gate_tests.rs`,
 `src/fs/knowledge/chunker/references.rs`, `src/commands/status/web/head.rs`,
 `src/commands/status/web/tests/errors.rs`, `src/commands/status/web/mod.rs`,
-`src/commands/status/web/connection.rs`,
-`src/orchestrator/terminal/native/tests_wrapper_env.rs`. Write nothing else.
+`src/commands/status/web/connection.rs`, `src/commands/status/web/unserved.rs` (new),
+`src/orchestrator/terminal/native/tests_wrapper_env.rs`, `src/completions/dynamic/commands.rs`.
+Write nothing else.
 
 ## Pinned interfaces (common.md, quoted)
 
@@ -46,11 +47,22 @@ say how many reviewer spawns were never harvested, fix the knowledge checker's r
 
 1. `impl BootClock for SystemBootClock`: one `fn boot_id(&self) -> Result<String> {
    crate::process::boot_id::current_boot_id() }` for every OS. Delete the three cfg variants
-   (`:39-58`) and `fn macos_boot_id` (`:101-138`). `rg -F 'kern.bootsessionuuid' src/commands/subagents`
-   must find nothing afterwards, comments included.
+   (`:39-58`) and, at your base (PR #25), every macOS boot function: `macos_boot_id` (now
+   `macos_boot_session_uuid().or_else(|_| macos_boot_time())`), `macos_boot_time` (sysctl
+   `kern.boottime`, formatted `boottime:<sec>.<usec>`) and `macos_boot_session_uuid` (the old body,
+   `:101-170` with its doc comment), plus the whole `#[cfg(all(test, target_os = "macos"))] mod
+   macos_boot_tests` at the end of the file (`:380-395`). Anchor by symbol. `rg -F
+   'kern.bootsessionuuid' src/commands/subagents` and `rg -F 'kern.boottime' src` must find nothing
+   afterwards, comments included. The `kern.boottime` fallback is not carried over: macOS recomputes
+   it when the wall clock is stepped, so its value can change within one boot, and a lease written
+   under one source and read under the other would look like a different boot. `LOOM_BOOT_ID` from
+   the daemon removes the need for any fallback (W5's `os_boot_id` reads `kern.bootsessionuuid`
+   only).
 2. Imports: after the deletion `bail!` is used only by the `not(any(linux, macos))` functions, so on
    Linux the `bail` import warns and `-D warnings` fails. Drop `bail` from the `use anyhow::{...}`
-   line and write `anyhow::bail!(...)` in those two functions.
+   line and write `anyhow::bail!(...)` in those two functions. `Context` stays used
+   (`clock_nanoseconds`, `deadline_after`). `lease_tests.rs` (not yours) was edited by PR #25
+   (`assert_private_lease_directories` canonicalizes the temp dir for macOS `/var`); leave it.
 3. `wait/mod.rs`: add `#[cfg(test)] mod lease_boot_tests;` beside `lease_tests`.
 4. `lease_boot_tests.rs` (`use super::lease::{BootClock, SystemBootClock};` plus
    `serial_test::serial`; a local `EnvVarGuard` with `set` and `unset`, a copy of
@@ -145,20 +157,41 @@ commands::status::web::tests::errors::` after the wave. Your job is static.
     `fn is_transient_peek_error(kind: ErrorKind) -> bool` with an inline `mod tests` in `head.rs`:
     `would_block_timed_out_and_interrupted_are_transient` and
     `connection_reset_and_broken_pipe_are_terminal`.
-16. Fix the spawn-failure drop in `mod.rs` `spawn_connection`: `try_clone` the stream before
-    `thread::Builder::spawn`; when the spawn fails, answer `503 Service Unavailable` on the clone
-    through `connection.rs`'s existing `fail` (with `drain_pending` first, as every other error
-    response does) instead of only logging, so a loaded server never closes a connection
-    silently. Put the answer in a `pub(super) fn answer_unserved(stream: &mut TcpStream)` in
-    `connection.rs` and test it over a loopback pair guarded by `skip_without_loopback` (pattern:
-    `tests/errors.rs`), in a new test inside `connection.rs`'s or `mod.rs`'s existing test
-    module, never in `tests/errors.rs`. In `gate`, a `set_*_timeout` failure keeps returning
+16. Fix the spawn-failure drop in `spawn_connection`. `mod.rs` is 398 lines and cannot grow, so
+    the function moves: create `src/commands/status/web/unserved.rs` holding `spawn_connection`
+    (moved verbatim from `mod.rs:338-383`, with its `#[allow(clippy::too_many_arguments)]` and
+    the imports it needs), a `pub(super) fn answer_unserved(stream: &mut TcpStream)` and an
+    inline `#[cfg(test)] mod tests`. `mod.rs` keeps exactly `mod unserved;` (beside its sibling
+    module declarations) plus the one call, now `unserved::spawn_connection(`; delete the old
+    function and any import it alone used. In `unserved.rs`, `try_clone` the stream before
+    `thread::Builder::spawn`; when the spawn fails, call `answer_unserved` on the clone
+    instead of only logging, so a loaded server never closes a connection silently.
+    `answer_unserved` answers `503 Service Unavailable` through `connection::fail` (which
+    already drains the unread request bytes first, as every other error response does) after
+    setting the write timeout as `connection::reject_overloaded` does. Test it over a loopback
+    pair guarded by `crate::commands::status::web::tests::skip_without_loopback` (`pub(super)` in
+    `web/tests.rs`, so visible here; pattern: `tests/errors.rs`) in `unserved.rs`'s own test
+    module, never in `tests/errors.rs`: the client writes nothing, reads to EOF, and sees a
+    `503` status line. In `gate` (`connection.rs`), a `set_*_timeout` failure keeps returning
     `None` (a socket that refuses a timeout cannot be written safely); say so in a comment.
 17. Record `loom memory note "found: web 408 empty-response candidates: <the list in step 14>;
-    fixed the EINTR retry in head.rs and the spawn-failure 503 in mod.rs"` with `--evidence`
-    pointing at `mod.rs:380`. Leave `tests/errors.rs` unchanged (its assertion lines cannot be
+    fixed the EINTR retry in head.rs and the spawn-failure 503 in unserved.rs"` with `--evidence`
+    pointing at `mod.rs:380` (where the drop sits at `ff3fe947`). Leave `tests/errors.rs` unchanged (its assertion lines cannot be
     edited, and an EINTR cannot be injected there). The orchestrator runs the flake check after
     the wave.
+
+### F. Hidden flags in completions (`src/completions/dynamic/commands.rs`)
+
+W1 adds the hidden `--daemon-child` flag to `loom run`. `complete_flags` pushes every argument's
+long and short name, so completions would offer it; the subcommand and value completers in the
+same file already skip hidden items (`visible_subcommand_names`, `complete_flag_choices`).
+
+1. In `complete_flags`, iterate `command.get_arguments().filter(|arg| !arg.is_hide_set())`.
+2. Append an inline `#[cfg(test)] mod tests` (the file has none; keep its assertions out of
+   `src/completions/dynamic/tests/`, which C2 owns) with
+   `run_completions_never_offer_the_hidden_daemon_child_flag`: `complete_flags(&["run"],
+   "--daemon")` does not contain `--daemon-child`, and `complete_flags(&["run"], "--")` still
+   contains `--manual`.
 
 ## Patterns to copy
 
@@ -168,11 +201,14 @@ style. Do not copy `commands/subagents/ledger.rs` `json_lines` (private).
 
 ## Traps
 
-- Acceptance greps: no `kern.bootsessionuuid` anywhere under `src/commands/subagents`.
+- Acceptance greps: no `kern.bootsessionuuid` anywhere under `src/commands/subagents`, and no
+  `kern.boottime` anywhere under `src`.
 - Knowledge (`mistakes/test-concurrency-and-fixtures.md`): env-mutating tests are `#[serial]` and
   restore the previous value on drop; a stray `LOOM_BOOT_ID` leaks into every later test.
-- `lease.rs` is 347 lines and drops about 45; `gate.rs` is 133 and grows by about 90; every file
-  stays at or under 400 and every function at or under 50 lines.
+- `lease.rs` is 395 lines at your base and drops about 100 (the macOS functions and
+  `macos_boot_tests`); `gate.rs` is 133 and grows by about 90; every file
+  stays at or under 400 and every function at or under 50 lines. `web/mod.rs` is 398 lines: step
+  16 must leave it shorter, never longer.
 - A hint is advisory text on an error path; it must never turn a passing gate into a failing one or
   panic on a malformed ledger.
 
@@ -183,5 +219,5 @@ None: the crate does not compile until W1, W2 and W5 return, and the orchestrato
 
 ## Report
 
-Files changed; the exact candidate list from step 14; the `tests_wrapper_env.rs` note; deviations from
-the pins.
+Files changed; the exact candidate list from step 14; the `tests_wrapper_env.rs` note; the final
+line counts of `web/mod.rs` and `web/unserved.rs`; deviations from the pins.

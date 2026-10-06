@@ -1,12 +1,13 @@
 # U2: `loom request status --wait`
 
-Codex unit (`loom-codex-forwarder`, gpt-5.6-terra, effort xhigh), one file, three numbered steps.
+Codex unit (`loom-codex-forwarder`, gpt-5.6-terra, effort xhigh), one module plus a test file, three
+numbered steps.
 Read `../common.md` first (its section "Pinned interfaces: daemon-owned-commits", bullet for
 `request status --wait`), then this brief.
 
 ## Role and issue
 
-Issue #22: after a session asks the daemon to commit, it has to find out whether the commit landed, in one
+Issue #22: after a session asks the daemon to commit, it has to find out whether the commit was applied, in one
 blocking call, without a poll loop of its own. You add the waiting mode to the existing status command and
 make it print the commit id the daemon recorded. The clap argument and its dispatch are written by C2; the
 daemon handler that writes the commit id into the inbox ledger is written by C2 as well.
@@ -20,13 +21,15 @@ HARD RULES for you, the codex agent:
 
 ## Files owned and files to read
 
-Own exactly one file: `loom/src/commands/request/status.rs` (it exists: 229 lines, with a `mod tests`).
-Add to it; keep it at or under 400 lines and every function under 50 lines. If the new code does not fit,
-put the tests in a new function group at the end of the existing `mod tests` and keep helpers short.
+Own exactly two files: `loom/src/commands/request/status.rs` (it exists: 229 lines, with a `mod tests`)
+and `loom/src/commands/request/status/wait_tests.rs` (new). Add the wait code to `status.rs` and declare the
+new tests at its end as `#[cfg(test)] mod wait_tests;`, so their module path is
+`commands::request::status::wait_tests`. `status.rs` stays at or under 400 lines counting its tests, and
+every function under 50 lines. Leave the existing `mod tests` untouched.
 
 Read, in this order:
 
-- `loom/src/commands/request/status.rs` whole: `execute`, `canonical_root`, `ReportedStatus`,
+- `loom/src/commands/request/status.rs` whole (`wait_tests.rs` reaches its items through `use super::*;`): `execute`, `canonical_root`, `ReportedStatus`,
   `resolve_status`, `list_inbox_sessions`, `format_status`, and the existing tests.
 - `loom/src/fs/inbox/status.rs` lines 1-57: `RequestStatus` and why the latest ledger row wins.
 - `loom/src/fs/inbox/ledger.rs` lines 28-60 and 120-135: `LedgerRecord`, `LedgerOutcome`, `append_ledger`,
@@ -88,11 +91,12 @@ polling forever.
      `Instant::now` and `std::thread::sleep`, read `applied_note` only when the result is `Settled(Applied)`,
      print `outcome_line` to stdout on success; on error return it (the process exits 1 through the caller).
      Do not call `std::process::exit` in the wait path.
-3. Tests, appended to the existing `mod tests` (new functions only, so no existing line changes).
+3. Tests, in `status/wait_tests.rs` (the existing `mod tests` is not touched, so no existing line changes).
 
 ## Tests to write
 
-Module `commands::request::status::tests`. Use `tempfile::tempdir()` for roots; the ledger fixture is
+Module `commands::request::status::wait_tests` (file `status/wait_tests.rs`, `use super::*;`). Use
+`tempfile::tempdir()` for roots; the ledger fixture is
 `crate::fs::inbox::append_ledger(root, "session-1", &LedgerRecord { id, kind: RequestKind::Commit, state:
 None, outcome: Some(LedgerOutcome::Applied), reason: Some("committed <40 hex>".to_string()), at:
 chrono::Utc::now() })`. The injected clock is a base `Instant` plus a `Cell<Duration>` that `sleep` advances.
@@ -124,17 +128,18 @@ ledger row for an id.
   finishes ... any reader of the inbox ledger must take the LATEST row for an id, never the first match."
 - A worktree session reaches the state directory through a symlink, and the inbox readers refuse to follow
   one: always read through `canonical_root` (the existing function), as `execute` does today.
-- The daemon applies within one poll tick of about five seconds, so a real wait ends long before the 120
-  second budget the doctrine uses; never sleep longer than `POLL_INTERVAL` in one step.
+- The daemon applies within one poll tick of about five seconds, so a real wait ends long before the 90
+  second budget the doctrine uses (`--wait 90`, under the Bash tool's default 120 s timeout); never sleep
+  longer than `POLL_INTERVAL` in one step.
 - `read_ledger` and `append_ledger` open the state directory without following symlinks: tests must pass a
   real directory, not a symlink.
 
 ## The one check
 
 None for you (do not run cargo). The orchestrator runs `cargo test --lib commands::request` once after all
-five workers of this stage return.
+six workers of this stage return.
 
 ## Report format
 
-Reply with: the file changed and its line count; the new functions; the assumptions you made about
+Reply with: the files changed and their line counts; the new functions; the assumptions you made about
 `LedgerRecord` field names and the note text; anything in this brief that the code contradicts.
