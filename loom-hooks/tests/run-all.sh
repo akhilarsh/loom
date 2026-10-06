@@ -5,13 +5,29 @@ PASS=0
 FAIL=0
 ERRORS=()
 
+# LOOM_HOOK_TEST_BSD=1 runs every test with the BSD tool shims first on PATH
+# (padded wc output, BSD-only stat and date options), as on macOS.
+source "$SCRIPT_DIR/_bsd_path.sh"
+BSD_DIR=""
+if [[ "${LOOM_HOOK_TEST_BSD:-}" == "1" ]]; then
+    BSD_DIR=$(bsd_shim_dir)
+    trap 'rm -rf "$BSD_DIR"' EXIT
+    echo "BSD tool shims active"
+fi
+
 run_test() {
     local name="$1"
     local script="$2"
+    local path_args=()
+    if [[ -n "$BSD_DIR" ]]; then
+        path_args=(PATH="$BSD_DIR:$PATH")
+    fi
     # A loom session exports these; inherited, they would override the stub
-    # binaries and PATHs each test hands its hooks.
+    # binaries and PATHs each test hands its hooks. LOOM_HOOK_PATH in
+    # particular splices the real PATH back in over the shim directory.
     if output=$(env -u LOOM_HOOK_PATH -u LOOM_BIN -u LOOM_HOOK_CONTEXT \
-        -u LOOM_SCRATCH_DIR -u LOOM_SESSION_TYPE bash "$script" 2>&1); then
+        -u LOOM_SCRATCH_DIR -u LOOM_SESSION_TYPE ${path_args[@]+"${path_args[@]}"} \
+        bash "$script" 2>&1); then
         echo "  PASS: $name"
         ((PASS++)) || true
     else

@@ -99,12 +99,39 @@ loom_lifecycle_stage_binding() {
 	[[ "$file_stage" == "$stage" && "$file_session" == "$session" ]]
 }
 
+# sha256 of stdin: GNU sha256sum, else the BSD/macOS shasum.
+loom_lifecycle_have_sha256() {
+	command -v sha256sum &>/dev/null || command -v shasum &>/dev/null
+}
+
+loom_lifecycle_sha256() {
+	if command -v sha256sum &>/dev/null; then
+		sha256sum
+	else
+		shasum -a 256
+	fi
+}
+
+# BSD date has no -d: split the timestamp, drop any fraction (the caller
+# compares equal seconds itself) and parse the rest with date -j -f.
+loom_lifecycle_bsd_epoch() {
+	local value="$1" base="" zone=""
+	local pattern='^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$'
+	[[ "$value" =~ $pattern ]] || return 1
+	base="${BASH_REMATCH[1]}"; zone="${BASH_REMATCH[3]}"
+	if [[ "$zone" == "Z" ]]; then
+		date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "${base}Z" +%s 2>/dev/null
+	else
+		date -j -f '%Y-%m-%dT%H:%M:%S%z' "${base}${zone/:/}" +%s 2>/dev/null
+	fi
+}
+
 loom_lifecycle_epoch() {
 	local value="$1" epoch=""
 	[[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$ ]] || return 1
 	epoch=$(date -u -d "$value" +%s 2>/dev/null || true)
 	if [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
-		epoch=$(date -j -u -f '%Y-%m-%dT%H:%M:%S.000Z' "$value" +%s 2>/dev/null || true)
+		epoch=$(loom_lifecycle_bsd_epoch "$value" || true)
 	fi
 	[[ "$epoch" =~ ^[0-9]+$ ]] && printf '%s\n' "$epoch"
 }
@@ -221,7 +248,7 @@ loom_lifecycle_transcript_evidence() {
 		fi
 		return 1
 	fi
-	digest=$(printf '%s' "$final_record" | sha256sum 2>/dev/null) || return 1
+	digest=$(printf '%s' "$final_record" | loom_lifecycle_sha256 2>/dev/null) || return 1
 	digest=${digest%% *}
 	[[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
 	after=$(loom_lifecycle_stat_fingerprint "$path") || return 1

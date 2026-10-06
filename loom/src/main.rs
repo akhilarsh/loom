@@ -19,10 +19,10 @@ const MACHINE_PROTOCOL_COMMANDS: [&str; 3] = ["hook", "context", "config"];
 /// [`MACHINE_PROTOCOL_COMMANDS`]) invoked from every Claude Code hook — an
 /// update notice on stderr is tolerable there in principle, but there is no
 /// value in checking on every single hook call, so they are excluded too.
-/// `complete` runs at the tail of a stage and should stay quiet. `run` is the
-/// daemon's own parent process — the daemon daemonizes in-process via
-/// `fork()`/`setsid()` (`daemon/server/lifecycle.rs`) rather than re-exec'ing
-/// `loom`, so there is no second entry point to gate here.
+/// `complete` runs at the tail of a stage and should stay quiet. `run` covers
+/// both `loom run` and the daemon itself, which `loom run` starts by
+/// re-executing the binary as `loom run --daemon-child`
+/// (`daemon/server/launch.rs`), so the daemon needs no entry of its own.
 const UPDATE_SILENT_COMMANDS: [&str; 4] = ["hook", "context", "complete", "run"];
 
 /// True when `first_arg` names an [`UPDATE_SILENT_COMMANDS`] subcommand. Read

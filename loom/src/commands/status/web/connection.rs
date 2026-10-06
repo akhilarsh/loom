@@ -34,7 +34,7 @@ const PEEK_TIMEOUT: Duration = Duration::from_millis(250);
 /// this one writes whole bundle assets rather than one small snapshot frame.
 ///
 /// [`MAX_CONNECTIONS`]: super::limits::MAX_CONNECTIONS
-const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Body returned when the work directory cannot produce a snapshot. The
 /// underlying error names absolute work-directory paths, so it is logged
@@ -135,6 +135,8 @@ fn gate(
     local: SocketAddr,
     lane: Option<&TerminalLane>,
 ) -> Option<RequestHead> {
+    // A socket that refuses a timeout cannot be read or written safely (a
+    // blocked syscall would pin this thread), so the connection ends here.
     if stream.set_read_timeout(Some(PEEK_TIMEOUT)).is_err()
         || stream.set_write_timeout(Some(WRITE_TIMEOUT)).is_err()
     {

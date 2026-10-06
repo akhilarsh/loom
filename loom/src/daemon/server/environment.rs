@@ -1,6 +1,7 @@
 //! Minimal environment inherited by the long-lived daemon process.
 
 use std::ffi::{OsStr, OsString};
+use std::process::Command;
 
 const HOST_ENV_ALLOWLIST: &[&str] = &[
     "HOME",
@@ -43,11 +44,21 @@ const HOST_ENV_ALLOWLIST: &[&str] = &[
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "NO_PROXY",
+    // Read by the daemon itself: `RUST_LOG` sets its tracing filter,
+    // `LOOM_SCCACHE`, `RUSTC_WRAPPER` and the two `SCCACHE_*` names feed the
+    // stage build cache (`orchestrator/terminal/native/build_cache.rs`), and
+    // `LOOM_HOME` locates the user config (`user_config`).
+    "RUST_LOG",
+    "SCCACHE_DIR",
+    "SCCACHE_CACHE_SIZE",
+    "LOOM_SCCACHE",
+    "RUSTC_WRAPPER",
+    "LOOM_HOME",
 ];
 
 const LOOM_CONTROL_ALLOWLIST: &[&str] = &["LOOM_HOOKS_DIR", "LOOM_TERMINAL"];
 
-/// Snapshot of the small host environment needed after daemonization.
+/// Snapshot of the small host environment the daemon child is started with.
 pub(super) struct DaemonEnvironment {
     variables: Vec<(OsString, OsString)>,
 }
@@ -57,21 +68,18 @@ impl DaemonEnvironment {
         Self::capture_from(std::env::vars_os())
     }
 
-    /// Clear inherited process state and restore only the captured allowlist.
-    ///
-    /// The caller invokes this in the single-threaded post-fork grandchild,
-    /// before any daemon worker or stage process can observe ambient secrets.
-    pub(super) fn apply(self) {
-        let inherited_keys: Vec<OsString> = std::env::vars_os().map(|(key, _)| key).collect();
-        for key in inherited_keys {
-            std::env::remove_var(key);
-        }
-        for (key, value) in self.variables {
-            std::env::set_var(key, value);
-        }
+    /// Start `command` from an empty environment holding only the captured
+    /// allowlist, so neither the daemon nor any stage process it starts can
+    /// observe the ambient secrets of the shell that ran `loom run`.
+    pub(super) fn apply_to(&self, command: &mut Command) {
+        command.env_clear().envs(
+            self.variables
+                .iter()
+                .map(|(key, value)| (key.as_os_str(), value.as_os_str())),
+        );
     }
 
-    fn capture_from<I, K, V>(source: I) -> Self
+    pub(super) fn capture_from<I, K, V>(source: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<OsString>,
@@ -142,5 +150,35 @@ mod tests {
         assert!(!keys.contains(&OsStr::new("LOOM_STAGE_ID")));
         assert!(!keys.contains(&OsStr::new("AWS_SECRET_ACCESS_KEY")));
         assert!(!keys.contains(&OsStr::new("GITHUB_TOKEN")));
+    }
+
+    #[test]
+    fn rust_log_and_sccache_variables_are_captured() {
+        let environment = DaemonEnvironment::capture_from([
+            ("RUST_LOG", "loom=debug"),
+            ("SCCACHE_DIR", "/safe/home/.cache/sccache"),
+            ("SCCACHE_CACHE_SIZE", "10G"),
+            ("LOOM_SCCACHE", "/opt/homebrew/bin/sccache"),
+            ("RUSTC_WRAPPER", "/opt/homebrew/bin/sccache"),
+            ("LOOM_HOME", "/safe/home/.loom"),
+            ("LOOM_UNLISTED_SETTING", "ambient"),
+        ]);
+        let keys: Vec<&OsStr> = environment
+            .variables
+            .iter()
+            .map(|(key, _)| key.as_os_str())
+            .collect();
+
+        for listed in [
+            "RUST_LOG",
+            "SCCACHE_DIR",
+            "SCCACHE_CACHE_SIZE",
+            "LOOM_SCCACHE",
+            "RUSTC_WRAPPER",
+            "LOOM_HOME",
+        ] {
+            assert!(keys.contains(&OsStr::new(listed)), "{listed} is captured");
+        }
+        assert!(!keys.contains(&OsStr::new("LOOM_UNLISTED_SETTING")));
     }
 }

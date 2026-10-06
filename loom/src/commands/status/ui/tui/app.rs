@@ -115,7 +115,7 @@ impl TuiApp {
     }
 
     fn connect_and_subscribe(work_path: &Path) -> Result<UnixStream> {
-        let socket_path = work_path.join("orchestrator.sock");
+        let socket_path = crate::daemon::socket_path(work_path);
         let mut stream = connect(&socket_path)?;
         subscribe(&mut stream)?;
         stream

@@ -5,10 +5,10 @@
 
 pub(crate) mod checks;
 mod confinement;
+mod daemon_child;
 mod foreground;
 mod git_preflight;
 mod graph_loader;
-mod objc_fork_safety;
 mod plan_inputs;
 mod sandbox_preflight;
 
@@ -19,6 +19,7 @@ mod tests_checks;
 
 use anyhow::{bail, Result};
 use colored::Colorize;
+use std::path::PathBuf;
 
 use crate::daemon::{DaemonConfig, DaemonServer};
 use crate::fs::work_dir::{read_terminal_config, write_terminal_config, WorkDir};
@@ -34,13 +35,19 @@ pub use crate::fs::plan_lifecycle::mark_plan_done_if_all_merged;
 
 /// Execute orchestrator in background (daemon mode)
 /// Usage: `loom run [--manual] [--max-parallel <n>] [--no-merge] [--backend <native|tmux>]`
+///
+/// `daemon_child` is the hidden `--daemon-child <root>`: the daemon process
+/// that this command starts runs as `loom run --daemon-child <root>`.
 pub fn execute_background(
     manual: bool,
     max_parallel: Option<usize>,
     auto_merge: bool,
     backend: Option<String>,
+    daemon_child: Option<PathBuf>,
 ) -> Result<()> {
-    objc_fork_safety::ensure_fork_safe_environment();
+    if let Some(root) = daemon_child {
+        return daemon_child::execute(&root, daemon_config(manual, max_parallel, auto_merge));
+    }
 
     let work_dir = prepare_background_run(backend)?;
 
@@ -54,22 +61,8 @@ pub fn execute_background(
         return Ok(());
     }
 
-    // Detect terminal BEFORE daemonizing (daemon loses terminal context after fork)
-    // Store in environment variable so it can be read back after the fork
-    if let Ok(terminal) = crate::orchestrator::terminal::native::detect_terminal() {
-        // SAFETY: This runs in main() before the tokio runtime spawns any threads,
-        // so there are no concurrent readers of the environment.
-        unsafe { std::env::set_var("LOOM_TERMINAL", terminal.display_name()) };
-    }
-
-    let daemon_config = DaemonConfig {
-        manual_mode: manual,
-        max_parallel,
-        watch_mode: true, // Background daemon mode continuously watches by design.
-        auto_merge,
-    };
-
-    let daemon = DaemonServer::with_config(work_dir.root(), daemon_config);
+    let config = daemon_config(manual, max_parallel, auto_merge);
+    let daemon = DaemonServer::with_config(work_dir.root(), config);
     daemon.start()?;
 
     println!("{} Daemon started", "✓".green().bold());
@@ -84,6 +77,17 @@ pub fn execute_background(
     Ok(())
 }
 
+/// The daemon's configuration for a background run. `loom run` and the daemon
+/// child it starts both build it from the same flags.
+fn daemon_config(manual: bool, max_parallel: Option<usize>, auto_merge: bool) -> DaemonConfig {
+    DaemonConfig {
+        manual_mode: manual,
+        max_parallel,
+        watch_mode: true, // Background daemon mode continuously watches by design.
+        auto_merge,
+    }
+}
+
 fn prepare_background_run(backend: Option<String>) -> Result<WorkDir> {
     // Ensure git worktree prerequisites are met before starting.
     let repo_root = std::env::current_dir()?;
@@ -95,6 +99,7 @@ fn prepare_background_run(backend: Option<String>) -> Result<WorkDir> {
     // resolves absolute).
     let work_dir = WorkDir::new(&repo_root)?;
     work_dir.load()?;
+    require_socket_path_fits(&work_dir)?;
 
     plan_inputs::require_committed_plan(&work_dir)?;
 
@@ -107,6 +112,16 @@ fn prepare_background_run(backend: Option<String>) -> Result<WorkDir> {
     checks::advisory_source_graph_preflight(&repo_root, &work_dir);
 
     Ok(work_dir)
+}
+
+/// Refuse a run whose daemon could not bind its socket: the resolved socket
+/// path must fit `sun_path`. Only the background run checks, before the plan
+/// is marked in progress; `loom run --foreground` binds no socket.
+fn require_socket_path_fits(work_dir: &WorkDir) -> Result<()> {
+    if let Some(problem) = crate::daemon::socket_path_problem(work_dir.root()) {
+        bail!("{problem}");
+    }
+    Ok(())
 }
 
 /// The startup preflights both entry points run before the plan is marked in

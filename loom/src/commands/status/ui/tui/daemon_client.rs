@@ -13,8 +13,9 @@ pub const SOCKET_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Connect to daemon socket.
 pub fn connect(socket_path: &Path) -> Result<UnixStream> {
+    let socket_path = crate::daemon::socket_path(socket_path.parent().unwrap_or(Path::new(".")));
     let mut stream =
-        UnixStream::connect(socket_path).context("Failed to connect to daemon socket")?;
+        UnixStream::connect(&socket_path).context("Failed to connect to daemon socket")?;
 
     stream
         .set_read_timeout(Some(SOCKET_TIMEOUT))
