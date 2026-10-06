@@ -12,6 +12,9 @@
 /// half a contract: any terminal whose terminfo entry is not bundled into
 /// the system database (kitty is the observed instance) leaves the stage
 /// agent's inherited TERM with nowhere to resolve.
+/// USER and LOGNAME name the operator and are not credentials. On macOS the
+/// `claude` CLI finds its Keychain login by `$USER`, so a session without it
+/// starts "Not logged in".
 /// SCCACHE_DIR/SCCACHE_CACHE_SIZE forward an operator's own sccache cache config.
 /// RUSTC_WRAPPER is deliberately absent here — `sccache_env` decides it instead,
 /// using the session's sandbox verdict this allowlist has no access to.
@@ -23,7 +26,7 @@ _loom_env=(
     "PATH=${PATH:-/usr/bin:/bin}"
 )
 for _loom_name in LANG LC_ALL LC_CTYPE TERM TERMINFO TERMINFO_DIRS COLORTERM \
-    TERM_PROGRAM SHELL DISPLAY \
+    TERM_PROGRAM SHELL USER LOGNAME DISPLAY \
     WAYLAND_DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR \
     TMUX_TMPDIR TMUX TMUX_PANE TMPDIR \
     SCCACHE_DIR SCCACHE_CACHE_SIZE; do
