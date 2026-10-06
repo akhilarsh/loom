@@ -181,4 +181,14 @@ mod tests {
         }
         assert!(!keys.contains(&OsStr::new("LOOM_UNLISTED_SETTING")));
     }
+
+    #[test]
+    fn every_agent_session_variable_survives_the_daemon_capture() {
+        for name in crate::process::AGENT_SESSION_ENV_NAMES {
+            assert!(
+                is_allowed(OsStr::new(name)),
+                "{name} reaches stage sessions but the daemon drops it"
+            );
+        }
+    }
 }
