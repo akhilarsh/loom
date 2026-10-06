@@ -7,6 +7,8 @@ use crate::git::signing::tests::{fake_signer, git_in};
 
 #[path = "tests_merge.rs"]
 mod merge;
+#[path = "tests_paths.rs"]
+mod paths;
 
 const BRANCH: &str = "refs/heads/loom/s1";
 

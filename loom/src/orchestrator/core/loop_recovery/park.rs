@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 
+use crate::context::untrusted::inline_safe;
 use crate::fs::session_files::{load_session_exact, mark_session_terminal_reason};
 use crate::handoff::{current_blocker, load_trusted_session_checkpoint, short_fingerprint};
 use crate::models::session::{Session, SessionExitReason, SessionStatus};
@@ -244,6 +245,16 @@ fn ensure_current_writer(stage: &Stage, session_id: &str) -> Result<()> {
 /// The longest pane line a one-line stall park reason quotes.
 const PANE_LINE_CHARS: usize = 120;
 
+/// The longest pane line the review notes keep, so a pane of very wide lines
+/// cannot make the stage record unbounded.
+const PANE_NOTE_LINE_CHARS: usize = 200;
+
+/// Where the pane's last lines begin in a review reason: see [`with_pane_notes`].
+const PANE_NOTES_MARKER: &str = "\n\nLast pane lines:\n";
+
+/// Where the quoted last pane line begins in a one-line reason: see `pane_segment`.
+const PANE_QUOTE_MARKER: &str = "; pane: \"";
+
 /// Why a stage that used its automatic stall recoveries was parked.
 pub(in crate::orchestrator::core::event_handler) fn exhausted_reason(
     report: &HungReport<'_>,
@@ -286,16 +297,35 @@ pub(in crate::orchestrator::core::event_handler) fn not_logged_in_reason(
     )
 }
 
-/// The review reason with the pane's last lines below it. `Stage` has no notes
-/// field; the web view shows these lines as the review notes.
+/// The review reason with the pane's last lines below it, each cut to
+/// [`PANE_NOTE_LINE_CHARS`]. `Stage` has no notes field; the web view shows
+/// these lines as the review notes.
 pub(in crate::orchestrator::core::event_handler) fn with_pane_notes(
     reason: String,
     tail: Option<&str>,
 ) -> String {
-    match tail {
-        Some(tail) => format!("{reason}\n\nLast pane lines:\n{tail}"),
-        None => reason,
-    }
+    let Some(tail) = tail else {
+        return reason;
+    };
+    let notes: Vec<String> = tail
+        .lines()
+        .map(|line| line.chars().take(PANE_NOTE_LINE_CHARS).collect())
+        .collect();
+    format!("{reason}{PANE_NOTES_MARKER}{}", notes.join("\n"))
+}
+
+/// The one-line form of a review reason for the daemon log (`orchestrator.log`)
+/// and the desktop notification: the reason up to its pane quote and pane notes,
+/// flattened to one bounded line. The pane text is agent-controlled, so it
+/// stays in the stage's `review_reason` and reaches neither sink. The cut is at
+/// the earliest marker, so a marker repeated inside the pane only shortens it.
+pub(in crate::orchestrator::core::event_handler) fn review_headline(reason: &str) -> String {
+    let end = [PANE_QUOTE_MARKER, PANE_NOTES_MARKER]
+        .into_iter()
+        .filter_map(|marker| reason.find(marker))
+        .min()
+        .unwrap_or(reason.len());
+    inline_safe(&reason[..end])
 }
 
 /// `; pane: "<last line>"` for a one-line reason: the pane's last non-empty
@@ -310,7 +340,7 @@ fn pane_segment(tail: Option<&str>) -> String {
     })
     .map(|line| {
         let line: String = line.chars().take(PANE_LINE_CHARS).collect();
-        format!("; pane: \"{}\"", line.replace('"', "'"))
+        format!("{PANE_QUOTE_MARKER}{}\"", line.replace('"', "'"))
     })
     .unwrap_or_default()
 }

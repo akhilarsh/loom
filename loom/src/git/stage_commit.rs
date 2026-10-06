@@ -228,7 +228,8 @@ impl<'a> Committer<'a> {
                 "a merge commit needs MERGE_HEAD: run git merge --no-commit --no-ff <target> first",
             )),
             (false, Some(id)) => Err(refused(format!(
-                "a merge is in progress (MERGE_HEAD {id}); finish or abort it first"
+                "a merge is in progress (MERGE_HEAD {id}); only a merge session can finish it: \
+                 run git merge --abort"
             ))),
             (true, Some(id)) => {
                 self.require_single_merge_head()?;

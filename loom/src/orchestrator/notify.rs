@@ -13,6 +13,9 @@ use std::time::Duration;
 const NOTIFY_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const OSASCRIPT_NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// The longest review reason a notification body carries.
+const REVIEW_REASON_CHARS: usize = 200;
+
 /// One notifier invocation: the program, its arguments, and how long it may run.
 struct Notifier {
     program: &'static str,
@@ -20,8 +23,18 @@ struct Notifier {
     timeout: Duration,
 }
 
+/// `text` with the markup characters of a freedesktop notification body
+/// escaped. Notification servers render `<a href=...>`, `<img>` and `<b>` in a
+/// body, and a body can carry text an agent wrote.
+fn escape_markup(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 /// The notifier for `os` (a `std::env::consts::OS` value): AppleScript's
-/// `display notification` on macOS, `notify-send` everywhere else.
+/// `display notification` on macOS, `notify-send` everywhere else, whose body is
+/// markup and is escaped.
 fn notifier_for(os: &str, title: &str, body: &str) -> Notifier {
     if os == "macos" {
         let script = format!(
@@ -41,7 +54,7 @@ fn notifier_for(os: &str, title: &str, body: &str) -> Notifier {
             "--urgency=critical".to_string(),
             "--app-name=loom".to_string(),
             title.to_string(),
-            body.to_string(),
+            escape_markup(body),
         ],
         timeout: NOTIFY_SEND_TIMEOUT,
     }
@@ -105,15 +118,20 @@ fn notification_command_succeeded(program: &str, output: &std::process::Output) 
     bail!("{program} exited with {}: {stderr}", output.status)
 }
 
+/// The body of a needs-review notification: the command that resolves it, then
+/// `review_reason` cut to [`REVIEW_REASON_CHARS`]. The caller passes the one-line
+/// headline of a reason, never its pane notes.
+fn needs_review_body(stage_id: &str, review_reason: Option<&str>) -> String {
+    let reason = review_reason
+        .map(|r| truncate(r, REVIEW_REASON_CHARS))
+        .unwrap_or_else(|| "A stage requires human review.".to_string());
+    format!("Next: loom stage human-review {stage_id}\n{reason}")
+}
+
 /// Notify the user that a stage needs human review.
 pub fn notify_needs_human_review(stage_id: &str, review_reason: Option<&str>) {
     let title = format!("loom: Stage '{}' needs review", stage_id);
-    let reason = review_reason
-        .map(|r| truncate(r, 200))
-        .unwrap_or_else(|| "A stage requires human review.".to_string());
-    let body = format!("Next: loom stage human-review {stage_id}\n{reason}");
-
-    send_desktop_notification(&title, &body);
+    send_desktop_notification(&title, &needs_review_body(stage_id, review_reason));
 }
 
 #[cfg(test)]
@@ -160,6 +178,40 @@ mod tests {
             ]
         );
         assert_eq!(notifier.timeout, NOTIFY_SEND_TIMEOUT);
+    }
+
+    #[test]
+    fn notify_send_bodies_are_escaped_so_no_markup_renders() {
+        let notifier = notifier_for("linux", "loom: s1", r#"<a href="x">go</a> & <b>more</b>"#);
+
+        assert_eq!(
+            notifier.args[3],
+            r#"&lt;a href="x"&gt;go&lt;/a&gt; &amp; &lt;b&gt;more&lt;/b&gt;"#
+        );
+    }
+
+    #[test]
+    fn a_review_notification_body_is_one_bounded_reason_without_raw_markup() {
+        let reason = format!(r#"stalled: <a href="x">open</a> {}"#, "y".repeat(500));
+        let body = needs_review_body("s1", Some(&reason));
+        let sent = notifier_for("linux", "loom: s1", &body).args[3].clone();
+
+        assert_eq!(body.lines().count(), 2, "{body}");
+        assert!(
+            body.starts_with("Next: loom stage human-review s1\n"),
+            "{body}"
+        );
+        assert!(body.chars().count() <= 40 + REVIEW_REASON_CHARS, "{body}");
+        assert!(!sent.contains('<') && !sent.contains('>'), "{sent}");
+        assert!(sent.contains("&lt;a href="), "{sent}");
+    }
+
+    #[test]
+    fn a_review_notification_without_a_reason_says_so() {
+        assert_eq!(
+            needs_review_body("s1", None),
+            "Next: loom stage human-review s1\nA stage requires human review."
+        );
     }
 
     #[test]

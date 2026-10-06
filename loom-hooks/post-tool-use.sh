@@ -52,9 +52,8 @@ _loom_ctx_last_usage_tokens() {
 	command -v jq &>/dev/null || return 0
 
 	local size
-	size=$(wc -c <"$transcript_path" 2>/dev/null || echo 0)
-	# `wc` pads its output on some platforms; keep the digits only.
-	size="${size//[^0-9]/}"
+	# `wc` pads its output on some platforms; strip the whitespace.
+	size=$(wc -c <"$transcript_path" 2>/dev/null | tr -d '[:space:]' || echo 0)
 
 	if [[ -n "$size" ]] && [[ "$size" -gt "$LOOM_TRANSCRIPT_WINDOW_BYTES" ]]; then
 		tail -c "$LOOM_TRANSCRIPT_WINDOW_BYTES" "$transcript_path" 2>/dev/null |

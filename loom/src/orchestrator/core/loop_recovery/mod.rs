@@ -17,7 +17,7 @@ use crate::orchestrator::monitor::MonitorEvent;
 use super::{clear_status_line, event_targets_current_session, requeue_after_handoff};
 
 pub(super) use park::{
-    exhausted_reason, never_worked_reason, not_logged_in_reason, with_pane_notes,
+    exhausted_reason, never_worked_reason, not_logged_in_reason, review_headline, with_pane_notes,
 };
 
 impl Orchestrator {
@@ -102,9 +102,10 @@ impl Orchestrator {
     /// Parked only once every agent is confirmed gone: approving the review
     /// re-queues the stage, which must not admit a second writer. The session
     /// is released so the approval finds no live worker to refuse on. The
-    /// status reason is the short constant because it is logged at ERROR; the
-    /// review reason carries agent-controlled pane lines and stays on the
-    /// stage record.
+    /// status reason is the short constant because it is logged at ERROR. The
+    /// review reason carries agent-controlled pane lines and is stored only in
+    /// the stage record: the transition announcement prints and notifies the
+    /// reason's one-line [`review_headline`], which stops before the pane text.
     pub(super) fn finish_handoff_and_park(
         &mut self,
         stage_id: &str,

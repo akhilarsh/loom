@@ -48,7 +48,7 @@ const MAX_DRAIN_BYTES: usize = 64 * 1024;
 ///
 /// The byte cap alone bounds nothing in time: a client trickling one byte per
 /// read timeout satisfies every read, so the loop can run for as many
-/// iterations as [`MAX_DRAIN_BYTES`] allows. [`reject_overloaded`] performs
+/// iterations as [`MAX_DRAIN_BYTES`] allows. [`reject_unavailable`] performs
 /// that drain on the accept loop, where stalling stops the server answering
 /// anyone at all, so the drain gives up on whichever bound it reaches first.
 const DRAIN_DEADLINE: Duration = Duration::from_millis(300);
@@ -182,18 +182,14 @@ pub(super) fn drain_pending(stream: &mut TcpStream) {
     }
 }
 
-/// Turn a connection away because no connection slot was free, without
-/// occupying one. Runs on the accept loop, so it only drains and answers.
-pub(super) fn reject_overloaded(stream: &mut TcpStream) {
+/// Turn a connection away with a 503 carrying `body`, without occupying a
+/// connection slot or a thread. Runs on the accept loop, so it only drains and
+/// answers; the write timeout bounds the answer.
+pub(super) fn reject_unavailable(stream: &mut TcpStream, body: &[u8]) {
     if stream.set_write_timeout(Some(WRITE_TIMEOUT)).is_err() {
         return;
     }
-    fail(
-        stream,
-        503,
-        "Service Unavailable",
-        b"dashboard connection limit reached",
-    );
+    fail(stream, 503, "Service Unavailable", body);
 }
 
 /// Drain the unread request bytes, then write a plain-text error response.

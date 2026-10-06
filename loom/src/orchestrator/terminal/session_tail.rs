@@ -4,7 +4,9 @@
 //! The result is text for a human (the park reason of a stalled stage); it is
 //! never consulted for liveness.
 
+use std::iter::Peekable;
 use std::path::Path;
+use std::str::Chars;
 
 use crate::context::untrusted::flatten_char;
 use crate::models::session::{Session, SessionBackendKind};
@@ -58,18 +60,32 @@ fn strip_control(raw: &str) -> String {
         match c {
             '\u{1b}' if chars.peek() == Some(&'[') => {
                 chars.next();
-                // A CSI sequence ends at its first final byte (0x40-0x7e).
-                for next in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&next) {
-                        break;
-                    }
-                }
+                skip_csi_body(&mut chars);
             }
             '\n' => out.push('\n'),
             c => out.push(flatten_char(c)),
         }
     }
     out
+}
+
+/// Consume the rest of a CSI sequence: parameter and intermediate bytes
+/// (0x20-0x3f), then the final byte (0x40-0x7e). Any other character, a newline
+/// included, means the sequence is malformed or cut off; it is left unconsumed
+/// so a sequence with no final byte cannot swallow the lines after it.
+fn skip_csi_body(chars: &mut Peekable<Chars<'_>>) {
+    while let Some(&next) = chars.peek() {
+        match next {
+            '\u{20}'..='\u{3f}' => {
+                chars.next();
+            }
+            '\u{40}'..='\u{7e}' => {
+                chars.next();
+                return;
+            }
+            _ => return,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -95,6 +111,15 @@ mod tests {
         assert_eq!(
             normalise_tail(raw, 10).as_deref(),
             Some("red\n indented\nplain")
+        );
+    }
+
+    #[test]
+    fn an_unterminated_csi_sequence_does_not_swallow_the_lines_after_it() {
+        let raw = "before \u{1b}[12;3\nafter\n\u{1b}[\nlast";
+        assert_eq!(
+            normalise_tail(raw, 10).as_deref(),
+            Some("before\nafter\nlast")
         );
     }
 

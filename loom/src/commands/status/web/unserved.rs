@@ -9,7 +9,7 @@ use std::thread;
 
 use super::access::AccessPolicy;
 use super::broadcast::Broadcaster;
-use super::connection::{self, WRITE_TIMEOUT};
+use super::connection;
 use super::limits::{Lane, Limits, Slot};
 use super::TerminalLane;
 
@@ -27,7 +27,7 @@ pub(super) fn spawn_connection(
         return;
     };
     let Some(slot) = Slot::acquire(limits, Lane::Connection) else {
-        connection::reject_overloaded(&mut stream);
+        connection::reject_unavailable(&mut stream, b"dashboard connection limit reached");
         return;
     };
     let broadcaster = broadcaster.clone();
@@ -73,19 +73,10 @@ fn prepare_socket(stream: &TcpStream) -> Option<SocketAddr> {
 }
 
 /// Turn a connection away with a 503 because no thread could be spawned for
-/// it. The write timeout bounds the answer as in `connection::reject_overloaded`,
-/// and `connection::fail` drains the unread request bytes first so the status
-/// arrives rather than an RST.
+/// it. `connection::reject_unavailable` bounds the write and drains the unread
+/// request bytes first, so the status arrives rather than an RST.
 pub(super) fn answer_unserved(stream: &mut TcpStream) {
-    if stream.set_write_timeout(Some(WRITE_TIMEOUT)).is_err() {
-        return;
-    }
-    connection::fail(
-        stream,
-        503,
-        "Service Unavailable",
-        b"dashboard could not serve this connection",
-    );
+    connection::reject_unavailable(stream, b"dashboard could not serve this connection");
 }
 
 #[cfg(test)]

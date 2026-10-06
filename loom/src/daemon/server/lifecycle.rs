@@ -143,14 +143,14 @@ impl DaemonServer {
         // has started no worker thread yet, and it restores the umask
         // immediately after the single bind.
         let old_umask = unsafe { libc::umask(0o077) };
-        let listener =
-            UnixListener::bind(&self.socket_path).context("Failed to bind Unix socket")?;
-        // Restore original umask immediately after bind.
+        let bound = UnixListener::bind(&self.socket_path);
+        // Restore original umask immediately after bind, failed or not.
         // SAFETY: paired with the `umask(0o077)` call above, still before any
         // worker thread starts.
         unsafe {
             libc::umask(old_umask);
         }
+        let listener = bound.context("Failed to bind Unix socket")?;
 
         // Explicitly set permissions as defense-in-depth (umask should have handled this,
         // but being explicit is safer and documents intent)

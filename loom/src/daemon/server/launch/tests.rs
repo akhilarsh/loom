@@ -112,6 +112,57 @@ fn a_silent_child_times_out_and_is_reaped() {
 }
 
 #[test]
+fn a_timed_out_child_reports_what_it_wrote_on_termination() {
+    let script = "trap 'printf LASTWORDS; exit 1' TERM; while :; do sleep 0.1; done";
+
+    let error = launch_failure(script, timing(300, 100));
+
+    assert!(error.contains("did not become ready"), "{error}");
+    assert!(
+        error.contains("LASTWORDS"),
+        "the pipe is drained after the reap: {error}"
+    );
+}
+
+#[test]
+fn a_pipe_closed_while_the_child_lives_terminates_and_reaps_it() {
+    let dir = TempDir::new().expect("temp dir");
+    let log = dir.path().join("orchestrator.log");
+    let (mut child, reader) = spawn_script("exec >&- 2>&-; exec sleep 30", &log);
+
+    let result = await_ready(&mut child.0, reader, &log, timing(5000, 100));
+
+    let error = format!("{:#}", result.expect_err("a closed pipe is not ready"));
+    assert!(
+        error.contains("closed its output before it was ready"),
+        "{error}"
+    );
+    let status = child
+        .0
+        .try_wait()
+        .expect("check the child")
+        .expect("the child is reaped");
+    assert_eq!(status.signal(), Some(Signal::SIGTERM as i32), "{status:?}");
+}
+
+#[test]
+fn the_log_tail_is_made_safe_for_the_terminal() {
+    let script = "printf '\\002'; printf 'evil\\033]52;c;AAAA\\007tail\\n' >\"$0\"; exit 3";
+
+    let error = launch_failure(script, timing(2000, 100));
+
+    assert!(error.contains("evil"), "{error}");
+    assert!(
+        !error.contains('\u{1b}'),
+        "no escape reaches the terminal: {error:?}"
+    );
+    assert!(
+        !error.contains('\u{7}'),
+        "no bell reaches the terminal: {error:?}"
+    );
+}
+
+#[test]
 fn a_suppressed_spawn_is_counted_and_starts_nothing() {
     let dir = TempDir::new().expect("temp dir");
     let before = SUPPRESSED_SPAWNS.load(Ordering::SeqCst);

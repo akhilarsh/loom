@@ -9,7 +9,7 @@ use crate::fs::work_dir::WorkDir;
 use crate::git::branch::{branch_ref, current_branch};
 use crate::git::merge::control_paths::changed_paths;
 use crate::git::runner::{run_git_checked, run_git_with_env_within};
-use crate::git::signing;
+use crate::git::signing::{self, SigningEnv};
 use crate::git::target_guard;
 
 /// Commit tracked changes to keep the default branch clean after plan completion.
@@ -49,6 +49,7 @@ pub(super) fn commit_post_completion_changes(
     commit_signed(
         repo_root,
         &format!("chore(loom): mark plan complete — {plan_name}"),
+        signing::installed(),
     )?;
 
     attest_completion_commit(work_dir, repo_root, old_plan_path, new_plan_path);
@@ -63,13 +64,13 @@ pub(super) fn commit_post_completion_changes(
 
 /// Commit what is staged in `repo_root` with `message`. The daemon's process
 /// environment no longer holds `GNUPGHOME` and `SSH_AUTH_SOCK`, so the captured
-/// signing environment is handed to this one command, bounded by
+/// signing environment `env` is handed to this one command, bounded by
 /// [`signing::SIGN_TIMEOUT`]; the runner keeps repository hooks off.
-fn commit_signed(repo_root: &Path, message: &str) -> Result<()> {
+fn commit_signed(repo_root: &Path, message: &str, env: &SigningEnv) -> Result<()> {
     let output = run_git_with_env_within(
         repo_root,
         &["commit", "-m", message],
-        &signing::installed().env_pairs(),
+        &env.env_pairs(),
         signing::SIGN_TIMEOUT,
     )?;
     if output.status.success() {
@@ -213,6 +214,27 @@ mod tests {
         );
         let calls = std::fs::read_to_string(argv_log).unwrap();
         assert_eq!(calls.lines().count(), 1);
+    }
+
+    #[test]
+    fn the_plan_done_commit_hands_the_given_signing_environment_to_the_signer() {
+        let repo = plan_repo();
+        let log = fake_signer(&repo.root, false);
+        std::fs::write(repo.root.join("src/x.rs"), "v2\n").unwrap();
+        git(&repo.root, &["add", "src/x.rs"]);
+        let env = SigningEnv {
+            gnupghome: Some("/loom-test/gnupghome".into()),
+            ssh_auth_sock: None,
+        };
+
+        commit_signed(&repo.root, "chore: signed", &env).unwrap();
+
+        let calls = std::fs::read_to_string(log).unwrap();
+        assert_eq!(calls.lines().count(), 1, "{calls}");
+        assert!(
+            calls.trim_end().ends_with("GNUPGHOME=/loom-test/gnupghome"),
+            "the signer did not see the given GNUPGHOME: {calls}"
+        );
     }
 
     #[test]

@@ -156,15 +156,19 @@ fn verify_evidence_bindings(
 /// then refused because the stage is no longer executing. So completion waits
 /// for the index the stage commits from to match its HEAD.
 fn refuse_uncommitted_index(stage: &Stage, repo_root: &Path) -> Result<()> {
+    const UNCOMMITTED: &str = "staged changes are not committed: run loom stage commit and wait \
+                               for it with loom request status <id> --wait 90";
     let Some(output) = staged_index_diff(stage, repo_root)? else {
         return Ok(());
     };
     match output.status.code() {
         Some(0) => Ok(()),
-        Some(1) => bail!(
-            "staged changes are not committed: run loom stage commit and wait for it with \
-             loom request status <id> --wait 90"
+        Some(1) if stage.stage_type == StageType::Knowledge => bail!(
+            "{UNCOMMITTED}; a knowledge stage commits in the main checkout, so any staged \
+             change under {} there blocks completion, including one staged by another session",
+            knowledge_prefix()
         ),
+        Some(1) => bail!("{UNCOMMITTED}"),
         _ => bail!(
             "completion staged-index check failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()

@@ -112,8 +112,8 @@ loom_lifecycle_sha256() {
 	fi
 }
 
-# BSD date has no -d: split the timestamp, drop any fraction (the caller
-# compares equal seconds itself) and parse the rest with date -j -f.
+# BSD date's -d is not a date string: split the timestamp, drop any fraction
+# (the caller compares equal seconds itself) and parse the rest with date -j -f.
 loom_lifecycle_bsd_epoch() {
 	local value="$1" base="" zone=""
 	local pattern='^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$'
@@ -129,9 +129,11 @@ loom_lifecycle_bsd_epoch() {
 loom_lifecycle_epoch() {
 	local value="$1" epoch=""
 	[[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$ ]] || return 1
-	epoch=$(date -u -d "$value" +%s 2>/dev/null || true)
+	# BSD form first: on macOS `date -u -d` sets the kernel DST flag (root can
+	# change it). GNU date rejects -j, so the BSD attempt fails harmlessly there.
+	epoch=$(loom_lifecycle_bsd_epoch "$value" || true)
 	if [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
-		epoch=$(loom_lifecycle_bsd_epoch "$value" || true)
+		epoch=$(date -u -d "$value" +%s 2>/dev/null || true)
 	fi
 	[[ "$epoch" =~ ^[0-9]+$ ]] && printf '%s\n' "$epoch"
 }
@@ -235,9 +237,8 @@ loom_lifecycle_transcript_evidence() {
 	[[ "$newline_count" =~ ^[[:space:]]*1[[:space:]]*$ ]] || return 1
 	final_record=$(tail -n 1 "$path" 2>/dev/null) || return 1
 	[[ -n "$final_record" ]] || return 1
-	final_bytes=$(printf '%s' "$final_record" | wc -c) || return 1
-	[[ "$final_bytes" =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]] || return 1
-	final_bytes=${final_bytes//[[:space:]]/}
+	final_bytes=$(printf '%s' "$final_record" | wc -c | tr -d '[:space:]') || return 1
+	[[ "$final_bytes" =~ ^[0-9]+$ ]] || return 1
 	((final_bytes < 1048576)) || return 1
 	printf '%s' "$final_record" | jq -e 'type == "object"' >/dev/null 2>&1
 	status=$?
@@ -254,7 +255,7 @@ loom_lifecycle_transcript_evidence() {
 	after=$(loom_lifecycle_stat_fingerprint "$path") || return 1
 	loom_lifecycle_plain_path "$path" file || return 1
 	[[ "$before" == "$after" ]] || return 1
-	LIFECYCLE_TRANSCRIPT_BYTES=${bytes//[[:space:]]/}
+	LIFECYCLE_TRANSCRIPT_BYTES=$bytes
 	LIFECYCLE_FINAL_DIGEST="sha256:$digest"
 }
 
@@ -269,7 +270,9 @@ loom_lifecycle_journal_ready() {
 			[[ "$newline_count" =~ ^[[:space:]]*1[[:space:]]*$ ]] || return 1
 		fi
 	fi
-	[[ ! -L "$journal" && ! -d "$journal" ]]
+	# Regular file or absent: a FIFO or device planted since the check above
+	# would block the append.
+	[[ ! -L "$journal" && (-f "$journal" || ! -e "$journal") ]]
 }
 
 loom_lifecycle_append() {

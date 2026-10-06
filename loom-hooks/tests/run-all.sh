@@ -24,9 +24,13 @@ run_test() {
     fi
     # A loom session exports these; inherited, they would override the stub
     # binaries and PATHs each test hands its hooks. LOOM_HOOK_PATH in
-    # particular splices the real PATH back in over the shim directory.
+    # particular splices the real PATH back in over the shim directory. The
+    # session identity variables would leak into any test that does not scrub
+    # its own.
     if output=$(env -u LOOM_HOOK_PATH -u LOOM_BIN -u LOOM_HOOK_CONTEXT \
-        -u LOOM_SCRATCH_DIR -u LOOM_SESSION_TYPE ${path_args[@]+"${path_args[@]}"} \
+        -u LOOM_SCRATCH_DIR -u LOOM_SESSION_TYPE -u LOOM_STAGE_ID -u LOOM_SESSION_ID \
+        -u LOOM_WORK_DIR -u LOOM_WORKTREE_PATH -u LOOM_MAIN_AGENT_PID \
+        ${path_args[@]+"${path_args[@]}"} \
         bash "$script" 2>&1); then
         echo "  PASS: $name"
         ((PASS++)) || true
@@ -102,6 +106,7 @@ run_test "stage-terminal-guard: blocks MultiEdit once the stage is terminal" "$S
 run_test "commit-guard: a nested worktree resolves to its innermost stage" "$SCRIPT_DIR/commit-guard-nested-worktree.sh"
 run_test "commit-guard: many dirty files never raise SIGPIPE through pipefail" "$SCRIPT_DIR/commit-guard-sigpipe-many-dirty-files.sh"
 run_test "commit-guard: a contract session gets the freeze reminder, not the checklist" "$SCRIPT_DIR/commit-guard-contract-session.sh"
+run_test "commit-guard: the memory reminder shows for thin memory, hides for 11+ lines, under padded wc" "$SCRIPT_DIR/commit-guard-memory-reminder.sh"
 run_test "user-prompt-context: short prompt produces no output" "$SCRIPT_DIR/user-prompt-context-short-prompt.sh"
 run_test "user-prompt-context: no LOOM_WORK_DIR exits silently" "$SCRIPT_DIR/user-prompt-context-no-workdir.sh"
 run_test "user-prompt-context: malformed JSON fails open" "$SCRIPT_DIR/user-prompt-context-malformed-json.sh"
@@ -120,6 +125,7 @@ run_test "post-tool-use: subagent ceiling ignores the stage's own context_ceilin
 run_test "subagent-stop: heartbeat refresh is serialized and cannot roll parent tokens back" "$SCRIPT_DIR/subagent-stop-heartbeat-lock.sh"
 run_test "subagent-stop: lifecycle heartbeat tags subagent:true with no last_tool" "$SCRIPT_DIR/subagent-stop-heartbeat-subagent-flag.sh"
 run_test "subagent-stop: only a loom-code-reviewer stop reaches review-harvest, silently" "$SCRIPT_DIR/subagent-stop-review-harvest.sh"
+run_test "subagent-stop: a FIFO at stop-skips.jsonl or lifecycle.jsonl never blocks the hook" "$SCRIPT_DIR/subagent-stop-fifo-journal.sh"
 run_test "heartbeat protocol: ownership, SessionStart lock, abandoned recovery, atomic JSON" "$SCRIPT_DIR/heartbeat-protocol.sh"
 run_test "heartbeat protocol: subagent tool calls are tagged, main-agent calls are not" "$SCRIPT_DIR/heartbeat-subagent-flag.sh"
 run_test "post-tool-use: resident-token arithmetic (last record wins, torn line survives)" "$SCRIPT_DIR/post-tool-use-resident-tokens.sh"

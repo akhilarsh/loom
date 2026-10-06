@@ -194,9 +194,10 @@ pub enum StageCommands {
         #[arg(value_parser = clap_id_validator)]
         stage_id: String,
 
-        /// Commit message (type(scope): description)
-        #[arg(short = 'm', long = "message")]
-        message: String,
+        /// Commit message (type(scope): description); repeat -m for further
+        /// paragraphs, joined with a blank line as git does
+        #[arg(short = 'm', long = "message", required = true)]
+        message: Vec<String>,
     },
 
     /// Respond to a stage flagged for human review

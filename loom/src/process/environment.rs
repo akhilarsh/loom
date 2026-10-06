@@ -261,6 +261,18 @@ mod tests {
     }
 
     #[test]
+    fn every_agent_session_name_is_in_the_stage_host_allowlist() {
+        // A name the wrapper forwards that the host layer drops never reaches
+        // the wrapper: the gap the first fix for issue #19 left.
+        for name in AGENT_SESSION_ENV_NAMES {
+            assert!(
+                STAGE_HOST_ENV_ALLOWLIST.contains(name),
+                "{name} is forwarded to agent sessions but missing from STAGE_HOST_ENV_ALLOWLIST"
+            );
+        }
+    }
+
+    #[test]
     fn stage_host_layer_keeps_user_and_logname() {
         let source = [
             ("HOME", "/safe/home"),

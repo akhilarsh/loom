@@ -181,3 +181,24 @@ fn eligibility_errors_never_carry_an_email() {
         assert!(!text.contains('@'), "{text}");
     }
 }
+
+#[test]
+fn eligibility_reason_carries_only_a_bounded_plain_auth_method() {
+    let hostile = format!(
+        "con\nsole\u{1b}[31m <a href=\"x\">{}",
+        "x".repeat(MAX_METHOD_CHARS * 2)
+    );
+    let reason = eligibility_from(&logged_in(&hostile))
+        .unwrap_err()
+        .to_string();
+
+    assert_eq!(reason.lines().count(), 1, "{reason:?}");
+    assert!(!reason.contains('\u{1b}'), "{reason:?}");
+    assert!(!reason.contains('<'), "{reason:?}");
+    assert!(
+        reason.contains("logged in with console31mahrefx"),
+        "{reason:?}"
+    );
+    assert_eq!(method_label(&hostile).chars().count(), MAX_METHOD_CHARS);
+    assert_eq!(method_label("claude.ai-2_x"), "claude.ai-2_x");
+}
