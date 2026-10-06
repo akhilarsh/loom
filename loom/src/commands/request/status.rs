@@ -2,16 +2,19 @@
 //! (`doc/plans/PLAN-loom-state-confinement.md` section 6).
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
 use crate::commands::common::resolve_work_dir;
-use crate::fs::inbox::{self, RequestStatus};
+use crate::fs::inbox::{self, read_ledger, LedgerOutcome, RequestStatus};
+
+const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// `loom request status` entry point: resolve the session from `--session`
 /// or `LOOM_SESSION_ID`, the scratch root from `LOOM_SCRATCH_DIR`, print one
 /// line, and exit 1 only when the request is unknown.
-pub fn execute(id: String, session: Option<String>) -> Result<()> {
+pub fn execute(id: String, session: Option<String>, wait_secs: Option<u64>) -> Result<()> {
     let work_dir = resolve_work_dir()?;
     let session = session.or_else(|| std::env::var("LOOM_SESSION_ID").ok());
     let scratch = std::env::var_os("LOOM_SCRATCH_DIR").map(PathBuf::from);
@@ -19,6 +22,28 @@ pub fn execute(id: String, session: Option<String>) -> Result<()> {
     // In a stage worktree `.loom/work` is a symlink to the main repository's
     // state directory, and the inbox reads refuse to follow symlinks.
     let root = canonical_root(work_dir.root());
+
+    if let Some(secs) = wait_secs {
+        let waited = {
+            let mut resolve = || resolve_status(&root, session.as_deref(), scratch.as_deref(), &id);
+            let mut now = Instant::now;
+            let mut sleep = std::thread::sleep;
+            wait_for(
+                &mut resolve,
+                Duration::from_secs(secs),
+                &mut now,
+                &mut sleep,
+            )?
+        };
+        let note = match &waited {
+            Waited::Settled(ReportedStatus::Inbox(RequestStatus::Applied)) => {
+                applied_note(&root, session.as_deref(), &id)?
+            }
+            _ => None,
+        };
+        println!("{}", outcome_line(&id, waited, secs, note)?);
+        return Ok(());
+    }
 
     let status = resolve_status(&root, session.as_deref(), scratch.as_deref(), &id)?;
     let (message, not_found) = format_status(&status);
@@ -40,6 +65,12 @@ fn canonical_root(root: &Path) -> PathBuf {
 enum ReportedStatus {
     PendingRelay,
     Inbox(RequestStatus),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Waited {
+    Settled(ReportedStatus),
+    TimedOut(ReportedStatus),
 }
 
 /// Pure resolution: no environment reads, so tests supply every input.
@@ -70,6 +101,69 @@ fn resolve_status(
         }
     }
     Ok(ReportedStatus::Inbox(RequestStatus::NotFound))
+}
+
+fn wait_for(
+    resolve: &mut dyn FnMut() -> Result<ReportedStatus>,
+    timeout: Duration,
+    now: &mut dyn FnMut() -> Instant,
+    sleep: &mut dyn FnMut(Duration),
+) -> Result<Waited> {
+    let deadline = now() + timeout;
+    loop {
+        let status = resolve()?;
+        if !matches!(
+            &status,
+            ReportedStatus::Inbox(RequestStatus::RelayedAwaitingDaemon | RequestStatus::Applying)
+        ) {
+            return Ok(Waited::Settled(status));
+        }
+        let current = now();
+        if current >= deadline {
+            return Ok(Waited::TimedOut(status));
+        }
+        sleep(POLL_INTERVAL.min(deadline - current));
+    }
+}
+
+fn outcome_line(id: &str, waited: Waited, secs: u64, note: Option<String>) -> Result<String> {
+    match waited {
+        Waited::Settled(ReportedStatus::Inbox(RequestStatus::Applied)) => match note {
+            Some(note) => Ok(format!("{id}: applied: {note}")),
+            None => Ok(format!("{id}: applied")),
+        },
+        Waited::Settled(ReportedStatus::Inbox(RequestStatus::Refused { reason })) => {
+            anyhow::bail!("request {id} was refused: {reason}")
+        }
+        Waited::Settled(ReportedStatus::Inbox(RequestStatus::NotFound)) => {
+            anyhow::bail!("request {id} not found")
+        }
+        Waited::Settled(ReportedStatus::PendingRelay) => anyhow::bail!(
+            "request {id} was never relayed: the relay hook did not receive its ticket; run the command that created it again as its own Bash call"
+        ),
+        Waited::Settled(ReportedStatus::Inbox(RequestStatus::UnknownAfterRestart)) => anyhow::bail!(
+            "request {id} is unknown after a daemon restart: check the repository state, then run the command again if the change is missing"
+        ),
+        Waited::TimedOut(_) => anyhow::bail!("request {id} still pending after {secs}s"),
+        Waited::Settled(_) => anyhow::bail!("request {id} is still pending"),
+    }
+}
+
+fn applied_note(root: &Path, session: Option<&str>, id: &str) -> Result<Option<String>> {
+    let sessions = match session {
+        Some(session) => vec![session.to_string()],
+        None => list_inbox_sessions(root)?,
+    };
+    for session in sessions {
+        if let Some(record) = read_ledger(root, &session)?
+            .into_iter()
+            .rev()
+            .find(|record| record.id == id && record.outcome == Some(LedgerOutcome::Applied))
+        {
+            return Ok(record.reason);
+        }
+    }
+    Ok(None)
 }
 
 /// Every session directory currently under `W/inbox/`, in no particular
@@ -227,3 +321,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod wait_tests;

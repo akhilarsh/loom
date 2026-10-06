@@ -91,6 +91,7 @@ run_test "codex-forward-guard: enforcement needs unforgeable stage evidence" "$S
 run_test "git-add-guard: quoted prose allowed, real args blocked" "$SCRIPT_DIR/git-add-guard-quoting.sh"
 run_test "_common: token helpers scan argv values, not quoted prose" "$SCRIPT_DIR/common-token-helpers.sh"
 run_test "commit-filter: quoted prose about git is allowed, real commits blocked" "$SCRIPT_DIR/commit-filter-quoted-payload.sh"
+run_test "commit-filter: git commit blocked in a stage session, only as git's subcommand" "$SCRIPT_DIR/commit-filter-session-git-commit.sh"
 run_test "worktree-isolation: quoted prose paths allowed, real traversal blocked" "$SCRIPT_DIR/worktree-isolation-quoted-payload.sh"
 run_test "prefer-modern-tools: grep/find inside a quoted payload is not a command" "$SCRIPT_DIR/prefer-modern-tools-quoted-payload.sh"
 run_test "prefer-modern-tools: missing rg/fd allows grep/find with a warning" "$SCRIPT_DIR/prefer-modern-tools-missing-rg-fd.sh"

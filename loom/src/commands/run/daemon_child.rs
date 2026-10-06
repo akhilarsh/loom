@@ -8,6 +8,7 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 use crate::daemon::{DaemonConfig, DaemonServer};
+use crate::git::signing;
 
 /// Serve as the daemon for the state root `work_root`.
 pub(super) fn execute(work_root: &Path, config: DaemonConfig) -> Result<()> {
@@ -17,6 +18,12 @@ pub(super) fn execute(work_root: &Path, config: DaemonConfig) -> Result<()> {
             work_root.display()
         );
     }
+    // Before any thread exists (`main` spawns none before dispatch, and the
+    // server starts its runtime in `serve`): keep the signing variables for
+    // the daemon's own signing calls and take them out of the environment
+    // every stage process would otherwise inherit. After the path check, so
+    // a refused argument (and the test of it) leaves the process untouched.
+    signing::take_from_process();
     DaemonServer::with_config(work_root, config).serve()
 }
 

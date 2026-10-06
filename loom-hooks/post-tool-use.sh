@@ -264,7 +264,8 @@ fi
 # following paths, and even redacted previews risk retaining private source.
 
 # === POST-COMMIT KNOWLEDGE/MEMORY REMINDER ===
-# After a git commit, print a non-blocking knowledge/memory reminder.
+# After a `git commit` or `loom stage commit`, print a non-blocking
+# knowledge/memory reminder.
 
 remind_knowledge_update() {
 	cat >&2 <<'REMINDER'
@@ -299,9 +300,11 @@ REMINDER
 
 if [[ "$TOOL_NAME" == "Bash" ]] && [[ -n "$COMMAND" ]]; then
 	# Shared tokenization strips heredocs and quoted prose, so only a real
-	# `git commit` fires; an unparseable Bash command safely does not.
+	# `git commit` or `loom stage commit` fires; an unparseable Bash command
+	# safely does not.
 	STRIPPED_COMMAND=$(strip_embedded_content "$COMMAND")
-	if loom_tokenize_command "$STRIPPED_COMMAND" && loom_tokens_cmd_has_arg 'git' 'commit'; then
+	if loom_tokenize_command "$STRIPPED_COMMAND" &&
+		{ loom_tokens_cmd_has_arg 'git' 'commit' || loom_tokens_cmd_has_arg_pair 'loom' 'stage' 'commit'; }; then
 		remind_knowledge_update
 	fi
 fi
