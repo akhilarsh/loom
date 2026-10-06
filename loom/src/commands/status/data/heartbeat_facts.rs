@@ -10,7 +10,7 @@ use crate::orchestrator::monitor::heartbeat::{judge_heartbeat_path, read_heartbe
 use crate::orchestrator::monitor::progress::age_secs;
 
 use super::sanitize::valid_stage_id;
-use super::{execution_models_for_stage, ActivityStatus};
+use super::ActivityStatus;
 
 /// Read one of a stage's heartbeat files from the heartbeat directory.
 ///
@@ -73,27 +73,27 @@ fn determine_activity_status(
 }
 
 /// Heartbeat-derived facts for a stage's [`StageSummary`]: staleness, current
-/// activity, and the last recorded tool/activity strings. Extracted from
+/// activity, the last recorded tool/activity strings, the judge heartbeat's
+/// age, and whether loom left the stage stalled. Extracted from
 /// `build_stage_summary` to keep that function within the line limit.
 pub(super) struct HeartbeatFacts {
     pub(super) staleness_secs: Option<u64>,
     pub(super) activity_status: ActivityStatus,
     pub(super) last_tool: Option<String>,
     pub(super) last_activity: Option<String>,
-}
-
-pub(super) struct StageExtras {
-    pub(super) execution_models: Vec<String>,
     pub(super) judge_heartbeat_secs: Option<u64>,
+    pub(super) stalled_after_recoveries: Option<u32>,
 }
 
-pub(super) fn stage_extras(stage: &Stage, work_dir: &WorkDir) -> StageExtras {
-    let judge_heartbeat_secs = read_judge_heartbeat_for_stage(&stage.id, work_dir)
-        .map(|hb| age_secs(Utc::now(), hb.effective_progress_at()));
-    StageExtras {
-        execution_models: execution_models_for_stage(work_dir, &stage.id),
-        judge_heartbeat_secs,
-    }
+/// The stall recoveries spent on a stage loom left for an operator, while the
+/// session whose silence exhausted them is still the stage's own and has not
+/// answered since: its silence is at least as long as when loom gave up.
+fn stalled_after_recoveries(stage: &Stage, staleness_secs: Option<u64>) -> Option<u32> {
+    let exhausted = stage.stall_exhausted.as_ref()?;
+    let still_silent = stage.status == StageStatus::Executing
+        && stage.session.as_deref() == Some(exhausted.session_id.as_str())
+        && staleness_secs.is_some_and(|secs| secs >= exhausted.silent_secs);
+    still_silent.then_some(stage.stall_recoveries)
 }
 
 pub(super) fn heartbeat_facts(
@@ -113,11 +113,19 @@ pub(super) fn heartbeat_facts(
 
     let last_tool = heartbeat.as_ref().and_then(|hb| hb.last_tool.clone());
     let last_activity = heartbeat.as_ref().and_then(|hb| hb.activity.clone());
+    let judge_heartbeat_secs = read_judge_heartbeat_for_stage(&stage.id, work_dir)
+        .map(|hb| age_secs(Utc::now(), hb.effective_progress_at()));
 
     HeartbeatFacts {
         staleness_secs,
         activity_status,
         last_tool,
         last_activity,
+        judge_heartbeat_secs,
+        stalled_after_recoveries: stalled_after_recoveries(stage, staleness_secs),
     }
 }
+
+#[cfg(test)]
+#[path = "heartbeat_facts_tests.rs"]
+mod tests;

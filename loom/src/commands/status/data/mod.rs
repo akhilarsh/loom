@@ -198,6 +198,12 @@ pub struct StageSummary {
     /// `web::model::collect_snapshot` drops it from the browser wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub close_reason: Option<String>,
+    /// The stall recoveries loom spent before leaving this `Executing` stage for
+    /// an operator, while the session that exhausted them is still silent. Feeds
+    /// the attention entry: it crosses the daemon socket, and
+    /// `web::model::collect_snapshot` drops it from the browser wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stalled_after_recoveries: Option<u32>,
 }
 
 impl StageSummary {

@@ -9,7 +9,9 @@ use crate::commands::status::data::{
 use crate::models::failure::FailureType;
 use crate::models::session::{SessionExitReason, SessionType};
 use crate::models::stage::{StageStatus, StageType};
-use crate::orchestrator::core::MAX_MERGE_RESOLVER_ATTEMPTS;
+use crate::orchestrator::core::{
+    stall_reason, stall_takeover_command, MAX_MERGE_RESOLVER_ATTEMPTS,
+};
 use crate::orchestrator::retry::should_auto_retry;
 
 /// Display-ready information for one stage that needs human attention.
@@ -224,7 +226,28 @@ fn status_guidance(stage: &StageSummary) -> Option<(&'static str, Guidance)> {
         StageStatus::NeedsHumanReview => ("NEEDS REVIEW", Guidance::default()),
         StageStatus::WaitingForInput => ("NEEDS INPUT", Guidance::manual(INPUT_NOTE)),
         StageStatus::NeedsAdjudication => ("ADJUDICATING", Guidance::automatic(ADJUDICATION_NOTE)),
+        StageStatus::Executing => ("STALLED", stall_guidance(stage)?),
         _ => return None,
+    })
+}
+
+/// Why loom left a stalled stage for an operator, and the command that takes
+/// it over; `None` for a stage loom has not given up recovering.
+pub fn stall_takeover(stage: &StageSummary) -> Option<(String, String)> {
+    let recoveries = stage.stalled_after_recoveries?;
+    Some((
+        stall_reason(recoveries, stage.staleness_secs.unwrap_or_default()),
+        stall_takeover_command(&stage.id),
+    ))
+}
+
+/// Loom recovers a stalled stage a bounded number of times, then leaves it
+/// exactly where it is for an operator.
+fn stall_guidance(stage: &StageSummary) -> Option<Guidance> {
+    let (reason, command) = stall_takeover(stage)?;
+    Some(Guidance {
+        note: Some(format!("{reason}; loom will not recover it again")),
+        ..Guidance::run(command)
     })
 }
 

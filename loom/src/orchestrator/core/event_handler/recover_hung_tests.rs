@@ -6,7 +6,9 @@
 //! at least one lane.
 
 use super::governor_tests::assign_stage_session;
-use super::recover_hung::{checkpoint_has_current_blocker, HungReport};
+use super::recover_hung::{
+    checkpoint_has_current_blocker, stall_reason, stall_takeover_command, HungReport,
+};
 use super::tests::{
     executing_stage, handoff_work_dir, orchestrator_for, recorded_session, spawn_orphan_process,
 };
@@ -17,7 +19,7 @@ use crate::handoff::{
     HandoffOrigin, HandoffV2, VerificationCheckpoint, COMPLETION_EVIDENCE_VERSION,
 };
 use crate::models::session::{Session, SessionExitReason, SessionStatus};
-use crate::models::stage::StageType;
+use crate::models::stage::{StageType, StallExhaustion};
 use crate::orchestrator::terminal::native::write_test_pid_identity;
 use crate::verify::transitions::{load_stage, update_stage};
 use std::path::Path;
@@ -266,9 +268,29 @@ fn the_third_stall_leaves_the_stage_for_an_operator() {
     let stage = load_stage("test-stage", &work).unwrap();
     assert_eq!(stage.status, StageStatus::Executing);
     assert_eq!(stage.stall_recoveries, 2, "a refusal must not be charged");
+    assert_eq!(
+        stage.stall_exhausted,
+        Some(StallExhaustion {
+            session_id: session.id.clone(),
+            silent_secs: ESCALATING_SILENCE_SECS,
+        }),
+        "`loom status` reads the exhaustion from the stage record, not the daemon log"
+    );
     assert!(orchestrator.active_sessions.contains_key("test-stage"));
 
     let _ = crate::process::terminate(agent_pid);
+}
+
+#[test]
+fn the_takeover_line_names_the_stage_its_recoveries_and_its_silence() {
+    assert_eq!(
+        stall_takeover_command("s1"),
+        "loom stage reset s1 --kill-session"
+    );
+    assert_eq!(
+        stall_reason(2, 903),
+        "stalled (recovered 2 times, silent 903s)"
+    );
 }
 
 /// A report naming a session the stage has moved past describes a corpse from

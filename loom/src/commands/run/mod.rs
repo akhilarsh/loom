@@ -76,6 +76,7 @@ pub fn execute_background(
     if !auto_merge {
         println!("  {} Auto-merge disabled", "→".dimmed());
     }
+    print_log_location(&work_dir);
     println!();
     println!("  {}  Monitor progress", "loom status".cyan());
     print_stop_guidance();
@@ -126,6 +127,17 @@ fn run_startup_preflights(work_dir: &WorkDir) -> Result<()> {
     sandbox_preflight::require_sandbox_prerequisites(work_dir.root())?;
     checks::advisory_codex_lane_preflight(work_dir.root());
     Ok(())
+}
+
+/// The daemon runs detached, so everything it reports, failures and stalls
+/// included, ends up in its log rather than this terminal.
+fn print_log_location(work_dir: &WorkDir) {
+    let log = work_dir.root().join("orchestrator.log");
+    println!(
+        "  {} Failures and stalls are logged to {}",
+        "→".dimmed(),
+        log.display()
+    );
 }
 
 fn print_stop_guidance() {

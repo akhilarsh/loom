@@ -5,6 +5,7 @@ mod merge_block;
 mod methods;
 mod persisted;
 mod sandbox_config;
+mod stall;
 mod status_display;
 mod transitions;
 mod types;
@@ -18,6 +19,7 @@ pub use merge_block::MergeRecord;
 pub use sandbox_config::{
     CommandConfinement, FilesystemConfig, LinuxConfig, NetworkConfig, StageSandboxConfig,
 };
+pub use stall::StallExhaustion;
 pub use types::{
     DeadCodeCheck, ExecutionMode, Implementer, Implementers, PermissionMode, RegressionTest, Stage,
     StageOutput, StageStatus, StageType, StatusBucket, SuccessCriteria, WiringTest,

@@ -27,6 +27,7 @@ mod stalled_judge;
 use handoff_state::mark_needs_handoff;
 use human_review::announce_needs_human_review;
 use recover_hung::HungReport;
+pub(crate) use recover_hung::{stall_reason, stall_takeover_command};
 
 /// The console line for a blocked stage. `reason` is the free text a stage agent
 /// wrote with `loom stage block` (up to 64 KiB), so it is flattened to one bounded

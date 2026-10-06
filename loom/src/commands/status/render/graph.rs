@@ -18,7 +18,7 @@ use crate::orchestrator::{context_health, ContextHealth};
 use crate::plan::graph::levels;
 use crate::utils::format_elapsed;
 
-use super::attention_model::{failure_label, is_contract_phase};
+use super::attention_model::{failure_label, is_contract_phase, stall_takeover};
 use super::render_orphaned_warning;
 
 /// All `StageStatus` variants in display order for legend generation.
@@ -239,9 +239,7 @@ pub fn render_graph<W: Write>(w: &mut W, data: &StatusData) -> std::io::Result<(
             "{ROW_INDENT}{connector}{indicator}  {colored_id}{tags}{deps}{annotations}"
         )?;
 
-        write_orphaned_hint(w, stage, &connector)?;
-        write_merge_hint(w, stage, &connector)?;
-        write_cleanup_hint(w, stage, &connector)?;
+        write_row_hints(w, stage, &connector)?;
 
         // Increment index for this level
         *level_indices.get_mut(&level).unwrap() += 1;
@@ -251,6 +249,34 @@ pub fn render_graph<W: Write>(w: &mut W, data: &StatusData) -> std::io::Result<(
     render_legend(w, &sorted_stages)?;
 
     Ok(())
+}
+
+/// The hint lines under a stage's row: each writer is a no-op for a stage it
+/// does not describe.
+fn write_row_hints<W: Write>(
+    w: &mut W,
+    stage: &StageSummary,
+    connector: &str,
+) -> std::io::Result<()> {
+    write_orphaned_hint(w, stage, connector)?;
+    write_stall_hint(w, stage, connector)?;
+    write_merge_hint(w, stage, connector)?;
+    write_cleanup_hint(w, stage, connector)
+}
+
+/// For a stage loom stopped recovering from stalls, why and how to take it
+/// over. No-op for any other stage.
+fn write_stall_hint<W: Write>(
+    w: &mut W,
+    stage: &StageSummary,
+    connector: &str,
+) -> std::io::Result<()> {
+    let Some((reason, command)) = stall_takeover(stage) else {
+        return Ok(());
+    };
+    let hint_indent = " ".repeat(connector.chars().count() + 4);
+    let hint = format!("↳ {reason}: {}", command.cyan());
+    writeln!(w, "{ROW_INDENT}{hint_indent}{}", hint.red())
 }
 
 /// For a stage whose activity status is `Orphaned` — it claims to be

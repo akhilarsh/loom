@@ -49,6 +49,7 @@ fn make_stage_summary(id: &str, deps: Vec<&str>, status: StageStatus) -> StageSu
         merge_resolver_session: None,
         merge_resolver_attempts: None,
         close_reason: None,
+        stalled_after_recoveries: None,
     }
 }
 
@@ -284,6 +285,40 @@ fn test_completed_merged_with_cleanup_warning_shows_failure_and_hint() {
         output_str.contains("loom worktree remove my-stage"),
         "Expected cleanup retry hint in output"
     );
+}
+
+#[test]
+fn test_executing_stage_left_stalled_says_why_and_how_to_take_it_over() {
+    let mut stage = make_stage_summary("my-stage", vec![], StageStatus::Executing);
+    stage.staleness_secs = Some(903);
+    stage.stalled_after_recoveries = Some(2);
+
+    let data = make_status_data(vec![stage]);
+    let mut output = Vec::new();
+    render_graph(&mut output, &data).unwrap();
+    let output_str = String::from_utf8(output).unwrap();
+
+    assert!(
+        output_str.contains("stalled (recovered 2 times, silent 903s)"),
+        "Expected the stall reason under the row: {output_str}"
+    );
+    assert!(
+        output_str.contains("loom stage reset my-stage --kill-session"),
+        "Expected the takeover command under the row: {output_str}"
+    );
+}
+
+#[test]
+fn test_executing_stage_not_left_stalled_has_no_stall_hint() {
+    let mut stage = make_stage_summary("my-stage", vec![], StageStatus::Executing);
+    stage.staleness_secs = Some(903);
+
+    let data = make_status_data(vec![stage]);
+    let mut output = Vec::new();
+    render_graph(&mut output, &data).unwrap();
+    let output_str = String::from_utf8(output).unwrap();
+
+    assert!(!output_str.contains("--kill-session"), "{output_str}");
 }
 
 #[test]

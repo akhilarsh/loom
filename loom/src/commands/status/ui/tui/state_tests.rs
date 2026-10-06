@@ -44,6 +44,7 @@ fn summary(id: &str, status: StageStatus, deps: &[&str]) -> StageSummary {
         merge_resolver_session: None,
         merge_resolver_attempts: None,
         close_reason: None,
+        stalled_after_recoveries: None,
     }
 }
 

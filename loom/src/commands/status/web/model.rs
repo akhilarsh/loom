@@ -211,14 +211,15 @@ pub fn collect_snapshot(
     }
 }
 
-/// `status` without the daemon-only attention inputs (the merge-resolver facts and
-/// the block reason): `attention` already states them, and the page's stage schema
-/// is strict.
+/// `status` without the daemon-only attention inputs (the merge-resolver facts, the
+/// block reason and the spent stall recoveries): `attention` already states them,
+/// and the page's stage schema is strict.
 fn without_merge_resolver_facts(mut status: StatusData) -> StatusData {
     for stage in &mut status.stages {
         stage.merge_resolver_session = None;
         stage.merge_resolver_attempts = None;
         stage.close_reason = None;
+        stage.stalled_after_recoveries = None;
     }
     status
 }

@@ -63,6 +63,7 @@ impl Default for Stage {
             dispute_count: 0,
             tally: DisputeTally::default(),
             stall_recoveries: 0,
+            stall_exhausted: None,
             sandbox: Default::default(),
             execution_mode: None,
             max_fix_attempts: None,

@@ -3,6 +3,7 @@
 //! Sends desktop notifications for events that need human attention,
 //! using notify-send on Linux and osascript on macOS.
 
+use crate::orchestrator::terminal::emulator::escape_applescript_string;
 use crate::process::run_bounded_output;
 use crate::utils::truncate;
 use anyhow::{bail, Context, Result};
@@ -12,59 +13,73 @@ use std::time::Duration;
 const NOTIFY_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const OSASCRIPT_NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// One notifier invocation: the program, its arguments, and how long it may run.
+struct Notifier {
+    program: &'static str,
+    args: Vec<String>,
+    timeout: Duration,
+}
+
+/// The notifier for `os` (a `std::env::consts::OS` value): AppleScript's
+/// `display notification` on macOS, `notify-send` everywhere else.
+fn notifier_for(os: &str, title: &str, body: &str) -> Notifier {
+    if os == "macos" {
+        let script = format!(
+            r#"display notification "{}" with title "{}""#,
+            escape_applescript_string(body),
+            escape_applescript_string(title)
+        );
+        return Notifier {
+            program: "osascript",
+            args: vec!["-e".to_string(), script],
+            timeout: OSASCRIPT_NOTIFICATION_TIMEOUT,
+        };
+    }
+    Notifier {
+        program: "notify-send",
+        args: vec![
+            "--urgency=critical".to_string(),
+            "--app-name=loom".to_string(),
+            title.to_string(),
+            body.to_string(),
+        ],
+        timeout: NOTIFY_SEND_TIMEOUT,
+    }
+}
+
 /// Send a desktop notification.
 ///
-/// Uses platform-appropriate notification tools:
-/// - Linux: `notify-send`
-/// - macOS: `osascript` with display notification
-///
-/// Failures are logged but never propagated - notifications are best-effort.
+/// Best-effort and never blocking: the notifier runs, bounded, on a thread of
+/// its own, and a failure (including a host without one) is logged, never
+/// propagated. A test build sends nothing, so no test run pops notifications
+/// on the developer's desktop.
 pub fn send_desktop_notification(title: &str, body: &str) {
-    let result = if cfg!(target_os = "macos") {
-        send_macos_notification(title, body)
-    } else {
-        send_linux_notification(title, body)
-    };
-
-    if let Err(e) = result {
+    if cfg!(test) {
+        return;
+    }
+    let notifier = notifier_for(std::env::consts::OS, title, body);
+    let spawned = std::thread::Builder::new()
+        .name("loom-notify".to_string())
+        .spawn(move || {
+            if let Err(e) = run_notifier(&notifier) {
+                eprintln!("Desktop notification failed: {e}");
+            }
+        });
+    if let Err(e) = spawned {
         eprintln!("Desktop notification failed: {e}");
     }
 }
 
-fn send_linux_notification(title: &str, body: &str) -> Result<()> {
-    let mut command = Command::new("notify-send");
-    command
-        .arg("--urgency=critical")
-        .arg("--app-name=loom")
-        .arg(title)
-        .arg(body);
+fn run_notifier(notifier: &Notifier) -> Result<()> {
+    let mut command = Command::new(notifier.program);
+    command.args(&notifier.args);
     run_notification_command(
         &mut command,
-        NOTIFY_SEND_TIMEOUT,
-        "notify-send desktop notification",
-        "notify-send",
+        notifier.timeout,
+        &format!("{} desktop notification", notifier.program),
+        notifier.program,
     )
-    .context("failed to run notify-send")
-}
-
-fn send_macos_notification(title: &str, body: &str) -> Result<()> {
-    use crate::orchestrator::terminal::emulator::escape_applescript_string;
-
-    let script = format!(
-        r#"display notification "{}" with title "{}""#,
-        escape_applescript_string(body),
-        escape_applescript_string(title)
-    );
-
-    let mut command = Command::new("osascript");
-    command.arg("-e").arg(&script);
-    run_notification_command(
-        &mut command,
-        OSASCRIPT_NOTIFICATION_TIMEOUT,
-        "osascript desktop notification",
-        "osascript",
-    )
-    .context("failed to run osascript")
+    .with_context(|| format!("failed to run {}", notifier.program))
 }
 
 fn run_notification_command(
@@ -101,6 +116,14 @@ pub fn notify_needs_human_review(stage_id: &str, review_reason: Option<&str>) {
     send_desktop_notification(&title, &body);
 }
 
+/// Notify the user that loom stopped recovering a stage from stalls.
+/// `reason` and `takeover` are the lines `loom status` shows for the stage.
+pub fn notify_stall_recovery_exhausted(stage_id: &str, reason: &str, takeover: &str) {
+    let title = format!("loom: Stage '{stage_id}' stalled");
+    let body = format!("Next: {takeover}\n{reason}");
+    send_desktop_notification(&title, &body);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +136,38 @@ mod tests {
             stdout: Vec::new(),
             stderr: stderr.as_bytes().to_vec(),
         }
+    }
+
+    #[test]
+    fn macos_notifies_through_applescript_with_its_strings_escaped() {
+        let notifier = notifier_for("macos", r#"loom: "s1""#, "Next: x\nwhy");
+
+        assert_eq!(notifier.program, "osascript");
+        assert_eq!(
+            notifier.args,
+            [
+                "-e",
+                r#"display notification "Next: x\nwhy" with title "loom: \"s1\"""#,
+            ]
+        );
+        assert_eq!(notifier.timeout, OSASCRIPT_NOTIFICATION_TIMEOUT);
+    }
+
+    #[test]
+    fn every_other_os_notifies_through_notify_send_with_title_and_body_as_arguments() {
+        let notifier = notifier_for("linux", "loom: Stage 's1' stalled", "Next: x");
+
+        assert_eq!(notifier.program, "notify-send");
+        assert_eq!(
+            notifier.args,
+            [
+                "--urgency=critical",
+                "--app-name=loom",
+                "loom: Stage 's1' stalled",
+                "Next: x",
+            ]
+        );
+        assert_eq!(notifier.timeout, NOTIFY_SEND_TIMEOUT);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use super::dispute_budgets::DisputeTally;
 use super::merge_block::MergeRecord;
 use super::persisted::deserialize_persisted_reasoning_effort;
 use super::sandbox_config::StageSandboxConfig;
+use super::stall::StallExhaustion;
 
 /// Type of stage for specialized handling.
 ///
@@ -477,6 +478,9 @@ pub struct Stage {
     /// the loop. Owned by `event_handler::recover_hung`.
     #[serde(default)]
     pub stall_recoveries: u32,
+    /// Set once a stall finds `stall_recoveries` spent; see [`StallExhaustion`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stall_exhausted: Option<StallExhaustion>,
     /// Per-stage sandbox configuration
     #[serde(default)]
     pub sandbox: StageSandboxConfig,

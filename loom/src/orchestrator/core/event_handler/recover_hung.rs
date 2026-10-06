@@ -17,6 +17,8 @@
 //! 3. a stage may be recovered this way [`MAX_STALL_RECOVERIES`] times. After
 //!    that it is left where it stands for an operator — a stage that stalls
 //!    every attempt is a bug in the stage, and re-queueing it forever hides it.
+//!    The operator hears about it from a desktop notification and from
+//!    `loom status`, which reads the [`StallExhaustion`] recorded on the stage.
 //!
 //! The takedown itself is the ceiling backstop's, unchanged: write the
 //! outgoing agent's handoff, kill every agent the stage owns, re-queue only
@@ -31,9 +33,10 @@ use crate::handoff::{
     HandoffOrigin,
 };
 use crate::models::session::SessionExitReason;
-use crate::models::stage::{Stage, StageStatus};
+use crate::models::stage::{Stage, StageStatus, StallExhaustion};
 use crate::orchestrator::monitor::hung_latch::is_stall_escalation;
 use crate::orchestrator::monitor::parked::hung_warning;
+use crate::orchestrator::notify::notify_stall_recovery_exhausted;
 
 use super::super::persistence::Persistence;
 use super::super::{clear_status_line, Orchestrator};
@@ -53,22 +56,15 @@ pub(super) fn checkpoint_has_current_blocker(
     current_blocker(checkpoint, stage, current_commit).is_some()
 }
 
-fn stall_recovery_exhausted(stage: &Stage, session_id: &str, stale_duration_secs: u64) -> bool {
-    if stage.stall_recoveries < MAX_STALL_RECOVERIES {
-        return false;
-    }
-    eprintln!(
-        "{} Stage '{}' has already been recovered from a stall {} times and session '{}' has now \
-         been silent for {}s. Leaving it exactly where it is: another automatic re-queue would \
-         loop. Take it over with: loom stage reset {} --kill-session",
-        "STALL RECOVERY EXHAUSTED:".red().bold(),
-        stage.id,
-        stage.stall_recoveries,
-        session_id,
-        stale_duration_secs,
-        stage.id,
-    );
-    true
+/// What an operator runs to take over a stage loom stopped recovering.
+pub(crate) fn stall_takeover_command(stage_id: &str) -> String {
+    format!("loom stage reset {stage_id} --kill-session")
+}
+
+/// Why a stage was left for an operator, as `loom status` and the desktop
+/// notification state it.
+pub(crate) fn stall_reason(recoveries: u32, silent_secs: u64) -> String {
+    format!("stalled (recovered {recoveries} times, silent {silent_secs}s)")
 }
 
 /// One `SessionHung` report, as the event carries it.
@@ -127,8 +123,8 @@ impl Orchestrator {
             return Ok(());
         }
 
-        if stall_recovery_exhausted(&stage, session_id, stale_duration_secs) {
-            return Ok(());
+        if stage.stall_recoveries >= MAX_STALL_RECOVERIES {
+            return self.leave_stalled_stage(&stage, session_id, stale_duration_secs);
         }
 
         eprintln!(
@@ -181,6 +177,42 @@ impl Orchestrator {
             );
         }
         owns_stage
+    }
+
+    /// Leave a stage whose stall recoveries are spent exactly where it is, and
+    /// say so where an operator will see it: the daemon log, a desktop
+    /// notification, and the stage record `loom status` reads.
+    fn leave_stalled_stage(
+        &self,
+        stage: &Stage,
+        session_id: &str,
+        stale_duration_secs: u64,
+    ) -> Result<()> {
+        let takeover = stall_takeover_command(&stage.id);
+        eprintln!(
+            "{} Stage '{}' has already been recovered from a stall {} times and session '{}' has \
+             now been silent for {}s. Leaving it exactly where it is: another automatic re-queue \
+             would loop. Take it over with: {takeover}",
+            "STALL RECOVERY EXHAUSTED:".red().bold(),
+            stage.id,
+            stage.stall_recoveries,
+            session_id,
+            stale_duration_secs,
+        );
+        let reason = stall_reason(stage.stall_recoveries, stale_duration_secs);
+        notify_stall_recovery_exhausted(&stage.id, &reason, &takeover);
+        self.update_stage(&stage.id, |current| {
+            if current.status == StageStatus::Executing
+                && current.session.as_deref() == Some(session_id)
+            {
+                current.stall_exhausted = Some(StallExhaustion {
+                    session_id: session_id.to_string(),
+                    silent_secs: stale_duration_secs,
+                });
+            }
+            Ok(())
+        })?;
+        Ok(())
     }
 
     /// Write the stalled agent's handoff before the takedown takes it away, so
