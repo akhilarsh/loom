@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use loom::cli::{dispatch, Cli};
+use std::ffi::OsStr;
 use tracing_subscriber::{fmt, EnvFilter};
 
 /// Subcommands whose stdout is a protocol rather than a display.
@@ -34,6 +35,7 @@ fn suppresses_update_check(first_arg: Option<&str>) -> bool {
 
 fn main() -> Result<()> {
     let first_arg = std::env::args().nth(1);
+    let second_arg = std::env::args_os().nth(2);
 
     // The detached refresh child re-enters as `loom __update-refresh`
     // (`loom::update_check::REFRESH_ARG`), not a clap subcommand, so it must
@@ -47,8 +49,11 @@ fn main() -> Result<()> {
 
     // Recover terminal state if a previous TUI was killed without cleanup —
     // before anything else, so a corrupted terminal is fixed before a command
-    // renders into it. Exempt: the entry points whose stdout is a protocol.
-    if !writes_a_machine_protocol(first_arg.as_deref()) {
+    // renders into it. Exempt: the entry points whose stdout is a protocol,
+    // and the daemon child, whose stdout is the readiness pipe.
+    if !writes_a_machine_protocol(first_arg.as_deref())
+        && !is_daemon_child(first_arg.as_deref(), second_arg.as_deref())
+    {
         loom::utils::recover_terminal_if_needed();
     }
 
@@ -84,6 +89,14 @@ fn writes_a_machine_protocol(first_arg: Option<&str>) -> bool {
     first_arg.is_some_and(|arg| MACHINE_PROTOCOL_COMMANDS.contains(&arg))
 }
 
+/// True for `loom run --daemon-child <root>`, the daemon `loom run` starts.
+/// `daemon/server/launch.rs` always puts the flag right after `run`, and the
+/// child's stdout is the readiness pipe `loom run` reads byte by byte, so an
+/// ANSI escape written there would be read as the daemon's startup output.
+fn is_daemon_child(first_arg: Option<&str>, second_arg: Option<&OsStr>) -> bool {
+    first_arg == Some("run") && second_arg.is_some_and(|arg| arg == "--daemon-child")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,6 +116,16 @@ mod tests {
             );
         }
         assert!(!writes_a_machine_protocol(None), "a bare `loom` invocation");
+    }
+
+    #[test]
+    fn the_daemon_child_skips_terminal_recovery() {
+        let flag = Some(OsStr::new("--daemon-child"));
+        assert!(is_daemon_child(Some("run"), flag));
+        assert!(!is_daemon_child(Some("run"), Some(OsStr::new("--manual"))));
+        assert!(!is_daemon_child(Some("run"), None), "a plain `loom run`");
+        assert!(!is_daemon_child(Some("status"), flag));
+        assert!(!is_daemon_child(None, None), "a bare `loom` invocation");
     }
 
     #[test]

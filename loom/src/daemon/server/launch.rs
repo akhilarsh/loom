@@ -10,8 +10,9 @@
 //! into the launch outcome.
 
 use super::environment::DaemonEnvironment;
+use crate::context::untrusted::terminal_safe;
 use crate::daemon::DaemonConfig;
-use crate::orchestrator::spawner::read_log_tail;
+use crate::orchestrator::spawner::{clamp_from_front, read_log_tail};
 use crate::orchestrator::terminal::native::detect_terminal;
 
 use anyhow::{anyhow, Context, Result};
@@ -153,9 +154,27 @@ fn daemon_command(
 /// child wrote to the pipe and, once it wrote `0x02` (its output now goes to
 /// the log), the last lines of `log_path`. The failures: an exit before the
 /// ready byte or within the grace after it (its exit status or signal), a pipe
-/// closed before the ready byte, or no ready byte by `timing.deadline`. In the
-/// last two cases the child is terminated and reaped.
+/// closed before the ready byte, or no ready byte by `timing.deadline`. A
+/// failure to read the pipe or check the child is an error too. On every
+/// error a child still running is terminated, and the child is reaped, so a
+/// failed launch leaves no daemon behind.
 pub fn await_ready(
+    child: &mut Child,
+    reader: PipeReader,
+    log_path: &Path,
+    timing: ReadyTiming,
+) -> Result<()> {
+    let result = watch_until_ready(child, reader, log_path, timing);
+    if result.is_err() {
+        terminate(child);
+    }
+    result
+}
+
+/// [`await_ready`]'s loop. The deadline and closed-pipe failures terminate the
+/// child here, before the message is built from its last output;
+/// [`await_ready`] terminates it on every other error.
+fn watch_until_ready(
     child: &mut Child,
     mut reader: PipeReader,
     log_path: &Path,
@@ -186,6 +205,7 @@ pub fn await_ready(
             None if pipe.eof => return closed_before_ready(child, &pipe, log_path),
             None if started.elapsed() >= timing.deadline => {
                 terminate(child);
+                pipe.drain(&mut reader)?;
                 let headline = format!(
                     "the daemon did not become ready within {:?}",
                     timing.deadline
@@ -228,8 +248,12 @@ fn wait_for_exit(child: &mut Child, limit: Duration) -> Result<Option<ExitStatus
 
 /// SIGTERM, then SIGKILL after [`TERMINATE_WAIT`]; the child is reaped either
 /// way. Best effort: the launch has already failed, and that failure is what
-/// the caller reports.
+/// the caller reports. A child already reaped, or one whose state cannot be
+/// read, gets no signal: its pid may name another process by now.
 fn terminate(child: &mut Child) {
+    if !matches!(child.try_wait(), Ok(None)) {
+        return;
+    }
     if let Ok(pid) = i32::try_from(child.id()) {
         let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
     }
@@ -317,17 +341,19 @@ impl PipeState {
     }
 
     /// `headline`, then the diagnostic text, then the log tail when the
-    /// child's output had moved to the log.
+    /// child's output had moved to the log. The log can hold agent-derived
+    /// text, so its tail is made safe to print to the operator's terminal.
     fn failure(&self, headline: String, log_path: &Path) -> anyhow::Error {
         let mut message = headline;
         let text = String::from_utf8_lossy(&self.text);
-        let text = keep_last(text.trim(), MAX_DIAGNOSTIC_BYTES);
+        let text = clamp_from_front(text.trim(), MAX_DIAGNOSTIC_BYTES);
         if !text.is_empty() {
             message.push('\n');
             message.push_str(text);
         }
         if self.log_active {
             if let Some(tail) = read_log_tail(log_path, LOG_TAIL_LINES) {
+                let tail = terminal_safe(&tail);
                 message.push_str(&format!("\nlast lines of {}:\n{tail}", log_path.display()));
             }
         }
@@ -343,18 +369,6 @@ fn readable(reader: &PipeReader) -> Result<bool> {
         Err(Errno::EINTR) => Ok(false),
         Err(errno) => Err(errno).context("Failed to wait on the daemon's output"),
     }
-}
-
-/// The last `max_bytes` of `text`, starting on a character boundary.
-fn keep_last(text: &str, max_bytes: usize) -> &str {
-    if text.len() <= max_bytes {
-        return text;
-    }
-    let mut start = text.len() - max_bytes;
-    while !text.is_char_boundary(start) {
-        start += 1;
-    }
-    &text[start..]
 }
 
 #[cfg(test)]
