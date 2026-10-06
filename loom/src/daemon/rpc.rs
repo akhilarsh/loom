@@ -8,13 +8,13 @@
 
 use std::io::ErrorKind;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
 use super::protocol::{read_message, write_message, Request, Response};
-use super::read_user_token;
+use super::{read_user_token, socket_path, socket_path_fits};
 
 /// Environment variable every loom-spawned session's wrapper exports, for all
 /// session kinds. Its presence is what distinguishes an agent acting on its
@@ -61,19 +61,6 @@ pub fn current_session_id() -> String {
     std::env::var(SESSION_ID_ENV).unwrap_or_default()
 }
 
-/// The daemon's socket for `work_dir`.
-///
-/// In a stage worktree `.loom/work` is a symlink to the state root, and the
-/// daemon bound its socket under the resolved, shorter path. The unresolved
-/// worktree path can pass the `sun_path` limit (103 bytes on macOS) and make
-/// `connect` fail with `AF_UNIX path too long`, so resolve it first.
-pub(crate) fn socket_path(work_dir: &Path) -> PathBuf {
-    work_dir
-        .canonicalize()
-        .unwrap_or_else(|_| work_dir.to_path_buf())
-        .join("orchestrator.sock")
-}
-
 /// What came back from trying to reach the daemon.
 ///
 /// The distinction that matters to callers: a refusal from a live daemon is
@@ -98,8 +85,10 @@ pub enum DaemonReach {
     /// daemon's singleton lock to prove free (`DaemonServer::proven_stopped`).
     NotListening,
     /// This process cannot tell whether a daemon listens: the sandbox denies
-    /// AF_UNIX outright, or `stat` on the socket path fails with anything
-    /// but `ENOENT` (a denied or masked path). Not evidence about the daemon.
+    /// AF_UNIX outright, `stat` on the socket path fails with anything but
+    /// `ENOENT` (a denied or masked path), or the resolved socket path is too
+    /// long for `sun_path` (the daemon may run; this process cannot address
+    /// it). Not evidence about the daemon.
     ///
     /// A caller here must not take the `NotListening` fallback: writing
     /// `.loom/work/stages/<id>.md` directly would BYPASS a live daemon's authority
@@ -138,7 +127,15 @@ pub enum DaemonReach {
 /// computing a value locally, must not rely on `NotListening` alone (see the
 /// variant).
 ///
-/// The connect-error mapping lives here, and only here:
+/// Between the `lstat` and the connect, a socket path that does not fit
+/// `sun_path` (`socket_path_fits`) is `Unreachable`: the daemon may well be
+/// running, this process just cannot address it. Only that length check makes
+/// this call, so an `InvalidInput` from the connect for any other reason (an
+/// interior NUL) stays an error.
+///
+/// The connect-error mapping of the spooling and completion clients lives
+/// here; the daemon's own status, stop, TUI and web clients classify for
+/// themselves:
 ///
 /// - `ErrorKind::NotFound` (the file vanished between the check and the
 ///   connect) and `ErrorKind::ConnectionRefused` (a socket file exists but
@@ -149,9 +146,6 @@ pub enum DaemonReach {
 ///   outright, failing at `socket()` or at `connect()` (see
 ///   `daemon/server/core.rs`). That maps to `Unreachable`, which callers must
 ///   treat as "no answer", not as "no daemon".
-/// - `ErrorKind::InvalidInput` (a socket path longer than `sun_path`) also maps
-///   to `Unreachable`: the daemon may well be running, this process just cannot
-///   address it.
 /// - Any other connect error is NOT evidence the daemon is absent either. It
 ///   stays an `Err`: silently falling back on it would turn a
 ///   misconfiguration into a state write nobody authorized.
@@ -164,17 +158,15 @@ pub fn try_send_request(work_dir: &Path, request: &Request) -> Result<DaemonReac
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(DaemonReach::NotListening),
         Err(_) => return Ok(DaemonReach::Unreachable),
     }
+    if !socket_path_fits(&socket_path) {
+        return Ok(DaemonReach::Unreachable);
+    }
     let stream = match UnixStream::connect(&socket_path) {
         Ok(stream) => stream,
         Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
             return Ok(DaemonReach::NotListening);
         }
         Err(e) if e.kind() == ErrorKind::PermissionDenied => {
-            return Ok(DaemonReach::Unreachable);
-        }
-        // A path past the `sun_path` limit cannot be connected to even once
-        // resolved; callers must defer (spool) rather than fail.
-        Err(e) if e.kind() == ErrorKind::InvalidInput => {
             return Ok(DaemonReach::Unreachable);
         }
         Err(e) => {
@@ -197,8 +189,8 @@ pub fn send_request(work_dir: &Path, request: &Request) -> Result<Response> {
         ),
         DaemonReach::Unreachable => bail!(
             "Failed to connect to daemon at {}: this process may not use unix sockets \
-             (a sandboxed environment denies AF_UNIX outright), so whether a daemon is \
-             running cannot be determined from here",
+             (a sandboxed environment denies AF_UNIX outright) or the socket path is too \
+             long for AF_UNIX, so whether a daemon is running cannot be determined from here",
             socket_path(work_dir).display()
         ),
     }

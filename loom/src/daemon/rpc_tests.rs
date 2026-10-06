@@ -1,4 +1,5 @@
 use super::*;
+use crate::daemon::SOCKET_FILE;
 use tempfile::TempDir;
 
 #[test]
@@ -209,4 +210,43 @@ fn a_socket_path_too_long_even_resolved_is_unreachable() {
         DaemonReach::NotListening => panic!("expected Unreachable, got NotListening"),
         DaemonReach::Answered(response) => panic!("expected Unreachable, got {response:?}"),
     }
+}
+
+#[test]
+fn a_worktree_spelling_past_sun_path_is_answered() {
+    let temp = TempDir::new().unwrap();
+    if crate::process::sandbox_probe::skip_unless(
+        crate::process::sandbox_probe::unix_socket_bindable(temp.path()),
+        "daemon::rpc::tests::a_worktree_spelling_past_sun_path_is_answered",
+        "this sandbox denies binding an AF_UNIX listener",
+    ) {
+        return;
+    }
+    let real_work = temp.path().join("r/.loom/work");
+    std::fs::create_dir_all(&real_work).unwrap();
+    let worktree_state = temp
+        .path()
+        .join("r/.worktrees")
+        .join("a".repeat(80))
+        .join(".loom");
+    std::fs::create_dir_all(&worktree_state).unwrap();
+    let spelling = worktree_state.join("work");
+    std::os::unix::fs::symlink("../../../.loom/work", &spelling).unwrap();
+    assert!(spelling.join(SOCKET_FILE).as_os_str().len() >= 108);
+    let listener = std::os::unix::net::UnixListener::bind(socket_path(&real_work)).unwrap();
+
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let _request: Request = read_message(&mut stream).unwrap();
+        write_message(&mut stream, &Response::Pong).unwrap();
+    });
+
+    match try_send_request(&spelling, &ping()).unwrap() {
+        DaemonReach::Answered(Response::Pong) => {}
+        DaemonReach::Answered(other) => panic!("expected Pong, got {other:?}"),
+        DaemonReach::NotListening => panic!("expected Answered, got NotListening"),
+        DaemonReach::Unreachable => panic!("expected Answered, got Unreachable"),
+    }
+
+    handle.join().unwrap();
 }
