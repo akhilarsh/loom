@@ -98,8 +98,39 @@ fn clock_nanoseconds(clock: libc::clockid_t) -> Result<u64> {
         .ok_or_else(|| anyhow!("boot clock nanoseconds overflowed u64"))
 }
 
+/// Boot identity on macOS. The stage sandbox can deny `kern.bootsessionuuid`;
+/// `kern.boottime` stays readable there, so it stands in when the UUID is not.
 #[cfg(target_os = "macos")]
 fn macos_boot_id() -> Result<String> {
+    macos_boot_session_uuid().or_else(|_| macos_boot_time())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_boot_time() -> Result<String> {
+    let name = b"kern.boottime\0";
+    let mut value = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
+    let mut size = std::mem::size_of::<libc::timeval>();
+    // SAFETY: `value` provides `size` writable bytes and the name is NUL-terminated.
+    if unsafe {
+        libc::sysctlbyname(
+            name.as_ptr().cast(),
+            std::ptr::addr_of_mut!(value).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error()).context("failed to read macOS boot time");
+    }
+    Ok(format!("boottime:{}.{:06}", value.tv_sec, value.tv_usec))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_boot_session_uuid() -> Result<String> {
     let name = b"kern.bootsessionuuid\0";
     let mut size = 0usize;
     // SAFETY: the name is NUL-terminated and the null output pointer requests the required size.
@@ -344,4 +375,21 @@ pub fn prune_results(dir: &LeaseDir, clock: &dyn BootClock) -> Result<usize> {
         clock.unix_secs(),
         RESULT_RETENTION_SECS,
     )
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_boot_tests {
+    use super::*;
+
+    #[test]
+    fn boot_time_fallback_reads_a_stable_identity() {
+        let first = macos_boot_time().expect("kern.boottime readable");
+        assert!(first.starts_with("boottime:"), "{first}");
+        assert_eq!(first, macos_boot_time().unwrap());
+    }
+
+    #[test]
+    fn boot_id_is_never_empty() {
+        assert!(!SystemBootClock.boot_id().unwrap().is_empty());
+    }
 }

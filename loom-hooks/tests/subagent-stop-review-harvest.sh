@@ -43,6 +43,15 @@ exit "${HARVEST_EXIT:-0}"
 STUB
 chmod +x "$TMP/bin/loom"
 
+# BSD `wc -c` left-pads its count; the hooks must cope on macOS.
+mkdir -p "$TMP/shim"
+cat >"$TMP/shim/wc" <<'SHIM'
+#!/usr/bin/env bash
+out=$(/usr/bin/env -u PATH PATH=/usr/bin:/bin wc "$@") || exit $?
+if [[ "${1:-}" == "-c" ]]; then printf '%8s\n' "${out//[[:space:]]/}"; else printf '%s\n' "$out"; fi
+SHIM
+chmod +x "$TMP/shim/wc"
+
 transcript_of() {
 	printf '%s' "$PROJECT/$PARENT_SESSION_ID/subagents/agent-$1.jsonl"
 }
@@ -74,7 +83,7 @@ run_stop() {
 		'{session_id:$session_id,hook_event_name:"SubagentStop",agent_id:$agent_id,
 		  agent_type:$agent_type,transcript_path:$transcript_path,
 		  agent_transcript_path:$agent_transcript_path}' |
-		env LOOM_WORK_DIR="$WORKDIR" LOOM_STAGE_ID="$STAGE_ID" LOOM_SESSION_ID="$SESSION_ID" \
+		env PATH="$TMP/shim:$PATH" LOOM_WORK_DIR="$WORKDIR" LOOM_STAGE_ID="$STAGE_ID" LOOM_SESSION_ID="$SESSION_ID" \
 			LOOM_BIN="$TMP/bin/loom" HARVEST_CALLS="$CALLS" HARVEST_EXIT="$delegate_exit" \
 			bash "$HOOK" >"$TMP/stdout" 2>"$TMP/stderr" || HOOK_STATUS=$?
 }
@@ -117,6 +126,22 @@ run_stop "reviewer-2" "loom-code-reviewer" 3
 assert_quiet_success "failing delegate"
 if [[ "$(call_count)" != "2" ]]; then
 	echo "FAIL: the second reviewer stop should have reached the delegate"
+	exit 1
+fi
+
+# A reviewer stop with no SubagentStart row is skipped, and says so on disk.
+SKIP_LOG="$WORKDIR/subagents/$STAGE_ID/hook-skips.log"
+rm -f "$WORKDIR/subagents/$STAGE_ID/starts.jsonl" "$SKIP_LOG"
+transcript=$(transcript_of "reviewer-orphan")
+printf '%s\n' '{"type":"assistant"}' >"$transcript"
+jq -nc --arg t "$transcript" --arg p "$PARENT_TRANSCRIPT" --arg s "$PARENT_SESSION_ID" \
+	'{session_id:$s,hook_event_name:"SubagentStop",agent_id:"reviewer-orphan",
+	  agent_type:"loom-code-reviewer",transcript_path:$p,agent_transcript_path:$t}' |
+	env LOOM_WORK_DIR="$WORKDIR" LOOM_STAGE_ID="$STAGE_ID" LOOM_SESSION_ID="$SESSION_ID" \
+		LOOM_BIN="$TMP/bin/loom" HARVEST_CALLS="$CALLS" bash "$HOOK" >"$TMP/stdout" 2>"$TMP/stderr"
+if [[ -s "$TMP/stdout" || -s "$TMP/stderr" ]] || ! rg -q 'reviewer-orphan skipped: no unambiguous' "$SKIP_LOG"; then
+	echo "FAIL: a skipped reviewer stop should be logged to hook-skips.log, quietly"
+	cat "$SKIP_LOG" 2>/dev/null || true
 	exit 1
 fi
 

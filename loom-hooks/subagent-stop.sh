@@ -123,6 +123,15 @@ if [[ -z "$OBSERVED_AT" ]]; then
 	loom_debug "$HOOK_NAME: skipping - UTC timestamp unavailable"
 	exit 0
 fi
+# A skipped reviewer stop leaves the review gate with no round and no message,
+# so record it where the operator can find it (loom_debug needs LOOM_HOOK_DEBUG).
+record_reviewer_skip() {
+	[[ "$AGENT_TYPE" == "loom-code-reviewer" ]] || return 0
+	local dir="$WORK_DIR/subagents/$LOOM_STAGE_ID"
+	[[ -d "$dir" && ! -L "$dir" && ! -L "$dir/hook-skips.log" ]] || return 0
+	printf '%s %s agent=%s skipped: %s\n' "$OBSERVED_AT" "$HOOK_NAME" "$AGENT_ID" "$1" \
+		>>"$dir/hook-skips.log" 2>/dev/null || true
+}
 START_STATUS=0
 loom_lifecycle_resolve_start "$WORK_DIR" "$LOOM_STAGE_ID" \
 	"$PARENT_SESSION_ID" "$LOOM_SESSION_ID" "$AGENT_ID" \
@@ -130,6 +139,7 @@ loom_lifecycle_resolve_start "$WORK_DIR" "$LOOM_STAGE_ID" \
 if ((START_STATUS != 0)); then
 	if ((START_STATUS == 1)); then
 		loom_debug "$HOOK_NAME: skipping - no unambiguous exact SubagentStart row"
+		record_reviewer_skip "no unambiguous exact SubagentStart row; no review round recorded"
 	fi
 	exit 0
 fi
@@ -138,6 +148,7 @@ loom_lifecycle_transcript_evidence "$WORKER_TRANSCRIPT" "$HOOK_NAME" || TRANSCRI
 if ((TRANSCRIPT_STATUS != 0)); then
 	if ((TRANSCRIPT_STATUS == 1)); then
 		loom_debug "$HOOK_NAME: skipping - worker transcript is empty, torn, malformed, or changing"
+		record_reviewer_skip "worker transcript is empty, torn, malformed, or changing; no review round recorded"
 	fi
 	exit 0
 fi
