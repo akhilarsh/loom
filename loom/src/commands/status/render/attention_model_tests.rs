@@ -52,7 +52,6 @@ fn make_stage_summary(id: &str, status: StageStatus) -> StageSummary {
         merge_resolver_session: None,
         merge_resolver_attempts: None,
         close_reason: None,
-        stalled_after_recoveries: None,
     }
 }
 
@@ -166,25 +165,6 @@ fn healthy_statuses_need_no_attention() {
     .collect::<Vec<_>>();
 
     assert!(attention_entries(&stages).is_empty());
-}
-
-#[test]
-fn an_executing_stage_left_stalled_asks_an_operator_to_take_it_over() {
-    let mut stage = make_stage_summary("stalled", StageStatus::Executing);
-    stage.staleness_secs = Some(903);
-    stage.stalled_after_recoveries = Some(2);
-
-    let entry = entry_for(stage);
-
-    assert_eq!(entry.label, "STALLED");
-    assert_eq!(
-        guidance(&entry),
-        (
-            Some("loom stage reset stalled --kill-session"),
-            Some("stalled (recovered 2 times, silent 903s); loom will not recover it again"),
-            false,
-        )
-    );
 }
 
 #[test]

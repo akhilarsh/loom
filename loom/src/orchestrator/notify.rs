@@ -116,14 +116,6 @@ pub fn notify_needs_human_review(stage_id: &str, review_reason: Option<&str>) {
     send_desktop_notification(&title, &body);
 }
 
-/// Notify the user that loom stopped recovering a stage from stalls.
-/// `reason` and `takeover` are the lines `loom status` shows for the stage.
-pub fn notify_stall_recovery_exhausted(stage_id: &str, reason: &str, takeover: &str) {
-    let title = format!("loom: Stage '{stage_id}' stalled");
-    let body = format!("Next: {takeover}\n{reason}");
-    send_desktop_notification(&title, &body);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

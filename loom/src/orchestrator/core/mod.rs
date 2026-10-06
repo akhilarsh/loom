@@ -44,7 +44,6 @@ mod target_hold;
 mod verdict_apply;
 
 pub(crate) use crash_classification::spawn_failure_type;
-pub(crate) use event_handler::{stall_reason, stall_takeover_command};
 pub(crate) use merge_handler::resolver_attempts::{
     merge_resolver_attempts, MAX_MERGE_RESOLVER_ATTEMPTS,
 };

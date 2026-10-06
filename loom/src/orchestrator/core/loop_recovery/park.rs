@@ -13,6 +13,8 @@ use crate::subagent_lifecycle::store::{replay, ChildDisposition};
 use crate::orchestrator::core::persistence::Persistence;
 use crate::orchestrator::core::Orchestrator;
 
+use super::super::recover_hung::HungReport;
+
 impl Orchestrator {
     pub(crate) fn on_completion_blocker(
         &mut self,
@@ -237,4 +239,78 @@ fn ensure_current_writer(stage: &Stage, session_id: &str) -> Result<()> {
         "stage moved before completion blocker disposition could be persisted"
     );
     Ok(())
+}
+
+/// The longest pane line a one-line stall park reason quotes.
+const PANE_LINE_CHARS: usize = 120;
+
+/// Why a stage that used its automatic stall recoveries was parked.
+pub(in crate::orchestrator::core::event_handler) fn exhausted_reason(
+    report: &HungReport<'_>,
+    recoveries: u32,
+    tail: Option<&str>,
+) -> String {
+    format!(
+        "stalled: session {} silent {}s (budget {}s, last: {}) after {recoveries} automatic \
+         recoveries{}",
+        report.session_id,
+        report.stale_duration_secs,
+        report.timeout_secs,
+        report.last_activity.unwrap_or("none"),
+        pane_segment(tail),
+    )
+}
+
+/// Why a stage whose session never started work was parked.
+pub(in crate::orchestrator::core::event_handler) fn never_worked_reason(
+    report: &HungReport<'_>,
+    tail: Option<&str>,
+) -> String {
+    format!(
+        "session {} never started work (no tool activity {}s after start, budget {}s){}",
+        report.session_id,
+        report.stale_duration_secs,
+        report.timeout_secs,
+        pane_segment(tail),
+    )
+}
+
+/// Why a stage whose session is not logged in was parked, with the remedy.
+pub(in crate::orchestrator::core::event_handler) fn not_logged_in_reason(
+    session_id: &str,
+    stage_id: &str,
+) -> String {
+    format!(
+        "session {session_id} is not logged in to claude in the stage environment; run claude \
+         /login (as the operator) and then loom stage human-review {stage_id} --approve"
+    )
+}
+
+/// The review reason with the pane's last lines below it. `Stage` has no notes
+/// field; the web view shows these lines as the review notes.
+pub(in crate::orchestrator::core::event_handler) fn with_pane_notes(
+    reason: String,
+    tail: Option<&str>,
+) -> String {
+    match tail {
+        Some(tail) => format!("{reason}\n\nLast pane lines:\n{tail}"),
+        None => reason,
+    }
+}
+
+/// `; pane: "<last line>"` for a one-line reason: the pane's last non-empty
+/// line, cut short, its double quotes made single so the quoting stays whole.
+/// Nothing at all when no pane was read.
+fn pane_segment(tail: Option<&str>) -> String {
+    tail.and_then(|tail| {
+        tail.lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+    })
+    .map(|line| {
+        let line: String = line.chars().take(PANE_LINE_CHARS).collect();
+        format!("; pane: \"{}\"", line.replace('"', "'"))
+    })
+    .unwrap_or_default()
 }

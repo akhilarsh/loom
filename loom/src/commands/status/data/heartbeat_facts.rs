@@ -74,7 +74,7 @@ fn determine_activity_status(
 
 /// Heartbeat-derived facts for a stage's [`StageSummary`]: staleness, current
 /// activity, the last recorded tool/activity strings, the judge heartbeat's
-/// age, and whether loom left the stage stalled. Extracted from
+/// age. Extracted from
 /// `build_stage_summary` to keep that function within the line limit.
 pub(super) struct HeartbeatFacts {
     pub(super) staleness_secs: Option<u64>,
@@ -82,18 +82,6 @@ pub(super) struct HeartbeatFacts {
     pub(super) last_tool: Option<String>,
     pub(super) last_activity: Option<String>,
     pub(super) judge_heartbeat_secs: Option<u64>,
-    pub(super) stalled_after_recoveries: Option<u32>,
-}
-
-/// The stall recoveries spent on a stage loom left for an operator, while the
-/// session whose silence exhausted them is still the stage's own and has not
-/// answered since: its silence is at least as long as when loom gave up.
-fn stalled_after_recoveries(stage: &Stage, staleness_secs: Option<u64>) -> Option<u32> {
-    let exhausted = stage.stall_exhausted.as_ref()?;
-    let still_silent = stage.status == StageStatus::Executing
-        && stage.session.as_deref() == Some(exhausted.session_id.as_str())
-        && staleness_secs.is_some_and(|secs| secs >= exhausted.silent_secs);
-    still_silent.then_some(stage.stall_recoveries)
 }
 
 pub(super) fn heartbeat_facts(
@@ -122,10 +110,5 @@ pub(super) fn heartbeat_facts(
         last_tool,
         last_activity,
         judge_heartbeat_secs,
-        stalled_after_recoveries: stalled_after_recoveries(stage, staleness_secs),
     }
 }
-
-#[cfg(test)]
-#[path = "heartbeat_facts_tests.rs"]
-mod tests;
