@@ -588,7 +588,7 @@ main() {
 	message+="\n\nChecked: worktree=$(pwd), project_root=$project_root"
 
 	if [[ $has_uncommitted -eq 1 ]]; then
-		message+="\n\n1. You have uncommitted changes. Run:\n   git add <specific-files> && git commit -m 'feat: <description>'"
+		message+="\n\n1. You have uncommitted changes. Commit with git add <specific-files> then loom stage commit $STAGE_ID -m 'type(scope): description'; wait with loom request status <id> --wait 90; never run git commit."
 		message+="\n   (NOTE: Do NOT use 'git add -A' or 'git add .' as these will stage $WORK_DIR)"
 		local changes
 		changes=$(get_uncommitted_changes)
