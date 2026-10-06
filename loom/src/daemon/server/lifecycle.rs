@@ -60,14 +60,13 @@ impl DaemonServer {
                 let mut buf = [0u8; 1];
                 match nix::unistd::read(&read_fd, &mut buf) {
                     Ok(1) if buf[0] == 1 => std::process::exit(0), // Success signal received
-                    Ok(0) => {
-                        // EOF - grandchild failed before writing success signal
-                        eprintln!("Daemon failed to start");
-                        std::process::exit(1);
-                    }
+                    // EOF means the grandchild died before writing the success
+                    // signal; anything else is a read error or unexpected data.
                     _ => {
-                        // Read error or unexpected data
-                        eprintln!("Daemon failed to start");
+                        eprintln!(
+                            "Daemon failed to start; see {} for the reason",
+                            self.work_dir.join("orchestrator.log").display()
+                        );
                         std::process::exit(1);
                     }
                 }

@@ -8,6 +8,7 @@ mod confinement;
 mod foreground;
 mod git_preflight;
 mod graph_loader;
+mod objc_fork_safety;
 mod plan_inputs;
 mod sandbox_preflight;
 
@@ -39,6 +40,8 @@ pub fn execute_background(
     auto_merge: bool,
     backend: Option<String>,
 ) -> Result<()> {
+    objc_fork_safety::ensure_fork_safe_environment();
+
     let work_dir = prepare_background_run(backend)?;
 
     crate::utils::print_logo_header("Run");
