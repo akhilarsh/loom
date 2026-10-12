@@ -194,3 +194,21 @@ fn a_failed_admin_credential_is_never_deferred() {
     });
     assert_eq!(Authorization::Denied, authorize_preface(tmp.path(), &stop));
 }
+
+#[test]
+fn a_client_that_hung_up_before_being_served_is_not_a_handler_error() {
+    let work_dir = TempDir::new().unwrap();
+    let (server_stream, client_stream) = UnixStream::pair().unwrap();
+    drop(client_stream);
+
+    let result = handle_client_connection(
+        server_stream,
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+        work_dir.path(),
+        ByteBudget::new(2 * crate::daemon::wire::MAX_REQUEST_BYTES),
+    );
+
+    assert!(result.is_ok(), "{result:?}");
+}

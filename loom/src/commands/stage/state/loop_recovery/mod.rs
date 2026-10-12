@@ -15,7 +15,11 @@ use crate::verify::transitions::{load_stage, update_stage};
 
 use super::{apply_reset, live_agent_refusal, live_agents_for, LiveAgent};
 
-const CONFIRM_ATTEMPTS: usize = 41;
+/// How long a killed agent gets to exit before the reset is refused: 10s.
+/// `claude` runs its shutdown hooks on SIGTERM, which took 1.7s to 2.0s on a
+/// fresh session and longer on a long-running one, so a 2s window refused
+/// resets of sessions that were exiting normally.
+const CONFIRM_ATTEMPTS: usize = 201;
 const CONFIRM_INTERVAL: Duration = Duration::from_millis(50);
 
 pub(super) trait ResetRuntime {
