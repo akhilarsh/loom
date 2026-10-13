@@ -290,9 +290,10 @@ fn reset_waits_out_an_agent_that_is_slow_to_exit() {
     let session = session_for("alpha", SessionStatus::Running);
     save_session(&session, temp.path()).unwrap();
     executing_stage(temp.path(), Some(&session));
-    // 150 probes at the 50ms interval is 7.5s: past the old 2s window.
+    // 80 probes at the 50ms interval is 4s: past the old 2s window, inside the
+    // current 6s one.
     let runtime = SlowExitRuntime {
-        polls_left: std::cell::Cell::new(150),
+        polls_left: std::cell::Cell::new(80),
     };
 
     loop_recovery::reset_with(temp.path(), "alpha", false, true, &runtime).unwrap();
