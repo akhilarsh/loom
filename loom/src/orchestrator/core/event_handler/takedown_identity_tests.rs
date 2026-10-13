@@ -37,6 +37,31 @@ fn spawn_sigterm_resistant_orphan(ready: &Path) -> u32 {
     panic!("stand-in agent never installed its SIGTERM handler");
 }
 
+/// A stand-in agent that, once told to stop, takes `exit_delay_secs` to exit,
+/// as `claude` does while it shuts down.
+fn spawn_slow_to_exit_agent(ready: &Path, exit_delay_secs: u32) -> u32 {
+    let script = format!(
+        "(trap 'sleep {exit_delay_secs}; exit 0' TERM; : > \"$1\"; \
+         while :; do sleep 0.1; done) >/dev/null 2>&1 & echo $!"
+    );
+    let output = std::process::Command::new("sh")
+        .args(["-c", &script, "sh"])
+        .arg(ready)
+        .output()
+        .expect("failed to spawn a slow-to-exit stand-in agent");
+    let pid = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .expect("stand-in agent printed no pid");
+    for _ in 0..100 {
+        if ready.exists() {
+            return pid;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("stand-in agent never installed its SIGTERM handler");
+}
+
 fn force_kill(pid: u32) {
     use nix::sys::signal::{kill, Signal};
     use nix::unistd::Pid;
@@ -170,6 +195,33 @@ fn handoff_does_not_requeue_a_verified_process_that_outlives_sigterm() {
         StageStatus::NeedsHandoff
     );
     assert!(!graph_has_ready_stage(&orchestrator.graph, "test-stage"));
+
+    force_kill(pid);
+}
+
+#[test]
+fn handoff_waits_out_an_agent_that_takes_three_seconds_to_exit() {
+    let temp = handoff_work_dir();
+    let work = temp.path().join(".loom").join("work");
+    executing_stage(&work);
+    let session = recorded_session(&work);
+    assign_stage_session(&work, &session.id);
+
+    let pid = spawn_slow_to_exit_agent(&work.join("slow-exit-ready"), 3);
+    write_test_pid_identity(&work, &session, pid).unwrap();
+
+    let mut orchestrator = orchestrator_for(&work, temp.path());
+    orchestrator.graph.mark_executing("test-stage").unwrap();
+    orchestrator
+        .on_needs_handoff(&session.id, "test-stage")
+        .unwrap();
+
+    assert!(!crate::process::is_process_alive(pid));
+    assert_ne!(
+        load_stage("test-stage", &work).unwrap().status,
+        StageStatus::NeedsHandoff,
+        "an agent that exited within the window must not hold the stage in NeedsHandoff"
+    );
 
     force_kill(pid);
 }

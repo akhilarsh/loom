@@ -16,9 +16,8 @@ use crate::verify::transitions::{load_stage, update_stage};
 use super::{apply_reset, live_agent_refusal, live_agents_for, LiveAgent};
 
 /// How long a killed agent gets to exit before the reset is refused: 10s.
-/// `claude` runs its shutdown hooks on SIGTERM, which took 1.7s to 2.0s on a
-/// fresh session and longer on a long-running one, so a 2s window refused
-/// resets of sessions that were exiting normally.
+/// A loom-started `claude` session took 1.7s to 2.0s to exit after the kill on
+/// macOS, and the old 2s window refused resets of sessions that were exiting.
 const CONFIRM_ATTEMPTS: usize = 201;
 const CONFIRM_INTERVAL: Duration = Duration::from_millis(50);
 

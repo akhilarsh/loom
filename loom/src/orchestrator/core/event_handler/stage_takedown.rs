@@ -23,7 +23,13 @@ use super::super::{persistence::Persistence, Orchestrator};
 /// calling it a survivor. See [`Orchestrator::confirm_session_gone`], which is
 /// also the poll `close_adjudication_session` (`judge_close.rs`) uses to confirm
 /// a killed judge before its record is written.
-const KILL_CONFIRM_TIMEOUT: Duration = Duration::from_secs(2);
+///
+/// A loom-started `claude` session took 1.7s to 2.0s to exit after SIGTERM on
+/// macOS, so the earlier 2s bound called agents that were exiting normally
+/// survivors. 6s leaves about three times that margin. The wait runs on the
+/// daemon's poll thread, so it is also the longest a stuck agent can hold the
+/// poll loop for one takedown.
+const KILL_CONFIRM_TIMEOUT: Duration = Duration::from_secs(6);
 const KILL_CONFIRM_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 fn retain_missing_identity(missing: bool, session: &Session, survivors: &mut Vec<String>) -> bool {
