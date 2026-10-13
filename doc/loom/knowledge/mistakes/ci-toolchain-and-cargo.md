@@ -220,3 +220,21 @@ committing, not after.
 **Prevention:** code that reads git state takes the repository as a parameter, and its tests hand in a scratch repository (`git::target_guard::test_support::repo()`), never the cwd of `cargo test`. Reproduce a tag-only failure with `git checkout --detach` then `cargo test --all-targets --no-fail-fast`, which also shows every target the first failure hid. Assert on `Result` with `.unwrap()` or a message, never a bare `is_ok()`, so CI prints the error.
 
 **Fix:** `initialize_with_plan` takes `repo_root: &Path` (`execute` passes its own); `init_from_stages` in `commands/init/tests.rs` runs it against a scratch repository on `main`.
+
+## A Review Checkout Under /tmp Fails 14 Tests for Path Reasons (2026-10-13)
+
+**What happened:** reviewing a PR, the full `cargo test --all-targets` ran in a worktree under the
+harness scratchpad (`/tmp/claude-1000/...`) with `CARGO_TARGET_DIR` pointed there too. 14 tests in
+four targets failed, none of them about the change: `tmux::tests_spawn` (needs `<crate>/target` to
+exist, then refuses a `LOOM_BIN` under `/tmp`), `completion_replay::hook_broker`, nine
+`hooks_subagent_verify_guard` tests (manifest path contains `claude`), and three relay e2e tests
+(scratch root under `/tmp` is refused). The same commit passed all 7941 tests from `~/src/`.
+
+**Why:** these tests deliberately reject a binary, scratch root, or manifest path that a loom
+session could write (`/tmp`) or that the claude-name process-tree simulation would misread.
+
+**Prevention:** run the full suite from a checkout outside `/tmp` whose path has no `claude`, with
+the default `loom/target`. A detached `git worktree add --detach ~/src/<name> <sha>` does it without
+a branch. Without `--no-fail-fast` the first failing target hides every target after it.
+
+**Fix:** none needed in the tree; re-run from such a checkout.
